@@ -24,6 +24,7 @@ class RecognitionResult:
 
 class PlateRecognizer:
     MAX_WIDTH = 1000
+    GOOD_ENOUGH = 300   # điểm của kết quả "đủ 5 số + khớp dạng biển" (xem _analyze)
 
     def __init__(self):
         self._reader = None
@@ -56,6 +57,8 @@ class PlateRecognizer:
                 plate, number, score = self._analyze(crop)
                 if best is None or score > best[0]:
                     best = (score, plate, number, (x, y, bw, bh))
+                if score >= self.GOOD_ENOUGH:   # đủ 5 số + đúng dạng biển -> khỏi OCR các vùng còn lại (nhanh hơn)
+                    break
 
         annotated = frame.copy()
         if best is None or not best[2]:

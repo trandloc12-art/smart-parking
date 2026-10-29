@@ -1,0 +1,2980 @@
+diff --git a/.env.example b/.env.example
+index 5516509..e7e388f 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,15 +1,24 @@
+-CAMERA_INDEX=0
++# CẤU HÌNH CHUNG cho cả hai cổng. Copy file này thành .env rồi sửa. KHÔNG commit file .env (có mật khẩu).
++# Cổng COM và camera là RIÊNG từng cổng: xem .env.in.example và .env.out.example.
+ 
+-RFID_PORT=COM3                 #đổi cổng port trùng với cổng kết nối của thiết bị đọc thẻ RFID
+-RFID_BAUD=9600
+-RFID_DEBOUNCE=2.0
+-
+-DB_SERVER=localhost\SQLEXPRESS #cần chỉnh sửa
++DB_SERVER=localhost\SQLEXPRESS # cần chỉnh sửa
+ DB_NAME=BienSoDB               # muốn đổi tên database thì đổi ở đây
+-DB_USER=                       # nhập sa hoặc user khác có quyền truy cập database
++DB_USER=                       # nhập sa hoặc user khác có quyền truy cập database (để trống = Windows Authentication)
+ DB_PASSWORD=                   # nhập mật khẩu của user ở trên
+ DB_DRIVER=ODBC Driver 17 for SQL Server
+ 
+-AUTO_SAVE=1
++RFID_BAUD=9600
++RFID_DEBOUNCE=2.0              # giây, bỏ qua quẹt trùng cùng một thẻ
++
++AUTO_SAVE=1                    # cổng vào: 1 = chốt được 5 số thì tự lưu, 0 = luôn chờ nhân viên xác nhận
+ PRICE_PER_BLOCK=5000
+-BLOCK_MINUTES=60
+\ No newline at end of file
++BLOCK_MINUTES=60
++
++# Quét nhiều ảnh sau mỗi lần quẹt thẻ, bỏ phiếu lấy 5 số trùng nhiều nhất
++SCAN_FRAMES=5                  # số ảnh quét
++SCAN_INTERVAL=0.25             # giây giữa hai ảnh
++VOTE_MIN=2                     # số phiếu tối thiểu để tự chấp nhận
++
++# Kích thước khung camera (hai cửa sổ ~900px rộng, vừa màn hình 1920)
++VIEW_W=420
++VIEW_H=315
+diff --git a/.env.in.example b/.env.in.example
+new file mode 100644
+index 0000000..8a3bcb8
+--- /dev/null
++++ b/.env.in.example
+@@ -0,0 +1,4 @@
++# RIÊNG CỔNG VÀO. Copy thành .env.in rồi sửa.
++RFID_PORT=COM3                 # đổi cho trùng cổng COM của đầu đọc RFID (Device Manager, hoặc: python -m serial.tools.list_ports)
++CAMERA_INDEX=0
++WINDOW_POS=+0+0                # vị trí cửa sổ trên màn hình (tuỳ chọn) để hai cổng nằm cạnh nhau
+diff --git a/.env.out.example b/.env.out.example
+new file mode 100644
+index 0000000..c0fc4df
+--- /dev/null
++++ b/.env.out.example
+@@ -0,0 +1,4 @@
++# RIÊNG CỔNG RA. Copy thành .env.out rồi sửa. Phải là Arduino và camera KHÁC với cổng vào.
++RFID_PORT=COM4
++CAMERA_INDEX=1
++WINDOW_POS=+920+0
+diff --git a/.gitignore b/.gitignore
+index 929bc1e..d081cd3 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,4 +1,11 @@
+ .venv/
+ __pycache__/
+-.env
++.pytest_cache/
+ anh_chup/
++
++# File cấu hình thật (có mật khẩu / cổng COM riêng từng máy) không được commit
++.env
++.env.*
++# ...nhưng file mẫu thì có
++!.env.example
++!.env.*.example
+diff --git a/.vscode/launch.json b/.vscode/launch.json
+index 197cd42..22d680a 100644
+--- a/.vscode/launch.json
++++ b/.vscode/launch.json
+@@ -2,13 +2,29 @@
+   "version": "0.2.0",
+   "configurations": [
+     {
+-      "name": "Chạy nhận diện biển số",
++      "name": "Cổng VÀO",
+       "type": "debugpy",
+       "request": "launch",
+       "program": "${workspaceFolder}/main.py",
++      "args": ["--gate", "in"],
+       "cwd": "${workspaceFolder}",
+-      "envFile": "${workspaceFolder}/.env",
+       "console": "integratedTerminal"
++    },
++    {
++      "name": "Cổng RA",
++      "type": "debugpy",
++      "request": "launch",
++      "program": "${workspaceFolder}/main.py",
++      "args": ["--gate", "out"],
++      "cwd": "${workspaceFolder}",
++      "console": "integratedTerminal"
++    }
++  ],
++  "compounds": [
++    {
++      "name": "Cả hai cổng (vào + ra)",
++      "configurations": ["Cổng VÀO", "Cổng RA"],
++      "stopAll": true
+     }
+   ]
+ }
+diff --git a/README.md b/README.md
+index b6f9f22..1347119 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,8 @@
+-# bien_so_app
++# smart-parking
+ 
+-Project Python: nhận mã thẻ từ Arduino (cổng COM) -> chụp camera -> nhận diện biển số -> lưu SQL Server.
+-Cần project **rfid_arduino** đã nạp cho board (hai project độc lập, chỉ giao tiếp qua cổng COM).
++Bãi đỗ xe thông minh bằng Python: quẹt thẻ RFID (Arduino qua cổng COM) -> chụp camera -> nhận diện biển số -> lưu SQL Server.
++Hệ thống có **2 cổng chạy độc lập trên cùng một máy**: **cổng vào** và **cổng ra**, mỗi cổng một tiến trình, một camera, một đầu đọc RFID.
++Cần project **rfid_arduino** đã nạp cho board (hai project chỉ giao tiếp qua cổng COM).
+ 
+ ## Cài đặt
+ 1. Python 3.10+, SQL Server, **ODBC Driver 17/18 for SQL Server**.
+@@ -12,39 +13,136 @@ Cần project **rfid_arduino** đã nạp cho board (hai project độc lập, c
+    python -m pip install -r requirements.txt
+    ```
+ 3. Ctrl+Shift+P -> **Python: Select Interpreter** -> chọn `.venv\Scripts\python.exe`.
+-4. Copy `.env.example` thành `.env`, sửa `RFID_PORT`, `DB_SERVER`...
+-   (xem cổng COM: Device Manager, hoặc `python -m serial.tools.list_ports`)
++4. Tạo file cấu hình từ các file mẫu:
++   ```
++   copy .env.example .env          (chung: SQL Server, giá tiền...)
++   copy .env.in.example .env.in    (riêng cổng vào: RFID_PORT, CAMERA_INDEX)
++   copy .env.out.example .env.out  (riêng cổng ra)
++   ```
++   Xem cổng COM: Device Manager, hoặc `python -m serial.tools.list_ports`.
++   Các file `.env*` thật **không được commit** (có mật khẩu); chỉ commit các file `*.example`.
+ 
+ ## Chạy
+-- VS Code: nhấn **F5** (dùng cấu hình trong `.vscode/launch.json`, tự nạp `.env`).
+-- Hoặc terminal: đặt biến môi trường rồi `python main.py`.
++- VS Code: chọn cấu hình **Cổng VÀO**, **Cổng RA** hoặc **Cả hai cổng** rồi nhấn F5.
++- Terminal (mở 2 cửa sổ):
++  ```
++  python main.py --gate in
++  python main.py --gate out
++  ```
++Trước khi chạy: cắm 2 Arduino + 2 camera, **đóng Serial Monitor / Arduino IDE**.
++Lần đầu chạy cần Internet để EasyOCR tải mô hình; chương trình tự tạo database + bảng (hai cổng khởi động cùng lúc vẫn an toàn).
++Mỗi cổng nạp một bản EasyOCR riêng nên tốn thêm RAM.
++
++Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera không bị Windows đổi. Camera USB cắm chung một bộ điều khiển USB có thể tranh băng thông.
++
++## Bảng cấu hình
++`RFID_PORT`, `CAMERA_INDEX`, `WINDOW_POS` nằm trong `.env.in` / `.env.out` (riêng từng cổng); các biến còn lại nằm trong `.env` (chung). Biến môi trường có sẵn luôn thắng file.
+ 
+-Trước khi chạy: cắm Arduino, **đóng Serial Monitor / Arduino IDE**.
+-Lần đầu chạy cần Internet để EasyOCR tải mô hình; chương trình tự tạo database + bảng.
++| Biến | Mặc định | Ý nghĩa |
++|---|---|---|
++| `RFID_PORT` | `COM3` (vào), `COM4` (ra) | Cổng COM của đầu đọc RFID |
++| `CAMERA_INDEX` | `0` (vào), `1` (ra) | Số camera |
++| `WINDOW_POS` | trống | Vị trí cửa sổ, VD `+0+0` và `+920+0` |
++| `DB_SERVER`, `DB_NAME` | `localhost\SQLEXPRESS`, `BienSoDB` | SQL Server |
++| `DB_USER`, `DB_PASSWORD` | trống | Để trống `DB_USER` = Windows Authentication |
++| `DB_DRIVER` | `ODBC Driver 17 for SQL Server` | Tên driver ODBC đã cài |
++| `RFID_BAUD`, `RFID_DEBOUNCE` | `9600`, `2.0` | Tốc độ serial; số giây bỏ qua quẹt trùng |
++| `AUTO_SAVE` | `1` | Cổng vào: `1` tự lưu khi chốt được 5 số, `0` luôn chờ xác nhận |
++| `PRICE_PER_BLOCK`, `BLOCK_MINUTES` | `5000`, `60` | Giá một khối và độ dài khối |
++| `SCAN_FRAMES`, `SCAN_INTERVAL`, `VOTE_MIN` | `5`, `0.25`, `2` | Số ảnh quét, giây giữa hai ảnh, số phiếu tối thiểu (`1..SCAN_FRAMES`) |
++| `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
++| `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
++
++## Xử lý sự cố
++| Hiện tượng | Cách xử lý |
++|---|---|
++| Hộp thoại "Không kết nối được SQL Server" | Kiểm tra `DB_SERVER` trong `.env`, cài ODBC Driver, bật dịch vụ SQL Server |
++| RFID đỏ "chưa kết nối" | Đổi `RFID_PORT`, đóng Serial Monitor / Arduino IDE. Chương trình tự kết nối lại khi cổng sẵn sàng |
++| Hai cổng báo lỗi cổng COM hoặc camera | Thiếu `.env.in` / `.env.out`, hoặc hai cổng trùng `RFID_PORT` / `CAMERA_INDEX` |
++| "Không mở được camera" | Đổi số trong ô "Camera số" rồi bấm Mở camera; đóng ứng dụng khác đang dùng camera |
++| Quẹt thẻ chậm | OCR chạy bằng CPU, mỗi ảnh có thể mất vài giây. Giảm `SCAN_FRAMES` nếu cần |
++| Thẻ báo "đang ở trong bãi" dù xe đã đi | Lượt cũ chưa đóng: đóng bằng câu SQL ở trên |
++| Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
+ 
+ ## Giao thức với Arduino
+ Serial 9600 baud, mỗi thẻ một dòng HEX (VD `A1B2C3D4\n`). Đổi baud thì sửa `RFID_BAUD` ở đây và `BAUD_RATE` bên rfid_arduino.
+ 
+-## Cấu trúc
+-```
+-config.py                 cấu hình (đọc biến môi trường)
+-main.py                   nối các thành phần
+-core/                     plate_utils.py, recognizer.py   (nhận diện biển số)
+-hardware/                 rfid.py (Serial), camera.py
+-storage/                  database.py (SQL Server), schema.sql
+-services/access_service.py  thẻ + khung hình -> nhận diện -> lưu
+-ui/app.py                 giao diện Tkinter
+-```
++## Quy tắc nghiệp vụ
++
++**Hướng đi do CỔNG quyết định**, trạng thái thẻ chỉ để kiểm tra hợp lệ:
++
++| Tình huống | Kết quả |
++|---|---|
++| Thẻ không có trong bảng `cards` (hoặc `is_active = 0`) | Từ chối ở cả hai cổng, không nhận diện, không lưu |
++| Cổng vào, thẻ đang ở trong bãi | Từ chối (không cho vào lần nữa) |
++| Cổng ra, thẻ chưa có lượt vào | Từ chối (xe chưa vào bãi) |
++| Cổng vào, thẻ hợp lệ | Quét ảnh, bỏ phiếu 5 số, lưu `time_in` |
++| Cổng ra, thẻ hợp lệ | Quét ảnh, bỏ phiếu 5 số, **đối chiếu với 5 số lúc vào**, lưu `time_out` + `fee` |
++
++**Chỉ dùng 5 số cuối của biển** (bỏ chữ cái và các dấu `-` `.` vì dễ gây lỗi OCR). Biển số **bắt buộc đủ đúng 5 chữ số** ở cả hai cổng, nút Lưu / Cho xe ra bị khóa cho đến khi đủ.
++Biển cũ chỉ có 4 số: nhập thêm số `0` ở đầu (VD `1234` -> `01234`) ở cả cổng vào và cổng ra để hai lần nhập khớp nhau.
++
++**Quét 5 ảnh, bỏ phiếu.** Sau mỗi lần quẹt thẻ, hệ thống lấy `SCAN_FRAMES` (mặc định 5) khung hình cách nhau `SCAN_INTERVAL` giây, OCR từng khung, rồi chọn 5 số xuất hiện nhiều nhất.
++- Chỉ kết quả đủ 5 số mới có phiếu. Số thắng phải có ít nhất `VOTE_MIN` phiếu (mặc định 2) **và** nhiều phiếu hơn số đứng thứ hai. Hòa, hoặc không đủ phiếu -> chuyển cho nhân viên.
++- Dừng sớm khi kết quả không thể bị lật nữa (VD 3 ảnh đầu cùng một số).
++- Ảnh lưu lại là khung hình cho ra số thắng. Kết quả bỏ phiếu được ghi vào cột `votes_in` / `votes_out` (VD `25888:3,25883:1`).
++
++**Đối chiếu ở cổng ra:**
++- Khớp hoàn toàn: tự đóng lượt, tính tiền, cho ra.
++- Lệch 1 chữ số: chờ nhân viên, **bắt buộc nhập lý do** rồi mới cho ra.
++- Lệch từ 2 chữ số, hoặc không đọc đủ 5 số: chặn. Nhân viên có thể nhập lại 5 số (nếu khớp thì không cần lý do), hoặc cho ra kèm lý do, hoặc từ chối (lượt vẫn mở).
++- Kết quả được ghi ở cột `match_status` (`MATCH` / `APPROVED_CLOSE` / `APPROVED_MISMATCH`) và `override_note`.
++- Giờ ra tính tại **lúc quẹt thẻ**, không phải lúc nhân viên bấm xác nhận.
+ 
+-## Thẻ hợp lệ, vào / ra, tiền
+-- Chỉ các thẻ trong bảng `dbo.cards` mới được xử lý. Thẻ lạ: báo đỏ, **không nhận diện, không lưu**.
+-- 3 thẻ nạp sẵn (tự thêm khi chạy lần đầu): `AB1992CA`, `DB2B11CA`, `1B12E1CB`.
+-- Quẹt lần 1 = **xe vào** (nhận diện biển, lưu `time_in`). Quẹt lần 2 = **xe ra** (lưu `time_out` + `fee`).
+-- Tiền: làm tròn LÊN theo khối (`BLOCK_MINUTES`, mặc định 60 phút), tối thiểu 1 khối, mỗi khối `PRICE_PER_BLOCK` (mặc định 5.000 đ).
+-- Nút "Thử nhận diện" chỉ để thử, **không lưu** vì không có thẻ.
++**Tiền:** làm tròn LÊN theo khối (`BLOCK_MINUTES`, mặc định 60 phút), tối thiểu 1 khối, mỗi khối `PRICE_PER_BLOCK` (mặc định 5.000 đ).
++
++3 thẻ nạp sẵn (tự thêm khi chạy lần đầu): `AB1992CA`, `DB2B11CA`, `1B12E1CB`.
++Nút "Thử nhận diện" chỉ để thử (1 ảnh), **không lưu** vì không có thẻ.
+ 
+ Thêm / khóa thẻ bằng SQL (mã thẻ viết HOA, không dấu cách):
+ ```sql
+ INSERT INTO BienSoDB.dbo.cards (card_uid) VALUES (N'AABBCCDD');
+ UPDATE BienSoDB.dbo.cards SET is_active = 0 WHERE card_uid = N'AABBCCDD';
+ ```
++Thẻ bị kẹt "đang trong bãi" (mất xe, quẹt vào mà không ra...) tạm thời đóng bằng SQL:
++```sql
++UPDATE BienSoDB.dbo.access_log
++SET time_out = SYSDATETIME(), fee = 0, match_status = N'APPROVED_MISMATCH', override_note = N'Đóng thủ công: <lý do>'
++WHERE card_uid = N'AABBCCDD' AND time_out IS NULL;
++```
++
++## Cấu trúc
++```
++config.py                    cấu hình theo từng cổng (đọc biến môi trường / file .env*)
++main.py                      python main.py --gate in|out
++core/                        plate_utils.py     xử lý ảnh + chuỗi biển
++                             recognizer.py      OCR 1 khung (EasyOCR)
++                             plate_voting.py    bỏ phiếu giữa nhiều lần đọc
++                             scanner.py         quét nhiều khung + bỏ phiếu
++                             plate_match.py     so khớp 5 số vào / ra
++hardware/                    rfid.py (Serial), camera.py
++storage/                     database.py (SQL Server), schema.sql, models.py, errors.py
++services/                    gate_service.py    phần chung (quét, lưu ảnh)
++                             entry_service.py   nghiệp vụ cổng vào
++                             exit_service.py    nghiệp vụ cổng ra
++                             pricing.py         tính tiền
++ui/                          base_gate_app.py   giao diện chung
++                             entry_app.py       cổng vào
++                             exit_app.py        cổng ra (ảnh vào cạnh ảnh ra, đối chiếu)
++tests/                       pytest
++```
++
++## Kiểm thử
++```
++python -m pip install -r requirements-dev.txt
++python -m pytest
++```
++Test dùng camera, OCR và CSDL giả nên chạy được mà không cần phần cứng hay SQL Server. Test giao diện tự bỏ qua nếu máy không có màn hình.
++
++## Nâng cấp từ bản cũ
++**Sao lưu database trước** khi chạy lần đầu, vì chương trình tự sửa cấu trúc bảng `access_log`.
++
++**File cấu hình:** `RFID_PORT` và `CAMERA_INDEX` trong `.env` cũ giờ phải chuyển sang `.env.in` (cổng vào) và `.env.out` (cổng ra); nếu không, hai cổng dùng chung một cổng COM/camera và tranh nhau (chương trình in cảnh báo khi thiếu file). Chú thích cùng dòng (`KEY=giá trị  # ghi chú`) được hỗ trợ.
++
++`init_schema()` tự nâng cấp bảng `access_log` cũ (đổi tên `image_path` -> `image_in`, thêm cột mới, giữ nguyên dữ liệu). Dữ liệu cũ không bị kiểm tra lại ràng buộc 5 số.
++Nếu bảng cũ có thẻ bị trùng lượt đang mở, chỉ mục chặn trùng sẽ chưa được tạo (có cảnh báo); hãy đóng bớt lượt rồi khởi động lại.
+diff --git a/config.py b/config.py
+index 84b1fa8..df1f23a 100644
+--- a/config.py
++++ b/config.py
+@@ -1,29 +1,117 @@
+-"""Cấu hình tập trung. Có thể ghi đè bằng biến môi trường (không cần sửa code)."""
++"""Cấu hình tập trung. Đọc từ biến môi trường (có thể nạp từ file .env, xem load_env_file).
++
++Mỗi cổng chạy là một tiến trình riêng: `python main.py --gate in` và `python main.py --gate out`.
++Mỗi tiến trình nạp `.env.<gate>` (riêng cổng: camera, cổng COM...) rồi `.env` (chung: SQL Server, giá tiền...).
++Biến môi trường có sẵn luôn được ưu tiên hơn file.
++"""
+ import os
++from dataclasses import dataclass
+ 
+ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+-IMG_DIR = os.path.join(BASE_DIR, "anh_chup")
+-
+-# --- Camera ---
+-CAMERA_INDEX = int(os.getenv("CAMERA_INDEX", "0"))
+-
+-# --- RFID (cổng Serial: thiết bị gửi mỗi thẻ một dòng, VD "A1B2C3D4\n") ---
+-RFID_PORT = os.getenv("RFID_PORT", "COM3")
+-RFID_BAUD = int(os.getenv("RFID_BAUD", "9600"))
+-RFID_DEBOUNCE = float(os.getenv("RFID_DEBOUNCE", "2.0"))   # giây, bỏ qua quẹt trùng cùng thẻ
+-
+-# --- SQL Server ---
+-DB_SERVER = os.getenv("DB_SERVER", r"localhost\SQLEXPRESS")
+-DB_NAME = os.getenv("DB_NAME", "BienSoDB")
+-DB_USER = os.getenv("DB_USER", "")           # để trống -> dùng Windows Authentication
+-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+-DB_DRIVER = os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server")
+-
+-# --- Nghiệp vụ ---
+-# True: quẹt thẻ mà OCR đọc đủ 5 số thì lưu luôn. Thiếu/sai thì hiện ô cho người dùng sửa rồi mới lưu.
+-AUTO_SAVE = os.getenv("AUTO_SAVE", "1") == "1"
+-
+-# --- Tính tiền: làm tròn LÊN theo khối thời gian, tối thiểu 1 khối ---
+-# Mặc định: 5.000 đ cho mỗi giờ (hoặc phần lẻ của giờ). Ví dụ gửi 61 phút = 2 khối = 10.000 đ.
+-PRICE_PER_BLOCK = int(os.getenv("PRICE_PER_BLOCK", "5000"))   # VND mỗi khối
+-BLOCK_MINUTES = int(os.getenv("BLOCK_MINUTES", "60"))         # độ dài một khối (phút)
++
++# Mặc định riêng từng cổng (ghi đè bằng CAMERA_INDEX / RFID_PORT trong .env.<gate>)
++GATES = {
++    "in":  {"label": "CỔNG VÀO", "camera_index": 0, "rfid_port": "COM3"},
++    "out": {"label": "CỔNG RA",  "camera_index": 1, "rfid_port": "COM4"},
++}
++
++
++def _parse_value(raw):
++    """Giá trị trong file .env: bỏ dấu nháy bao quanh, và bỏ chú thích cùng dòng (` # ...`).
++
++    VD `RFID_PORT=COM3   # đổi cho đúng` -> `COM3`. Dấu # dính liền giá trị (VD mật khẩu `ab#c`)
++    được giữ nguyên; muốn mật khẩu có ` #` thì đặt trong dấu nháy."""
++    value = raw.strip()
++    if value[:1] in "\"'" and value[:1]:
++        end = value.find(value[0], 1)
++        if end != -1:
++            return value[1:end]
++    for i, ch in enumerate(value):
++        if ch == "#" and (i == 0 or value[i - 1].isspace()):
++            return value[:i].strip()
++    return value
++
++
++def load_env_file(path):
++    """Nạp file KEY=VALUE vào os.environ. Biến đã tồn tại KHÔNG bị ghi đè. Trả về True nếu có file."""
++    if not os.path.isfile(path):
++        return False
++    with open(path, encoding="utf-8-sig") as f:
++        for line in f:
++            line = line.strip()
++            if not line or line.startswith("#") or "=" not in line:
++                continue
++            key, value = line.split("=", 1)
++            os.environ.setdefault(key.strip(), _parse_value(value))
++    return True
++
++
++@dataclass(frozen=True)
++class Settings:
++    gate: str                  # "in" | "out"
++    label: str
++    # Camera + RFID (riêng từng cổng)
++    camera_index: int
++    rfid_port: str
++    rfid_baud: int
++    rfid_debounce: float       # giây, bỏ qua quẹt trùng cùng thẻ
++    # SQL Server (chung)
++    db_server: str
++    db_name: str
++    db_user: str               # để trống -> dùng Windows Authentication
++    db_password: str
++    db_driver: str
++    image_dir: str             # thư mục ảnh, hai cổng dùng chung (cùng một máy)
++    # Nghiệp vụ
++    auto_save: bool            # cổng vào: chốt được 5 số thì lưu luôn, không chờ xác nhận
++    price_per_block: int       # VND mỗi khối
++    block_minutes: int         # độ dài một khối (phút)
++    # Quét nhiều khung hình rồi bỏ phiếu
++    scan_frames: int           # số khung quét sau mỗi lần quẹt
++    scan_interval: float       # giây giữa hai khung
++    vote_min: int              # số phiếu tối thiểu để tự chấp nhận
++    # Giao diện
++    view_w: int
++    view_h: int
++    window_pos: str            # VD "+0+0" hoặc "+900+0" để xếp hai cửa sổ cạnh nhau; để trống = mặc định
++
++
++def _env(name, default):
++    return os.getenv(name, default)
++
++
++def load_settings(gate):
++    """Đọc cấu hình cho một cổng (gọi SAU khi đã nạp các file .env)."""
++    if gate not in GATES:
++        raise ValueError(f"Cổng phải là một trong {sorted(GATES)}, không phải '{gate}'")
++    g = GATES[gate]
++    s = Settings(
++        gate=gate,
++        label=g["label"],
++        camera_index=int(_env("CAMERA_INDEX", str(g["camera_index"]))),
++        rfid_port=_env("RFID_PORT", g["rfid_port"]),
++        rfid_baud=int(_env("RFID_BAUD", "9600")),
++        rfid_debounce=float(_env("RFID_DEBOUNCE", "2.0")),
++        db_server=_env("DB_SERVER", r"localhost\SQLEXPRESS"),
++        db_name=_env("DB_NAME", "BienSoDB"),
++        db_user=_env("DB_USER", ""),
++        db_password=_env("DB_PASSWORD", ""),
++        db_driver=_env("DB_DRIVER", "ODBC Driver 17 for SQL Server"),
++        image_dir=_env("IMG_DIR", os.path.join(BASE_DIR, "anh_chup")),
++        auto_save=_env("AUTO_SAVE", "1") == "1",
++        price_per_block=int(_env("PRICE_PER_BLOCK", "5000")),
++        block_minutes=int(_env("BLOCK_MINUTES", "60")),
++        scan_frames=int(_env("SCAN_FRAMES", "5")),
++        scan_interval=float(_env("SCAN_INTERVAL", "0.25")),
++        vote_min=int(_env("VOTE_MIN", "2")),
++        view_w=int(_env("VIEW_W", "420")),
++        view_h=int(_env("VIEW_H", "315")),
++        window_pos=_env("WINDOW_POS", ""),
++    )
++    if s.scan_frames < 1:
++        raise ValueError("SCAN_FRAMES phải >= 1")
++    if not 1 <= s.vote_min <= s.scan_frames:
++        raise ValueError("VOTE_MIN phải nằm trong khoảng 1..SCAN_FRAMES")
++    if s.block_minutes < 1 or s.price_per_block < 0:
++        raise ValueError("BLOCK_MINUTES phải >= 1 và PRICE_PER_BLOCK phải >= 0")
++    return s
+diff --git a/conftest.py b/conftest.py
+new file mode 100644
+index 0000000..cc4f8d4
+--- /dev/null
++++ b/conftest.py
+@@ -0,0 +1 @@
++# Có file này ở thư mục gốc để pytest tự thêm thư mục gốc vào sys.path (import config, core, services...).
+diff --git a/core/plate_match.py b/core/plate_match.py
+new file mode 100644
+index 0000000..02b757f
+--- /dev/null
++++ b/core/plate_match.py
+@@ -0,0 +1,28 @@
++"""So khớp 5 số biển lúc vào với lúc ra (hàm thuần)."""
++from dataclasses import dataclass
++from enum import Enum
++
++
++class MatchLevel(Enum):
++    EXACT = "exact"          # khớp hoàn toàn
++    CLOSE = "close"          # lệch 1 chữ số (thường do OCR nhầm) -> cần nhân viên xác nhận
++    MISMATCH = "mismatch"    # lệch nhiều -> chặn, chỉ cho qua khi có lý do
++
++
++@dataclass(frozen=True)
++class PlateMatch:
++    level: MatchLevel
++    distance: int
++
++
++def compare_numbers(entry, exit_, close_distance=1):
++    """Hai chuỗi phải cùng độ dài (5 số); khác độ dài hoặc rỗng -> MISMATCH."""
++    a, b = (entry or "").strip(), (exit_ or "").strip()
++    if not a or not b or len(a) != len(b):
++        return PlateMatch(MatchLevel.MISMATCH, max(len(a), len(b), 1))
++    distance = sum(x != y for x, y in zip(a, b))
++    if distance == 0:
++        return PlateMatch(MatchLevel.EXACT, 0)
++    if distance <= close_distance:
++        return PlateMatch(MatchLevel.CLOSE, distance)
++    return PlateMatch(MatchLevel.MISMATCH, distance)
+diff --git a/core/plate_voting.py b/core/plate_voting.py
+new file mode 100644
+index 0000000..a0ff985
+--- /dev/null
++++ b/core/plate_voting.py
+@@ -0,0 +1,43 @@
++"""Bỏ phiếu giữa nhiều lần đọc biển số (hàm thuần, không phụ thuộc OCR/camera)."""
++from collections import Counter
++from dataclasses import dataclass
++
++NUMBER_LEN = 5
++
++
++@dataclass(frozen=True)
++class VoteResult:
++    winner: str = ""            # 5 số thắng cuộc, "" nếu chưa chốt được
++    decided: bool = False       # True: đủ phiếu và dẫn đầu rõ ràng -> có thể tự động chấp nhận
++    votes: int = 0              # số phiếu của số dẫn đầu
++    runner_up: int = 0          # số phiếu của số đứng thứ hai
++    tally: tuple = ()           # ((số, phiếu), ...) từ nhiều đến ít phiếu
++    suggestion: str = ""        # gợi ý cho nhân viên: số dẫn đầu, hoặc số dài nhất nếu chưa có số nào đủ 5
++
++    def is_settled(self, remaining):
++        """True nếu dù `remaining` lần đọc còn lại có ra gì cũng không lật được kết quả."""
++        return self.decided and self.votes - self.runner_up > remaining
++
++    def tally_text(self):
++        return ",".join(f"{n}:{c}" for n, c in self.tally)
++
++
++def tally_votes(numbers, min_votes=2, length=NUMBER_LEN):
++    """numbers: các chuỗi số đọc được (có thể thiếu số hoặc rỗng). Chỉ chuỗi ĐỦ `length` chữ số mới có phiếu.
++
++    Thắng cuộc khi: có ít nhất `min_votes` phiếu VÀ nhiều phiếu hơn số đứng thứ hai (hòa thì không chốt).
++    """
++    full = [n for n in numbers if len(n) == length and n.isdigit()]
++    counts = Counter(full)
++    # most_common giữ thứ tự xuất hiện đầu tiên khi bằng phiếu -> kết quả ổn định
++    ranked = tuple(counts.most_common())
++
++    if ranked:
++        top, top_votes = ranked[0]
++        second = ranked[1][1] if len(ranked) > 1 else 0
++        decided = top_votes >= min_votes and top_votes > second
++        return VoteResult(top if decided else "", decided, top_votes, second, ranked, top)
++
++    partial = [n for n in numbers if n and n.isdigit()]
++    suggestion = max(partial, key=len) if partial else ""   # max giữ phần tử đầu khi bằng độ dài
++    return VoteResult(suggestion=suggestion)
+diff --git a/core/recognizer.py b/core/recognizer.py
+index 1c96150..e369fab 100644
+--- a/core/recognizer.py
++++ b/core/recognizer.py
+@@ -24,6 +24,7 @@ class RecognitionResult:
+ 
+ class PlateRecognizer:
+     MAX_WIDTH = 1000
++    GOOD_ENOUGH = 300   # điểm của kết quả "đủ 5 số + khớp dạng biển" (xem _analyze)
+ 
+     def __init__(self):
+         self._reader = None
+@@ -56,6 +57,8 @@ class PlateRecognizer:
+                 plate, number, score = self._analyze(crop)
+                 if best is None or score > best[0]:
+                     best = (score, plate, number, (x, y, bw, bh))
++                if score >= self.GOOD_ENOUGH:   # đủ 5 số + đúng dạng biển -> khỏi OCR các vùng còn lại (nhanh hơn)
++                    break
+ 
+         annotated = frame.copy()
+         if best is None or not best[2]:
+diff --git a/core/scanner.py b/core/scanner.py
+new file mode 100644
+index 0000000..eb001bc
+--- /dev/null
++++ b/core/scanner.py
+@@ -0,0 +1,75 @@
++"""Quét nhiều khung hình sau mỗi lần quẹt thẻ rồi bỏ phiếu lấy 5 số xuất hiện nhiều nhất.
++
++Không phụ thuộc OCR hay camera cụ thể: nhận vào hàm `recognize(frame)` và hàm `get_frame()`.
++"""
++import time
++from dataclasses import dataclass
++
++from core.plate_voting import tally_votes
++
++
++@dataclass
++class ScanResult:
++    image: object = None        # khung hình (đã vẽ khung biển) cho ra số thắng; None nếu không có khung nào
++    plate_full: str = ""        # biển đầy đủ của khung đó (chỉ để tham khảo)
++    winner: str = ""            # 5 số đã chốt ("" nếu chưa chốt được)
++    suggestion: str = ""        # gợi ý điền sẵn cho nhân viên khi chưa chốt được
++    decided: bool = False       # đủ phiếu, dẫn đầu rõ -> có thể tự động chấp nhận
++    votes: int = 0
++    scanned: int = 0            # số khung đã quét
++    tally: tuple = ()
++
++    @property
++    def number(self):
++        """Số để hiển thị/điền sẵn: số đã chốt, nếu chưa thì gợi ý."""
++        return self.winner or self.suggestion
++
++    def votes_text(self):
++        return ",".join(f"{n}:{c}" for n, c in self.tally)
++
++
++def scan_best_of(recognize, get_frame, frames=5, interval=0.25, min_votes=2,
++                 on_progress=None, sleep=time.sleep):
++    """Lấy `frames` khung hình cách nhau `interval` giây, OCR từng khung, bỏ phiếu.
++
++    Dừng sớm khi kết quả không thể bị lật nữa (VD 3 khung đầu cùng ra một số trong 5 khung).
++    on_progress(đã_quét, tổng) được gọi sau mỗi khung (chạy ở luồng gọi hàm này).
++    """
++    results, numbers = [], []
++    vote = tally_votes([], min_votes)
++
++    for i in range(frames):
++        if i:
++            sleep(interval)             # chờ để khung hình sau khác khung trước, bỏ phiếu mới có ý nghĩa
++        frame = get_frame()
++        if frame is None:
++            results.append(None)
++            numbers.append("")
++        else:
++            res = recognize(frame)
++            results.append(res)
++            numbers.append(res.number)
++        if on_progress:
++            on_progress(i + 1, frames)
++
++        vote = tally_votes(numbers, min_votes)
++        if vote.is_settled(frames - (i + 1)):
++            break
++
++    scanned = len(numbers)
++    chosen = _pick_result(results, vote.winner or vote.suggestion)
++    return ScanResult(
++        image=chosen.image if chosen else None,
++        plate_full=chosen.plate_full if chosen else "",
++        winner=vote.winner, suggestion=vote.suggestion, decided=vote.decided,
++        votes=vote.votes, scanned=scanned, tally=vote.tally)
++
++
++def _pick_result(results, number):
++    """Khung đầu tiên cho ra đúng `number`; không có thì khung cuối cùng có ảnh."""
++    real = [r for r in results if r is not None]
++    if number:
++        for r in real:
++            if r.number == number:
++                return r
++    return real[-1] if real else None
+diff --git a/main.py b/main.py
+index 4c01cb9..7b3df38 100644
+--- a/main.py
++++ b/main.py
+@@ -1,42 +1,73 @@
+ """Điểm khởi chạy: tạo các thành phần rồi nối chúng lại với nhau.
+ 
+ Cài đặt:  python -m pip install -r requirements.txt   (+ ODBC Driver for SQL Server)
+-Chạy:     python main.py
++Chạy:     python main.py --gate in      (cổng vào)
++          python main.py --gate out     (cổng ra)      -> mở hai cửa sổ terminal, mỗi cổng một tiến trình
+ """
++import argparse
++import os
+ import tkinter as tk
+ from tkinter import messagebox
+ 
+ import config
+-from core.recognizer import PlateRecognizer
+-from hardware.camera import Camera
+-from hardware.rfid import SerialRfidReader
+-from services.access_service import AccessService
+-from storage.database import Database
+-from ui.app import App
+ 
+ 
+-def main():
+-    root = tk.Tk()
++def parse_args(argv=None):
++    p = argparse.ArgumentParser(description="Bãi đỗ xe thông minh: RFID + nhận diện biển số")
++    p.add_argument("--gate", required=True, choices=sorted(config.GATES),
++                   help="in = cổng vào, out = cổng ra")
++    return p.parse_args(argv)
++
++
++def main(argv=None):
++    args = parse_args(argv)
++    # File riêng cổng được nạp trước nên thắng file chung; biến môi trường có sẵn thắng cả hai.
++    has_gate_file = config.load_env_file(os.path.join(config.BASE_DIR, f".env.{args.gate}"))
++    config.load_env_file(os.path.join(config.BASE_DIR, ".env"))
++    cfg = config.load_settings(args.gate)
++    print(f"[{cfg.label}] RFID {cfg.rfid_port} | camera {cfg.camera_index} | SQL {cfg.db_server}/{cfg.db_name}")
++    if not has_gate_file:
++        print(f"CẢNH BÁO: không thấy .env.{args.gate}. Cổng COM / camera lấy từ .env hoặc mặc định; "
++              f"nếu hai cổng trùng nhau chúng sẽ tranh nhau. Hãy copy .env.{args.gate}.example "
++              f"thành .env.{args.gate}.")
+ 
+-    db = Database(config.DB_SERVER, config.DB_NAME, config.DB_USER,
+-                  config.DB_PASSWORD, config.DB_DRIVER)
++    # Import muộn để lỗi cấu hình hiện ra trước khi nạp các thư viện nặng (EasyOCR, OpenCV...)
++    from core.recognizer import PlateRecognizer
++    from hardware.camera import Camera
++    from hardware.rfid import SerialRfidReader
++    from storage.database import Database
++
++    root = tk.Tk()
++    db = Database(cfg.db_server, cfg.db_name, cfg.db_user, cfg.db_password, cfg.db_driver)
+     try:
+         db.init_schema()
+     except Exception as e:
+         messagebox.showerror("Lỗi SQL Server",
+-                             f"Không kết nối được SQL Server ({config.DB_SERVER}).\n\n{e}")
++                             f"Không kết nối được SQL Server ({cfg.db_server}).\n\n{e}")
+         root.destroy()
+         return
+ 
+-    service = AccessService(PlateRecognizer(), db, config.IMG_DIR, config.AUTO_SAVE,
+-                            config.PRICE_PER_BLOCK, config.BLOCK_MINUTES)
+-    app = App(root, service, Camera(), config.CAMERA_INDEX)
++    common = dict(scan_frames=cfg.scan_frames, scan_interval=cfg.scan_interval,
++                  vote_min=cfg.vote_min)
++    recognizer = PlateRecognizer()
++    if cfg.gate == "in":
++        from services.entry_service import EntryService
++        from ui.entry_app import EntryApp
++        service = EntryService(recognizer, db, cfg.image_dir, auto_save=cfg.auto_save, **common)
++        app = EntryApp(root, service, Camera(), cfg)
++    else:
++        from services.exit_service import ExitService
++        from ui.exit_app import ExitApp
++        service = ExitService(recognizer, db, cfg.image_dir,
++                              price_per_block=cfg.price_per_block,
++                              block_minutes=cfg.block_minutes, **common)
++        app = ExitApp(root, service, Camera(), cfg)
+ 
+     app.set_rfid(SerialRfidReader(
+-        config.RFID_PORT, config.RFID_BAUD,
++        cfg.rfid_port, cfg.rfid_baud,
+         on_card=app.handle_card,
+         on_status=app.handle_rfid_status,
+-        debounce=config.RFID_DEBOUNCE,
++        debounce=cfg.rfid_debounce,
+     ))
+     root.mainloop()
+ 
+diff --git a/requirements-dev.txt b/requirements-dev.txt
+new file mode 100644
+index 0000000..26b77f6
+--- /dev/null
++++ b/requirements-dev.txt
+@@ -0,0 +1,2 @@
++-r requirements.txt
++pytest
+diff --git a/services/access_service.py b/services/access_service.py
+deleted file mode 100644
+index 8a831e1..0000000
+--- a/services/access_service.py
++++ /dev/null
+@@ -1,98 +0,0 @@
+-"""Nghiệp vụ gửi xe bằng thẻ. Không phụ thuộc Tkinter.
+-
+-Quẹt thẻ:
+-  - Thẻ KHÔNG có trong bảng cards  -> từ chối, không nhận diện, không lưu gì.
+-  - Thẻ hợp lệ, chưa có lượt vào   -> XE VÀO: chụp, nhận diện biển số, lưu time_in.
+-  - Thẻ hợp lệ, đang có lượt vào   -> XE RA : ghi time_out và tính tiền.
+-"""
+-import os
+-from dataclasses import dataclass, replace
+-from datetime import datetime
+-from enum import Enum
+-
+-import cv2
+-
+-from services.pricing import calculate_fee
+-
+-
+-class Outcome(Enum):
+-    REJECTED = "rejected"   # thẻ chưa đăng ký
+-    ENTRY = "entry"         # xe vào
+-    EXIT = "exit"           # xe ra
+-
+-
+-class CardNotRegistered(Exception):
+-    pass
+-
+-
+-@dataclass
+-class CardOutcome:
+-    kind: Outcome
+-    result: object = None   # RecognitionResult (chỉ khi xe vào)
+-    event: object = None    # AccessEvent. Với xe vào: None nghĩa là chưa lưu, cần người dùng xác nhận
+-
+-
+-def _now():
+-    return datetime.now().replace(microsecond=0)
+-
+-
+-class AccessService:
+-    def __init__(self, recognizer, db, image_dir, auto_save=True,
+-                 price_per_block=5000, block_minutes=60):
+-        self.recognizer = recognizer
+-        self.db = db
+-        self.image_dir = image_dir
+-        self.auto_save = auto_save
+-        self.price_per_block = price_per_block
+-        self.block_minutes = block_minutes
+-        os.makedirs(image_dir, exist_ok=True)
+-
+-    @property
+-    def ready(self):
+-        return self.recognizer.ready
+-
+-    def load_model(self):
+-        self.recognizer.load()
+-
+-    def identify(self, frame):
+-        """Chỉ nhận diện, không lưu (dùng cho chế độ thử). Trả về RecognitionResult."""
+-        return self.recognizer.recognize(frame)
+-
+-    def handle_card(self, card_uid, frame):
+-        """Xử lý một lần quẹt thẻ. Trả về CardOutcome."""
+-        if not self.db.is_card_registered(card_uid):
+-            return CardOutcome(Outcome.REJECTED)
+-
+-        open_session = self.db.find_open_session(card_uid)
+-        if open_session is not None:
+-            return CardOutcome(Outcome.EXIT, event=self._close(open_session))
+-
+-        result = self.identify(frame)
+-        event = None
+-        if self.auto_save and result.is_complete:
+-            event = self.save_entry(card_uid, result.number, result.plate_full, result.image)
+-        return CardOutcome(Outcome.ENTRY, result, event)
+-
+-    def save_entry(self, card_uid, number, plate_full, image):
+-        """Lưu lượt VÀO. Chỉ lưu nếu thẻ nằm trong danh sách đã đăng ký."""
+-        if not self.db.is_card_registered(card_uid):
+-            raise CardNotRegistered(f"Thẻ {card_uid} chưa đăng ký")
+-        image_name = self._save_image(image, card_uid) if image is not None else ""
+-        return self.db.add_entry(card_uid, number, plate_full, image_name, _now())
+-
+-    def recent_events(self, limit=100):
+-        return self.db.recent(limit)
+-
+-    def _close(self, session):
+-        time_out = _now()
+-        fee = calculate_fee(session.time_in, time_out, self.price_per_block, self.block_minutes)
+-        self.db.close_session(session.id, time_out, fee)
+-        return replace(session, time_out=time_out, fee=fee)
+-
+-    def _save_image(self, image, card_uid):
+-        name = f"{datetime.now():%Y%m%d_%H%M%S}_{card_uid}.jpg"
+-        ok, buf = cv2.imencode(".jpg", image)
+-        if not ok:
+-            return ""
+-        buf.tofile(os.path.join(self.image_dir, name))   # tofile: an toàn với đường dẫn có dấu
+-        return name
+diff --git a/services/entry_service.py b/services/entry_service.py
+new file mode 100644
+index 0000000..bbb937e
+--- /dev/null
++++ b/services/entry_service.py
+@@ -0,0 +1,61 @@
++"""Nghiệp vụ CỔNG VÀO.
++
++Quẹt thẻ:
++  - Thẻ chưa đăng ký          -> từ chối.
++  - Thẻ đang ở trong bãi      -> từ chối (không cho vào lần nữa).
++  - Còn lại                   -> quét nhiều khung, bỏ phiếu 5 số.
++        chốt được + AUTO_SAVE -> lưu luôn.
++        chưa chốt được        -> chờ nhân viên nhập/xác nhận ĐÚNG 5 số rồi mới lưu.
++"""
++from core.plate_voting import NUMBER_LEN
++from services.gate_service import (
++    CardOutcome, GateService, Outcome, is_valid_number, now, votes_note,
++)
++from storage.errors import AlreadyInside
++
++
++class CardNotRegistered(Exception):
++    pass
++
++
++class EntryService(GateService):
++    gate_code = "in"
++
++    def __init__(self, *args, auto_save=True, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.auto_save = auto_save
++
++    def handle_card(self, card_uid, get_frame, on_progress=None):
++        swiped_at = now()
++        if not self.db.is_card_registered(card_uid):
++            return CardOutcome(Outcome.UNREGISTERED, card_uid)
++
++        session = self.db.find_open_session(card_uid)
++        if session is not None:
++            return CardOutcome(Outcome.ALREADY_INSIDE, card_uid, event=session)
++
++        scan = self.scan(get_frame, on_progress)
++        if self.auto_save and scan.decided:
++            try:
++                event = self.save_entry(card_uid, scan.winner, scan, swiped_at)
++            except AlreadyInside:
++                return CardOutcome(Outcome.ALREADY_INSIDE, card_uid,
++                                   event=self.db.find_open_session(card_uid))
++            return CardOutcome(Outcome.ENTRY_SAVED, card_uid, scan, event, swiped_at=swiped_at)
++        return CardOutcome(Outcome.ENTRY_PENDING, card_uid, scan, swiped_at=swiped_at)
++
++    def save_entry(self, card_uid, number, scan, swiped_at=None):
++        """Lưu lượt VÀO. Bắt buộc đúng 5 chữ số và thẻ đã đăng ký."""
++        if not is_valid_number(number):
++            raise ValueError(f"Biển số phải đủ {NUMBER_LEN} chữ số (đang là '{number}')")
++        if not self.db.is_card_registered(card_uid):
++            raise CardNotRegistered(f"Thẻ {card_uid} chưa đăng ký")
++
++        image_name = self.save_image(scan.image if scan else None, card_uid)
++        plate_full = scan.plate_full if scan and number == scan.number else ""
++        try:
++            return self.db.add_entry(card_uid, number, plate_full, image_name,
++                                     swiped_at or now(), votes_note(scan, number), self.gate_code)
++        except Exception:
++            self.delete_image(image_name)   # không để lại ảnh mồ côi nếu không ghi được DB
++            raise
+diff --git a/services/exit_service.py b/services/exit_service.py
+new file mode 100644
+index 0000000..939d7c1
+--- /dev/null
++++ b/services/exit_service.py
+@@ -0,0 +1,92 @@
++"""Nghiệp vụ CỔNG RA.
++
++Quẹt thẻ:
++  - Thẻ chưa đăng ký          -> từ chối.
++  - Thẻ chưa có lượt vào      -> từ chối (xe chưa vào bãi).
++  - Còn lại                   -> quét nhiều khung, bỏ phiếu 5 số, ĐỐI CHIẾU với 5 số lúc vào.
++        khớp hoàn toàn        -> đóng lượt, tính tiền, cho ra.
++        lệch 1 số             -> chờ nhân viên xác nhận (kèm lý do).
++        lệch nhiều / không đọc được đủ 5 số -> chặn, nhân viên xử lý (nhập lại số hoặc cho qua kèm lý do).
++Giờ ra tính tại thời điểm QUẸT THẺ, không phải lúc nhân viên bấm xác nhận.
++"""
++from dataclasses import replace
++
++from core.plate_match import MatchLevel, compare_numbers
++from core.plate_voting import NUMBER_LEN
++from services.gate_service import (
++    CardOutcome, GateService, NoteRequired, Outcome, ReviewReason, is_valid_number, now, votes_note,
++)
++from services.pricing import calculate_fee
++from storage.errors import SessionAlreadyClosed
++
++MIN_NOTE_LEN = 3
++
++_STATUS = {
++    MatchLevel.EXACT: "MATCH",
++    MatchLevel.CLOSE: "APPROVED_CLOSE",
++    MatchLevel.MISMATCH: "APPROVED_MISMATCH",
++}
++
++
++class ExitService(GateService):
++    gate_code = "out"
++
++    def __init__(self, *args, price_per_block=5000, block_minutes=60, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.price_per_block = price_per_block
++        self.block_minutes = block_minutes
++
++    def handle_card(self, card_uid, get_frame, on_progress=None):
++        swiped_at = now()
++        if not self.db.is_card_registered(card_uid):
++            return CardOutcome(Outcome.UNREGISTERED, card_uid)
++
++        session = self.db.find_open_session(card_uid)
++        if session is None:
++            return CardOutcome(Outcome.NOT_INSIDE, card_uid)
++
++        scan = self.scan(get_frame, on_progress)
++
++        if not scan.decided:
++            match = (compare_numbers(session.plate_number, scan.number)
++                     if is_valid_number(scan.number) else None)
++            return CardOutcome(Outcome.EXIT_REVIEW, card_uid, scan, session, match,
++                               ReviewReason.NEED_NUMBER, swiped_at)
++
++        match = compare_numbers(session.plate_number, scan.winner)
++        if match.level is MatchLevel.EXACT:
++            event = self._close(session, scan.winner, scan, swiped_at, MatchLevel.EXACT, "")
++            return CardOutcome(Outcome.EXIT_DONE, card_uid, scan, event, match, swiped_at=swiped_at)
++
++        reason = ReviewReason.CLOSE if match.level is MatchLevel.CLOSE else ReviewReason.MISMATCH
++        return CardOutcome(Outcome.EXIT_REVIEW, card_uid, scan, session, match, reason, swiped_at)
++
++    def confirm_exit(self, card_uid, number, scan, swiped_at, note=""):
++        """Nhân viên chốt cho xe ra với 5 số `number` (đã nhập/sửa).
++
++        Khớp hoàn toàn: không cần lý do. Lệch (1 số hoặc nhiều): bắt buộc có lý do (NoteRequired)."""
++        if not is_valid_number(number):
++            raise ValueError(f"Biển số phải đủ {NUMBER_LEN} chữ số (đang là '{number}')")
++        session = self.db.find_open_session(card_uid)
++        if session is None:
++            raise SessionAlreadyClosed("Thẻ này không còn lượt vào nào đang mở")
++
++        match = compare_numbers(session.plate_number, number)
++        note = (note or "").strip()
++        if match.level is not MatchLevel.EXACT and len(note) < MIN_NOTE_LEN:
++            raise NoteRequired("Biển không khớp hoàn toàn: hãy nhập lý do cho xe ra")
++        return self._close(session, number, scan, swiped_at, match.level, note)
++
++    def _close(self, session, number, scan, swiped_at, level, note):
++        time_out = swiped_at or now()
++        fee = calculate_fee(session.time_in, time_out, self.price_per_block, self.block_minutes)
++        image_name = self.save_image(scan.image if scan else None, session.card_uid)
++        status = _STATUS[level]
++        try:
++            self.db.close_session(session.id, time_out, fee, number, image_name, status,
++                                  note, votes_note(scan, number), self.gate_code)
++        except Exception:
++            self.delete_image(image_name)
++            raise
++        return replace(session, time_out=time_out, fee=fee, plate_out=number, image_out=image_name,
++                       match_status=status, override_note=note, gate_out=self.gate_code)
+diff --git a/services/gate_service.py b/services/gate_service.py
+new file mode 100644
+index 0000000..f2d2bd6
+--- /dev/null
++++ b/services/gate_service.py
+@@ -0,0 +1,124 @@
++"""Phần dùng chung của cổng vào và cổng ra. Không phụ thuộc Tkinter."""
++import os
++import re
++import time
++from dataclasses import dataclass
++from datetime import datetime
++from enum import Enum
++
++import cv2
++import numpy as np
++
++from core.scanner import scan_best_of
++
++NUMBER_RE = re.compile(r"^\d{5}$")
++
++
++class Outcome(Enum):
++    UNREGISTERED = "unregistered"     # thẻ chưa đăng ký / bị khóa
++    ALREADY_INSIDE = "already_inside" # cổng vào: thẻ đang ở trong bãi
++    NOT_INSIDE = "not_inside"         # cổng ra: thẻ chưa có lượt vào
++    ENTRY_SAVED = "entry_saved"       # xe vào, đã lưu
++    ENTRY_PENDING = "entry_pending"   # xe vào, chờ nhân viên xác nhận 5 số
++    EXIT_DONE = "exit_done"           # xe ra, biển khớp, đã đóng lượt + tính tiền
++    EXIT_REVIEW = "exit_review"       # xe ra, chờ nhân viên (không đọc đủ / lệch / không khớp)
++
++
++class ReviewReason(Enum):
++    NEED_NUMBER = "need_number"       # OCR không chốt được 5 số
++    CLOSE = "close"                   # lệch 1 chữ số
++    MISMATCH = "mismatch"             # lệch từ 2 chữ số
++
++
++class NoteRequired(Exception):
++    """Cho xe ra khi biển không khớp hoàn toàn thì bắt buộc ghi lý do."""
++
++
++@dataclass
++class CardOutcome:
++    kind: Outcome
++    card_uid: str = ""
++    scan: object = None             # ScanResult (khi đã quét)
++    event: object = None            # AccessEvent: lượt đã lưu/đã đóng, hoặc lượt đang mở (ALREADY_INSIDE, EXIT_REVIEW)
++    match: object = None            # PlateMatch (cổng ra)
++    reason: object = None           # ReviewReason (EXIT_REVIEW)
++    swiped_at: object = None        # thời điểm quẹt thẻ
++
++
++def now():
++    return datetime.now().replace(microsecond=0)
++
++
++def is_valid_number(number):
++    return bool(NUMBER_RE.match(number or ""))
++
++
++class GateService:
++    """Lớp nền: nhận diện bằng nhiều khung hình, lưu/đọc ảnh."""
++    gate_code = ""
++
++    def __init__(self, recognizer, db, image_dir, scan_frames=5, scan_interval=0.25,
++                 vote_min=2, sleep=time.sleep):
++        self.recognizer = recognizer
++        self.db = db
++        self.image_dir = image_dir
++        self.scan_frames = scan_frames
++        self.scan_interval = scan_interval
++        self.vote_min = vote_min
++        self._sleep = sleep
++        os.makedirs(image_dir, exist_ok=True)
++
++    @property
++    def ready(self):
++        return self.recognizer.ready
++
++    def load_model(self):
++        self.recognizer.load()
++
++    def identify(self, frame):
++        """Nhận diện MỘT khung, không lưu (chế độ thử). Trả về RecognitionResult."""
++        return self.recognizer.recognize(frame)
++
++    def scan(self, get_frame, on_progress=None):
++        """Quét nhiều khung sau khi quẹt thẻ và bỏ phiếu. Trả về ScanResult."""
++        return scan_best_of(self.recognizer.recognize, get_frame, self.scan_frames,
++                            self.scan_interval, self.vote_min, on_progress, self._sleep)
++
++    def recent_events(self, limit=100):
++        return self.db.recent(limit)
++
++    # ---------- Ảnh ----------
++    def save_image(self, image, card_uid):
++        """Lưu ảnh, trả về tên file ("" nếu không có ảnh hoặc không mã hóa được)."""
++        if image is None:
++            return ""
++        ok, buf = cv2.imencode(".jpg", image)
++        if not ok:
++            return ""
++        name = f"{datetime.now():%Y%m%d_%H%M%S_%f}_{card_uid}_{self.gate_code}.jpg"
++        buf.tofile(os.path.join(self.image_dir, name))   # tofile: an toàn với đường dẫn có dấu
++        return name
++
++    def delete_image(self, name):
++        if name:
++            try:
++                os.remove(os.path.join(self.image_dir, name))
++            except OSError:
++                pass
++
++    def load_image(self, name):
++        """Đọc ảnh đã lưu; None nếu không có/không đọc được."""
++        if not name:
++            return None
++        path = os.path.join(self.image_dir, name)
++        if not os.path.isfile(path):
++            return None
++        return cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
++
++
++def votes_note(scan, number):
++    """Chuỗi ghi vào DB: kết quả bỏ phiếu + ghi chú nếu số cuối cùng do nhân viên chốt."""
++    text = scan.votes_text() if scan else ""
++    if scan is None or number != scan.winner:
++        text = f"{text} | nhân viên nhập/xác nhận".strip(" |")
++    return text[:100]
+diff --git a/storage/database.py b/storage/database.py
+index cad6549..25738c6 100644
+--- a/storage/database.py
++++ b/storage/database.py
+@@ -1,33 +1,26 @@
+ """Lưu trữ vào SQL Server (pyodbc). Mỗi thao tác mở một kết nối ngắn -> an toàn khi gọi từ nhiều luồng
+-(ODBC có connection pooling nên không chậm)."""
++và từ nhiều tiến trình (cổng vào + cổng ra chạy song song). ODBC có connection pooling nên không chậm."""
+ import re
++import time
+ from contextlib import contextmanager
+-from dataclasses import dataclass
+-from datetime import datetime
+ from pathlib import Path
+ 
+ import pyodbc  # pip install pyodbc  (cần cài thêm "ODBC Driver 17/18 for SQL Server")
+ 
+-SCHEMA_FILE = Path(__file__).with_name("schema.sql")
+-_COLUMNS = "id, card_uid, plate_number, plate_full, image_path, time_in, time_out, fee"
+-
++from storage.errors import AlreadyInside, SessionAlreadyClosed
++from storage.models import AccessEvent
+ 
+-@dataclass
+-class AccessEvent:
+-    """Một lượt gửi xe. time_out/fee là None cho đến khi xe ra."""
+-    id: int
+-    card_uid: str
+-    plate_number: str
+-    plate_full: str
+-    image_path: str
+-    time_in: datetime
+-    time_out: datetime | None = None
+-    fee: int | None = None
++SCHEMA_FILE = Path(__file__).with_name("schema.sql")
++_COLUMNS = ("id, card_uid, plate_number, plate_full, image_in, time_in, time_out, fee, "
++            "plate_out, image_out, match_status, override_note, gate_in, gate_out")
++_OPEN_INDEX = "UX_access_log_open_card"
+ 
+ 
+ def _to_event(r):
+     return AccessEvent(r.id, r.card_uid or "", r.plate_number or "", r.plate_full or "",
+-                       r.image_path or "", r.time_in, r.time_out, r.fee)
++                       r.image_in or "", r.time_in, r.time_out, r.fee,
++                       r.plate_out or "", r.image_out or "", r.match_status or "",
++                       r.override_note or "", r.gate_in or "", r.gate_out or "")
+ 
+ 
+ class Database:
+@@ -59,8 +52,21 @@ class Database:
+             conn.close()
+ 
+     # ---------- Khởi tạo ----------
+-    def init_schema(self):
+-        """Tạo database (nếu chưa có), bảng, và nạp thẻ. Ném pyodbc.Error nếu không kết nối được."""
++    def init_schema(self, attempts=3, delay=1.5):
++        """Tạo database (nếu chưa có), bảng, và nạp thẻ. Ném pyodbc.Error nếu không kết nối được.
++
++        Hai cổng có thể khởi động cùng lúc và cùng chạy script này. Script chạy lại nhiều lần được,
++        nên nếu hai bên đụng nhau (VD cùng CREATE TABLE) thì bên sau chỉ cần thử lại."""
++        for attempt in range(1, attempts + 1):
++            try:
++                self._init_schema_once()
++                return
++            except pyodbc.Error:
++                if attempt == attempts:
++                    raise
++                time.sleep(delay)
++
++    def _init_schema_once(self):
+         with self._connect("master", autocommit=True) as conn:
+             conn.execute(f"IF DB_ID(N'{self.database}') IS NULL CREATE DATABASE [{self.database}]")
+ 
+@@ -89,24 +95,36 @@ class Database:
+                 "WHERE card_uid = ? AND time_out IS NULL ORDER BY id DESC", card_uid).fetchone()
+         return _to_event(row) if row else None
+ 
+-    def add_entry(self, card_uid, plate_number, plate_full, image_path, time_in):
+-        with self._connect() as conn:
+-            row = conn.execute(
+-                "INSERT INTO dbo.access_log (card_uid, plate_number, plate_full, image_path, time_in) "
+-                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)",
+-                card_uid, plate_number, plate_full, image_path, time_in).fetchone()
+-            conn.commit()
+-        return AccessEvent(row.id, card_uid, plate_number, plate_full, image_path, time_in)
+-
+-    def close_session(self, session_id, time_out, fee):
+-        """Ghi giờ ra + tiền. Chỉ cập nhật nếu lượt này chưa được đóng."""
++    def add_entry(self, card_uid, plate_number, plate_full, image_in, time_in, votes="", gate=""):
++        """Ghi lượt VÀO. Ném AlreadyInside nếu thẻ đã có lượt đang mở."""
++        try:
++            with self._connect() as conn:
++                row = conn.execute(
++                    "INSERT INTO dbo.access_log "
++                    "(card_uid, plate_number, plate_full, image_in, time_in, votes_in, gate_in) "
++                    "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?)",
++                    card_uid, plate_number, plate_full, image_in, time_in, votes, gate).fetchone()
++                conn.commit()
++        except pyodbc.IntegrityError as e:
++            if _OPEN_INDEX in str(e):
++                raise AlreadyInside(f"Thẻ {card_uid} đã có lượt vào chưa đóng") from e
++            raise
++        return AccessEvent(row.id, card_uid, plate_number, plate_full, image_in, time_in,
++                           gate_in=gate)
++
++    def close_session(self, session_id, time_out, fee, plate_out, image_out, match_status,
++                      override_note="", votes_out="", gate=""):
++        """Ghi giờ ra + tiền + kết quả đối chiếu. Chỉ cập nhật nếu lượt này chưa được đóng."""
+         with self._connect() as conn:
+             changed = conn.execute(
+-                "UPDATE dbo.access_log SET time_out = ?, fee = ? WHERE id = ? AND time_out IS NULL",
+-                time_out, fee, session_id).rowcount
++                "UPDATE dbo.access_log SET time_out = ?, fee = ?, plate_out = ?, image_out = ?, "
++                "match_status = ?, override_note = ?, votes_out = ?, gate_out = ? "
++                "WHERE id = ? AND time_out IS NULL",
++                time_out, fee, plate_out, image_out, match_status, override_note,
++                votes_out, gate, session_id).rowcount
+             conn.commit()
+         if changed != 1:
+-            raise RuntimeError("Lượt gửi xe này đã được đóng trước đó")
++            raise SessionAlreadyClosed("Lượt gửi xe này đã được đóng trước đó")
+ 
+     def recent(self, limit=100):
+         with self._connect() as conn:
+diff --git a/storage/errors.py b/storage/errors.py
+new file mode 100644
+index 0000000..095c558
+--- /dev/null
++++ b/storage/errors.py
+@@ -0,0 +1,9 @@
++"""Các lỗi nghiệp vụ của tầng lưu trữ (tách riêng để test không cần pyodbc)."""
++
++
++class AlreadyInside(Exception):
++    """Thẻ này đã có một lượt vào chưa đóng (xe còn trong bãi)."""
++
++
++class SessionAlreadyClosed(Exception):
++    """Lượt gửi xe không còn mở (đã được đóng, hoặc không tồn tại)."""
+diff --git a/storage/models.py b/storage/models.py
+new file mode 100644
+index 0000000..9cc5848
+--- /dev/null
++++ b/storage/models.py
+@@ -0,0 +1,22 @@
++"""Mô hình dữ liệu (thuần Python, không phụ thuộc pyodbc)."""
++from dataclasses import dataclass
++from datetime import datetime
++
++
++@dataclass
++class AccessEvent:
++    """Một lượt gửi xe. Các trường "ra" là rỗng/None cho đến khi xe ra."""
++    id: int
++    card_uid: str
++    plate_number: str          # 5 số lúc vào
++    plate_full: str
++    image_in: str
++    time_in: datetime
++    time_out: datetime | None = None
++    fee: int | None = None
++    plate_out: str = ""        # 5 số lúc ra
++    image_out: str = ""
++    match_status: str = ""     # MATCH / APPROVED_CLOSE / APPROVED_MISMATCH
++    override_note: str = ""
++    gate_in: str = ""
++    gate_out: str = ""
+diff --git a/storage/schema.sql b/storage/schema.sql
+index 57d8d22..82c20eb 100644
+--- a/storage/schema.sql
++++ b/storage/schema.sql
+@@ -1,4 +1,5 @@
+ -- Chạy được nhiều lần (idempotent). Database.init_schema() tự chạy file này, tách theo dòng "GO".
++-- Mỗi khối GO là một batch riêng: cột vừa thêm chỉ được dùng ở batch SAU.
+ 
+ -- 1) Bảng thẻ được phép sử dụng (danh sách trắng)
+ IF OBJECT_ID(N'dbo.cards', N'U') IS NULL
+@@ -18,33 +19,59 @@ FROM (VALUES (N'AB1992CA'), (N'DB2B11CA'), (N'1B12E1CB')) AS v(uid)
+ WHERE NOT EXISTS (SELECT 1 FROM dbo.cards c WHERE c.card_uid = v.uid);
+ GO
+ 
+--- 3) Bảng lượt gửi xe: quẹt lần 1 = vào (time_in), quẹt lần 2 = ra (time_out + fee)
++-- 3) Bảng lượt gửi xe: cổng vào ghi time_in, cổng ra ghi time_out + fee
+ IF OBJECT_ID(N'dbo.access_log', N'U') IS NULL
+ BEGIN
+     CREATE TABLE dbo.access_log (
+-        id           INT IDENTITY(1,1) CONSTRAINT PK_access_log PRIMARY KEY,
+-        card_uid     NVARCHAR(32)  NOT NULL
+-                     CONSTRAINT FK_access_log_card REFERENCES dbo.cards(card_uid),
+-        plate_number NVARCHAR(10)  NULL,       -- 5 số ở dòng dưới biển
+-        plate_full   NVARCHAR(20)  NULL,       -- biển số đầy đủ (nếu đọc được)
+-        image_path   NVARCHAR(260) NULL,       -- ảnh lúc vào (trong thư mục anh_chup)
+-        time_in      DATETIME2(0)  NOT NULL CONSTRAINT DF_access_log_time_in DEFAULT SYSDATETIME(),
+-        time_out     DATETIME2(0)  NULL,       -- NULL = xe còn trong bãi
+-        fee          INT           NULL        -- tiền (VND), NULL cho đến khi xe ra
++        id            INT IDENTITY(1,1) CONSTRAINT PK_access_log PRIMARY KEY,
++        card_uid      NVARCHAR(32)  NOT NULL
++                      CONSTRAINT FK_access_log_card REFERENCES dbo.cards(card_uid),
++        plate_number  NVARCHAR(10)  NULL,       -- đúng 5 số lúc VÀO
++        plate_full    NVARCHAR(20)  NULL,       -- biển đầy đủ OCR đọc được (chỉ để tham khảo)
++        image_in      NVARCHAR(260) NULL,       -- ảnh lúc vào (thư mục anh_chup)
++        time_in       DATETIME2(0)  NOT NULL CONSTRAINT DF_access_log_time_in DEFAULT SYSDATETIME(),
++        time_out      DATETIME2(0)  NULL,       -- NULL = xe còn trong bãi
++        fee           INT           NULL        -- tiền (VND), NULL cho đến khi xe ra
+     );
+ END
+ GO
+ 
+--- 4) Nâng cấp bảng cũ (nếu trước đó đã chạy bản chưa có giờ ra / giá tiền)
++-- 4) Nâng cấp bảng từ các phiên bản cũ (giữ nguyên dữ liệu)
+ IF COL_LENGTH(N'dbo.access_log', N'created_at') IS NOT NULL
+    AND COL_LENGTH(N'dbo.access_log', N'time_in') IS NULL
+     EXEC sp_rename N'dbo.access_log.created_at', N'time_in', N'COLUMN';
+ GO
++IF COL_LENGTH(N'dbo.access_log', N'image_path') IS NOT NULL
++   AND COL_LENGTH(N'dbo.access_log', N'image_in') IS NULL
++    EXEC sp_rename N'dbo.access_log.image_path', N'image_in', N'COLUMN';
++GO
+ IF COL_LENGTH(N'dbo.access_log', N'time_out') IS NULL ALTER TABLE dbo.access_log ADD time_out DATETIME2(0) NULL;
+ IF COL_LENGTH(N'dbo.access_log', N'fee') IS NULL      ALTER TABLE dbo.access_log ADD fee INT NULL;
+ GO
+ 
+--- 5) Chỉ mục
++-- 5) Cột mới cho cổng ra / đối chiếu / bỏ phiếu 5 ảnh
++IF COL_LENGTH(N'dbo.access_log', N'plate_out')    IS NULL ALTER TABLE dbo.access_log ADD plate_out    NVARCHAR(10)  NULL;  -- 5 số lúc RA
++IF COL_LENGTH(N'dbo.access_log', N'image_out')    IS NULL ALTER TABLE dbo.access_log ADD image_out    NVARCHAR(260) NULL;
++IF COL_LENGTH(N'dbo.access_log', N'match_status') IS NULL ALTER TABLE dbo.access_log ADD match_status NVARCHAR(20)  NULL;  -- MATCH / APPROVED_CLOSE / APPROVED_MISMATCH
++IF COL_LENGTH(N'dbo.access_log', N'override_note') IS NULL ALTER TABLE dbo.access_log ADD override_note NVARCHAR(200) NULL; -- lý do nhân viên cho qua
++IF COL_LENGTH(N'dbo.access_log', N'votes_in')     IS NULL ALTER TABLE dbo.access_log ADD votes_in     NVARCHAR(100) NULL;  -- VD "25888:3,25883:1"
++IF COL_LENGTH(N'dbo.access_log', N'votes_out')    IS NULL ALTER TABLE dbo.access_log ADD votes_out    NVARCHAR(100) NULL;
++IF COL_LENGTH(N'dbo.access_log', N'gate_in')      IS NULL ALTER TABLE dbo.access_log ADD gate_in      NVARCHAR(10)  NULL;
++IF COL_LENGTH(N'dbo.access_log', N'gate_out')     IS NULL ALTER TABLE dbo.access_log ADD gate_out     NVARCHAR(10)  NULL;
++GO
++
++-- 6) Ràng buộc: biển số mới phải đúng 5 chữ số. WITH NOCHECK -> dữ liệu cũ không bị kiểm tra lại.
++IF NOT EXISTS (SELECT 1 FROM sys.check_constraints
++               WHERE name = N'CK_access_log_plate_in' AND parent_object_id = OBJECT_ID(N'dbo.access_log'))
++    ALTER TABLE dbo.access_log WITH NOCHECK
++        ADD CONSTRAINT CK_access_log_plate_in CHECK (plate_number LIKE N'[0-9][0-9][0-9][0-9][0-9]');
++IF NOT EXISTS (SELECT 1 FROM sys.check_constraints
++               WHERE name = N'CK_access_log_plate_out' AND parent_object_id = OBJECT_ID(N'dbo.access_log'))
++    ALTER TABLE dbo.access_log WITH NOCHECK
++        ADD CONSTRAINT CK_access_log_plate_out CHECK (plate_out LIKE N'[0-9][0-9][0-9][0-9][0-9]');
++GO
++
++-- 7) Chỉ mục
+ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_access_log_card_open'
+                AND object_id = OBJECT_ID(N'dbo.access_log'))
+     CREATE INDEX IX_access_log_card_open ON dbo.access_log (card_uid, time_out);
+@@ -52,3 +79,19 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_access_log_time_in'
+                AND object_id = OBJECT_ID(N'dbo.access_log'))
+     CREATE INDEX IX_access_log_time_in ON dbo.access_log (time_in DESC);
+ GO
++
++-- 8) Mỗi thẻ chỉ được có MỘT lượt đang mở (chặn 2 cổng/2 lần quẹt tạo lượt trùng).
++--    Nếu dữ liệu cũ đã có thẻ bị trùng lượt mở thì bỏ qua và cảnh báo; hãy đóng bớt lượt rồi chạy lại.
++IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_access_log_open_card'
++               AND object_id = OBJECT_ID(N'dbo.access_log'))
++BEGIN
++    IF EXISTS (SELECT 1 FROM dbo.access_log WHERE time_out IS NULL GROUP BY card_uid HAVING COUNT(*) > 1)
++    BEGIN
++        PRINT N'CANH BAO: co the dang co nhieu luot mo cho cung mot the; chua tao UX_access_log_open_card.'
++    END
++    ELSE
++    BEGIN
++        CREATE UNIQUE INDEX UX_access_log_open_card ON dbo.access_log (card_uid) WHERE time_out IS NULL
++    END
++END
++GO
+diff --git a/tests/helpers.py b/tests/helpers.py
+new file mode 100644
+index 0000000..65f9b8a
+--- /dev/null
++++ b/tests/helpers.py
+@@ -0,0 +1,85 @@
++"""Đồ giả dùng cho test: CSDL trong bộ nhớ, bộ nhận diện kịch bản, camera giả."""
++import dataclasses
++
++import numpy as np
++
++from core.recognizer import RecognitionResult
++from storage.errors import AlreadyInside, SessionAlreadyClosed
++from storage.models import AccessEvent
++
++
++class FakeDb:
++    """Cùng giao diện với storage.database.Database, lưu trong list."""
++
++    def __init__(self, cards=("CARD1", "CARD2")):
++        self.cards = set(cards)
++        self.rows = []
++        self.votes = {}
++        self.votes_out = {}
++
++    def is_card_registered(self, uid):
++        return uid in self.cards
++
++    def find_open_session(self, uid):
++        for e in reversed(self.rows):
++            if e.card_uid == uid and e.time_out is None:
++                return e
++        return None
++
++    def add_entry(self, card_uid, plate_number, plate_full, image_in, time_in, votes="", gate=""):
++        if self.find_open_session(card_uid):
++            raise AlreadyInside(card_uid)
++        e = AccessEvent(len(self.rows) + 1, card_uid, plate_number, plate_full, image_in,
++                        time_in, gate_in=gate)
++        self.rows.append(e)
++        self.votes[e.id] = votes
++        return e
++
++    def close_session(self, session_id, time_out, fee, plate_out, image_out, match_status,
++                      override_note="", votes_out="", gate=""):
++        for i, e in enumerate(self.rows):
++            if e.id == session_id and e.time_out is None:
++                self.rows[i] = dataclasses.replace(
++                    e, time_out=time_out, fee=fee, plate_out=plate_out, image_out=image_out,
++                    match_status=match_status, override_note=override_note, gate_out=gate)
++                self.votes_out[session_id] = votes_out
++                return
++        raise SessionAlreadyClosed("đã đóng")
++
++    def recent(self, limit=100):
++        return list(reversed(self.rows))[:limit]
++
++
++class ScriptedRecognizer:
++    """Mỗi lần recognize() trả về số kế tiếp trong kịch bản (hết thì lặp lại số cuối)."""
++    ready = True
++
++    def __init__(self, numbers):
++        self.numbers = list(numbers)
++        self.calls = 0
++
++    def load(self):
++        pass
++
++    def set_script(self, numbers):
++        self.numbers, self.calls = list(numbers), 0
++
++    def recognize(self, frame):
++        n = self.numbers[min(self.calls, len(self.numbers) - 1)]
++        self.calls += 1
++        return RecognitionResult(frame.copy(), f"fake-{n}" if n else "", n)
++
++
++def make_frame(value=0):
++    return np.full((60, 80, 3), value, dtype=np.uint8)
++
++
++class FakeCamera:
++    def open(self, index):
++        return True
++
++    def read(self):
++        return make_frame(128)
++
++    def release(self):
++        pass
+diff --git a/tests/test_config.py b/tests/test_config.py
+new file mode 100644
+index 0000000..d5f756e
+--- /dev/null
++++ b/tests/test_config.py
+@@ -0,0 +1,68 @@
++import pytest
++
++import config
++
++
++def test_load_env_file_does_not_override(tmp_path, monkeypatch):
++    f = tmp_path / ".env.test"
++    f.write_text('# ghi chú\nT_A=1\nT_B="hai"\nT_C=localhost\\SQLEXPRESS\n\nbad line\n', encoding="utf-8")
++    monkeypatch.setenv("T_A", "da-co")
++    monkeypatch.delenv("T_B", raising=False)
++    monkeypatch.delenv("T_C", raising=False)
++    assert config.load_env_file(str(f)) is True
++    import os
++    assert os.environ["T_A"] == "da-co"             # biến có sẵn thắng file
++    assert os.environ["T_B"] == "hai"               # bỏ dấu nháy
++    assert os.environ["T_C"] == "localhost\\SQLEXPRESS"
++    monkeypatch.delenv("T_B"); monkeypatch.delenv("T_C")
++
++
++def test_missing_file():
++    assert config.load_env_file("/không/có/file") is False
++
++
++def test_gate_defaults(monkeypatch):
++    for k in ("CAMERA_INDEX", "RFID_PORT", "SCAN_FRAMES", "VOTE_MIN"):
++        monkeypatch.delenv(k, raising=False)
++    cin, cout = config.load_settings("in"), config.load_settings("out")
++    assert (cin.camera_index, cin.rfid_port, cin.label) == (0, "COM3", "CỔNG VÀO")
++    assert (cout.camera_index, cout.rfid_port, cout.label) == (1, "COM4", "CỔNG RA")
++    assert cin.scan_frames == 5 and cin.vote_min == 2
++
++
++def test_env_overrides(monkeypatch):
++    monkeypatch.setenv("CAMERA_INDEX", "3")
++    monkeypatch.setenv("RFID_PORT", "COM9")
++    s = config.load_settings("out")
++    assert s.camera_index == 3 and s.rfid_port == "COM9"
++
++
++def test_validation(monkeypatch):
++    with pytest.raises(ValueError):
++        config.load_settings("sideways")
++    monkeypatch.setenv("SCAN_FRAMES", "3")
++    monkeypatch.setenv("VOTE_MIN", "4")
++    with pytest.raises(ValueError):
++        config.load_settings("in")
++
++
++def test_inline_comments_like_the_real_env_example(tmp_path, monkeypatch):
++    """Định dạng thật trong .env.example của repo: chú thích nằm cùng dòng với giá trị."""
++    f = tmp_path / ".env.real"
++    f.write_text(
++        "RFID_PORT=COM3                 #đổi cổng port\n"
++        "DB_SERVER=localhost\\SQLEXPRESS #cần chỉnh sửa\n"
++        "DB_USER=                       # nhập sa hoặc user khác\n"
++        "DB_PASSWORD=ab#c               # dấu # dính liền giá trị thì giữ\n"
++        "T_QUOTED=\"pa ss #1\"  # nháy bảo vệ dấu #\n"
++        "BLOCK_MINUTES=60", encoding="utf-8")                      # dòng cuối không có xuống dòng
++    keys = ["RFID_PORT", "DB_SERVER", "DB_USER", "DB_PASSWORD", "T_QUOTED", "BLOCK_MINUTES"]
++    for k in keys:
++        monkeypatch.delenv(k, raising=False)
++    config.load_env_file(str(f))
++    import os
++    got = {k: os.environ.get(k) for k in keys}
++    for k in keys:
++        monkeypatch.delenv(k, raising=False)
++    assert got == {"RFID_PORT": "COM3", "DB_SERVER": "localhost\\SQLEXPRESS", "DB_USER": "",
++                   "DB_PASSWORD": "ab#c", "T_QUOTED": "pa ss #1", "BLOCK_MINUTES": "60"}
+diff --git a/tests/test_entry_service.py b/tests/test_entry_service.py
+new file mode 100644
+index 0000000..0682d31
+--- /dev/null
++++ b/tests/test_entry_service.py
+@@ -0,0 +1,90 @@
++import os
++
++import pytest
++
++from helpers import FakeDb, ScriptedRecognizer, make_frame
++from services.entry_service import CardNotRegistered, EntryService
++from services.gate_service import Outcome
++from storage.errors import AlreadyInside
++
++
++def make(tmp_path, numbers, **kw):
++    db, rec = FakeDb(), ScriptedRecognizer(numbers)
++    svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None, **kw)
++    return svc, db, rec
++
++
++def frame():
++    return make_frame(7)
++
++
++def test_unregistered_card_rejected_without_scanning(tmp_path):
++    svc, db, rec = make(tmp_path, ["25888"])
++    o = svc.handle_card("LA", frame)
++    assert o.kind is Outcome.UNREGISTERED and rec.calls == 0 and db.rows == []
++
++
++def test_auto_saves_when_vote_decided(tmp_path):
++    svc, db, rec = make(tmp_path, ["25888"] * 5)
++    o = svc.handle_card("CARD1", frame)
++    assert o.kind is Outcome.ENTRY_SAVED
++    assert o.scan.scanned == 3                      # dừng sớm
++    e = db.rows[0]
++    assert (e.plate_number, e.card_uid, e.gate_in) == ("25888", "CARD1", "in")
++    assert os.path.isfile(tmp_path / e.image_in)    # ảnh đã được lưu
++    assert db.votes[e.id] == "25888:3"
++
++
++def test_tie_goes_to_pending_and_saves_nothing(tmp_path):
++    svc, db, _ = make(tmp_path, ["25888", "25883", "25888", "25883", "99999"])
++    o = svc.handle_card("CARD1", frame)
++    assert o.kind is Outcome.ENTRY_PENDING and o.scan.suggestion == "25888"
++    assert db.rows == [] and os.listdir(tmp_path) == []
++
++
++def test_partial_digits_never_auto_saved(tmp_path):
++    svc, db, _ = make(tmp_path, ["2588"] * 5)
++    o = svc.handle_card("CARD1", frame)
++    assert o.kind is Outcome.ENTRY_PENDING and o.scan.suggestion == "2588" and db.rows == []
++
++
++def test_auto_save_off_requires_confirmation(tmp_path):
++    svc, db, _ = make(tmp_path, ["25888"] * 5, auto_save=False)
++    o = svc.handle_card("CARD1", frame)
++    assert o.kind is Outcome.ENTRY_PENDING and o.scan.decided and db.rows == []
++
++
++def test_already_inside_is_rejected_without_scanning(tmp_path):
++    svc, db, rec = make(tmp_path, ["25888"] * 5)
++    svc.handle_card("CARD1", frame)
++    rec.calls = 0
++    o = svc.handle_card("CARD1", frame)
++    assert o.kind is Outcome.ALREADY_INSIDE and o.event.plate_number == "25888"
++    assert rec.calls == 0 and len(db.rows) == 1
++
++
++def test_confirm_requires_exactly_five_digits(tmp_path):
++    svc, db, _ = make(tmp_path, ["2588"] * 5)
++    o = svc.handle_card("CARD1", frame)
++    for bad in ("2588", "", "258888", "2588a"):
++        with pytest.raises(ValueError):
++            svc.save_entry("CARD1", bad, o.scan, o.swiped_at)
++    e = svc.save_entry("CARD1", "25888", o.scan, o.swiped_at)
++    assert e.plate_number == "25888" and e.plate_full == ""        # số do nhân viên nhập: không giữ biển OCR
++    assert "nhân viên" in db.votes[e.id]
++
++
++def test_save_entry_unregistered_card(tmp_path):
++    svc, db, _ = make(tmp_path, ["25888"])
++    with pytest.raises(CardNotRegistered):
++        svc.save_entry("LA", "25888", None)
++    assert db.rows == []
++
++
++def test_duplicate_open_session_blocked_and_no_orphan_image(tmp_path):
++    svc, db, _ = make(tmp_path, ["25888"] * 5)
++    o = svc.handle_card("CARD1", frame)
++    files_before = set(os.listdir(tmp_path))
++    with pytest.raises(AlreadyInside):
++        svc.save_entry("CARD1", "25888", o.scan)
++    assert set(os.listdir(tmp_path)) == files_before and len(db.rows) == 1
+diff --git a/tests/test_exit_service.py b/tests/test_exit_service.py
+new file mode 100644
+index 0000000..aa0f093
+--- /dev/null
++++ b/tests/test_exit_service.py
+@@ -0,0 +1,147 @@
++import os
++from datetime import timedelta
++
++import pytest
++
++from helpers import FakeDb, ScriptedRecognizer, make_frame
++from services.entry_service import EntryService
++from services.exit_service import ExitService
++from services.gate_service import NoteRequired, Outcome, ReviewReason, now
++from storage.errors import SessionAlreadyClosed
++
++
++def frame():
++    return make_frame(9)
++
++
++class Lot:
++    """Một bãi giả: cổng vào + cổng ra dùng chung DB và thư mục ảnh."""
++
++    def __init__(self, tmp_path):
++        self.db = FakeDb()
++        self.rec_in = ScriptedRecognizer(["25888"])
++        self.rec_out = ScriptedRecognizer(["25888"])
++        self.tmp = tmp_path
++        self.entry = EntryService(self.rec_in, self.db, str(tmp_path), sleep=lambda s: None)
++        self.exit = ExitService(self.rec_out, self.db, str(tmp_path), sleep=lambda s: None)
++
++    def park(self, uid="CARD1", plate="25888", minutes_ago=90):
++        self.rec_in.set_script([plate])
++        o = self.entry.handle_card(uid, frame)
++        assert o.kind is Outcome.ENTRY_SAVED
++        # lùi giờ vào để kiểm tra tiền
++        e = self.db.rows[-1]
++        e.time_in = now() - timedelta(minutes=minutes_ago)
++        return e
++
++
++def test_unregistered_and_not_inside(tmp_path):
++    lot = Lot(tmp_path)
++    assert lot.exit.handle_card("LA", frame).kind is Outcome.UNREGISTERED
++    o = lot.exit.handle_card("CARD1", frame)
++    assert o.kind is Outcome.NOT_INSIDE and lot.rec_out.calls == 0     # chưa vào -> không quét
++
++
++def test_matching_exit_closes_and_charges(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park(minutes_ago=90)
++    lot.rec_out.set_script(["25888"])
++    o = lot.exit.handle_card("CARD1", frame)
++    assert o.kind is Outcome.EXIT_DONE
++    e = lot.db.rows[0]
++    assert e.time_out is not None and e.fee == 10000          # 90 phút -> 2 khối
++    assert (e.plate_out, e.match_status, e.gate_out) == ("25888", "MATCH", "out")
++    assert os.path.isfile(tmp_path / e.image_out) and e.image_out != e.image_in
++
++
++def test_after_exit_card_can_enter_again_but_not_exit_twice(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park()
++    lot.exit.handle_card("CARD1", frame)
++    assert lot.exit.handle_card("CARD1", frame).kind is Outcome.NOT_INSIDE
++    lot.rec_in.set_script(["11111"])
++    assert lot.entry.handle_card("CARD1", frame).kind is Outcome.ENTRY_SAVED
++
++
++def test_one_digit_off_needs_staff_and_reason(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park()
++    lot.rec_out.set_script(["25883"])
++    o = lot.exit.handle_card("CARD1", frame)
++    assert o.kind is Outcome.EXIT_REVIEW and o.reason is ReviewReason.CLOSE
++    assert lot.db.rows[0].time_out is None                         # chưa đóng lượt
++    with pytest.raises(NoteRequired):
++        lot.exit.confirm_exit("CARD1", "25883", o.scan, o.swiped_at, note="")
++    with pytest.raises(NoteRequired):
++        lot.exit.confirm_exit("CARD1", "25883", o.scan, o.swiped_at, note="ok")   # quá ngắn
++    e = lot.exit.confirm_exit("CARD1", "25883", o.scan, o.swiped_at,
++                              note="Chủ xe xuất trình cà vẹt")
++    assert e.match_status == "APPROVED_CLOSE" and "cà vẹt" in lot.db.rows[0].override_note
++
++
++def test_big_mismatch_blocked_until_reason(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park()
++    lot.rec_out.set_script(["11111"])
++    o = lot.exit.handle_card("CARD1", frame)
++    assert o.kind is Outcome.EXIT_REVIEW and o.reason is ReviewReason.MISMATCH
++    with pytest.raises(NoteRequired):
++        lot.exit.confirm_exit("CARD1", "11111", o.scan, o.swiped_at)
++    e = lot.exit.confirm_exit("CARD1", "11111", o.scan, o.swiped_at, note="Xe đã đổi biển")
++    assert e.match_status == "APPROVED_MISMATCH"
++
++
++def test_staff_retypes_correct_number_needs_no_reason(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park()
++    lot.rec_out.set_script(["11111"])               # OCR đọc sai hẳn
++    o = lot.exit.handle_card("CARD1", frame)
++    e = lot.exit.confirm_exit("CARD1", "25888", o.scan, o.swiped_at)
++    assert e.match_status == "MATCH" and e.plate_out == "25888"
++    assert "nhân viên" in lot.db.votes_out[e.id]                   # ghi nhận số cuối do nhân viên chốt
++
++
++def test_unreadable_exit_needs_number(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park()
++    lot.rec_out.set_script([""])
++    o = lot.exit.handle_card("CARD1", frame)
++    assert o.kind is Outcome.EXIT_REVIEW and o.reason is ReviewReason.NEED_NUMBER
++    assert o.match is None and o.event.plate_number == "25888"
++
++
++def test_tie_at_exit_goes_to_review(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park()
++    lot.rec_out.set_script(["25888", "25883", "25888", "25883", "99999"])
++    o = lot.exit.handle_card("CARD1", frame)
++    assert o.kind is Outcome.EXIT_REVIEW and o.reason is ReviewReason.NEED_NUMBER
++    assert o.scan.suggestion == "25888" and o.match is not None    # có gợi ý -> đã so khớp thử
++
++
++def test_confirm_needs_five_digits(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park()
++    for bad in ("2588", "", "x5888"):
++        with pytest.raises(ValueError):
++            lot.exit.confirm_exit("CARD1", bad, None, now(), note="lý do hợp lệ")
++
++
++def test_confirm_after_session_closed(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park()
++    lot.rec_out.set_script(["25883"])
++    o = lot.exit.handle_card("CARD1", frame)
++    lot.exit.confirm_exit("CARD1", "25883", o.scan, o.swiped_at, note="lần một")
++    with pytest.raises(SessionAlreadyClosed):
++        lot.exit.confirm_exit("CARD1", "25883", o.scan, o.swiped_at, note="lần hai")
++
++
++def test_exit_time_is_swipe_time_not_confirm_time(tmp_path):
++    lot = Lot(tmp_path)
++    lot.park(minutes_ago=30)
++    lot.rec_out.set_script([""])
++    o = lot.exit.handle_card("CARD1", frame)
++    # nhân viên xác nhận muộn (giả lập bằng cách chỉ truyền giờ quẹt thẻ): giờ ra phải là giờ QUẸT THẺ
++    out = lot.exit.confirm_exit("CARD1", "25888", o.scan, o.swiped_at)
++    assert out.time_out == o.swiped_at and out.fee == 5000
+diff --git a/tests/test_plate_match.py b/tests/test_plate_match.py
+new file mode 100644
+index 0000000..15f524e
+--- /dev/null
++++ b/tests/test_plate_match.py
+@@ -0,0 +1,22 @@
++from core.plate_match import MatchLevel, compare_numbers
++
++
++def test_exact():
++    m = compare_numbers("25888", "25888")
++    assert m.level is MatchLevel.EXACT and m.distance == 0
++
++
++def test_one_digit_off():
++    m = compare_numbers("25888", "25883")
++    assert m.level is MatchLevel.CLOSE and m.distance == 1
++
++
++def test_many_digits_off():
++    assert compare_numbers("25888", "11111").level is MatchLevel.MISMATCH
++    assert compare_numbers("25888", "25833").level is MatchLevel.MISMATCH
++
++
++def test_bad_input_is_mismatch():
++    assert compare_numbers("", "25888").level is MatchLevel.MISMATCH
++    assert compare_numbers("2588", "25888").level is MatchLevel.MISMATCH   # biển cũ 4 số, khác độ dài
++    assert compare_numbers(None, None).level is MatchLevel.MISMATCH
+diff --git a/tests/test_plate_voting.py b/tests/test_plate_voting.py
+new file mode 100644
+index 0000000..bde645f
+--- /dev/null
++++ b/tests/test_plate_voting.py
+@@ -0,0 +1,48 @@
++from core.plate_voting import tally_votes
++
++
++def test_clear_winner():
++    v = tally_votes(["25888", "25888", "25883"])
++    assert v.winner == "25888" and v.decided and v.votes == 2 and v.runner_up == 1
++
++
++def test_needs_min_votes():
++    v = tally_votes(["25888", "11111", "22222"])           # mỗi số 1 phiếu
++    assert not v.decided and v.winner == "" and v.suggestion == "25888"
++
++
++def test_tie_is_not_decided():
++    v = tally_votes(["25888", "25883", "25888", "25883"])
++    assert not v.decided and v.winner == ""
++    assert v.tally == (("25888", 2), ("25883", 2))          # thứ tự ổn định
++
++
++def test_single_vote_ok_when_min_is_one():
++    assert tally_votes(["25888"], min_votes=1).winner == "25888"
++
++
++def test_incomplete_numbers_do_not_vote():
++    v = tally_votes(["2588", "2588", "", "2588"])           # 4 số: không có phiếu nào
++    assert not v.decided and v.tally == () and v.suggestion == "2588"
++
++
++def test_partial_suggestion_prefers_longest():
++    assert tally_votes(["25", "2588", "258"]).suggestion == "2588"
++
++
++def test_empty():
++    v = tally_votes([])
++    assert not v.decided and v.suggestion == "" and v.winner == ""
++
++
++def test_settled_logic():
++    v = tally_votes(["25888", "25888", "25888"])
++    assert v.is_settled(remaining=2)                         # 3-0 > 2
++    v2 = tally_votes(["25888", "25888"])
++    assert not v2.is_settled(remaining=3)                    # 2-0 > 3 sai
++    v3 = tally_votes(["25888", "25888", "25883"])
++    assert not v3.is_settled(remaining=2)                    # 2-1 > 2 sai
++
++
++def test_tally_text():
++    assert tally_votes(["25888", "25888", "25883"]).tally_text() == "25888:2,25883:1"
+diff --git a/tests/test_pricing.py b/tests/test_pricing.py
+new file mode 100644
+index 0000000..a1ae956
+--- /dev/null
++++ b/tests/test_pricing.py
+@@ -0,0 +1,27 @@
++from datetime import datetime, timedelta
++
++from services.pricing import calculate_fee
++
++T0 = datetime(2026, 1, 1, 8, 0, 0)
++
++
++def test_minimum_one_block():
++    assert calculate_fee(T0, T0) == 5000
++    assert calculate_fee(T0, T0 + timedelta(minutes=1)) == 5000
++
++
++def test_exact_hour_is_one_block():
++    assert calculate_fee(T0, T0 + timedelta(minutes=60)) == 5000
++
++
++def test_round_up():
++    assert calculate_fee(T0, T0 + timedelta(minutes=61)) == 10000
++    assert calculate_fee(T0, T0 + timedelta(hours=3, minutes=1)) == 20000
++
++
++def test_custom_block():
++    assert calculate_fee(T0, T0 + timedelta(minutes=31), 3000, 30) == 6000
++
++
++def test_negative_duration_is_minimum():
++    assert calculate_fee(T0, T0 - timedelta(minutes=5)) == 5000
+diff --git a/tests/test_scanner.py b/tests/test_scanner.py
+new file mode 100644
+index 0000000..a4e2bc9
+--- /dev/null
++++ b/tests/test_scanner.py
+@@ -0,0 +1,69 @@
++from core.recognizer import RecognitionResult
++from core.scanner import scan_best_of
++from helpers import make_frame
++
++
++def run(numbers, frames=5, min_votes=2):
++    """Chạy scan với kịch bản các số OCR; trả về (kết quả, số lần OCR, danh sách thời gian chờ)."""
++    calls, sleeps, progress = [], [], []
++    seq = iter(numbers)
++
++    def get_frame():
++        return make_frame(len(calls))
++
++    def recognize(frame):
++        n = next(seq)
++        calls.append(n)
++        return RecognitionResult(frame, f"full-{n}", n)
++
++    res = scan_best_of(recognize, get_frame, frames, 0.25, min_votes,
++                       on_progress=lambda i, t: progress.append((i, t)), sleep=sleeps.append)
++    return res, calls, sleeps, progress
++
++
++def test_stops_early_when_unbeatable():
++    res, calls, sleeps, progress = run(["25888"] * 5)
++    assert res.decided and res.winner == "25888"
++    assert len(calls) == 3 and res.scanned == 3 and res.votes == 3   # 3-0 > 2 còn lại -> dừng
++    assert sleeps == [0.25, 0.25]                                    # chờ giữa các khung, không chờ sau khung cuối
++    assert progress == [(1, 5), (2, 5), (3, 5)]
++
++
++def test_majority_over_all_frames():
++    res, calls, *_ = run(["25888", "25883", "25888", "25883", "25888"])
++    assert len(calls) == 5 and res.winner == "25888" and res.votes == 3
++
++
++def test_tie_leaves_undecided_with_suggestion():
++    res, *_ = run(["25888", "25883", "25888", "25883", "99999"])
++    assert not res.decided and res.winner == "" and res.suggestion == "25888"
++    assert res.number == "25888"
++    assert res.tally[0] == ("25888", 2)
++
++
++def test_ocr_noise_ignored():
++    res, *_ = run(["", "2588", "25888", "", "25888"])
++    assert res.winner == "25888" and res.votes == 2
++
++
++def test_picks_image_of_winning_frame():
++    res, *_ = run(["11111", "25888", "25888", "25888", "25888"])
++    # khung thắng đầu tiên là khung thứ 2 (frame value = 1)
++    assert res.image is not None and int(res.image[0, 0, 0]) == 1
++    assert res.plate_full == "full-25888"
++
++
++def test_nothing_readable():
++    res, *_ = run([""] * 5)
++    assert not res.decided and res.number == "" and res.scanned == 5
++    assert res.image is not None            # vẫn trả ảnh để nhân viên xem
++
++
++def test_no_frames_from_camera():
++    res = scan_best_of(lambda f: None, lambda: None, 3, 0.0, 2, sleep=lambda s: None)
++    assert res.image is None and not res.decided and res.scanned == 3
++
++
++def test_votes_text():
++    res, *_ = run(["25888", "25883", "25888", "25883", "25888"])
++    assert res.votes_text() == "25888:3,25883:2"
+diff --git a/tests/test_ui_smoke.py b/tests/test_ui_smoke.py
+new file mode 100644
+index 0000000..6139bd5
+--- /dev/null
++++ b/tests/test_ui_smoke.py
+@@ -0,0 +1,154 @@
++"""Chạy thật hai màn hình Tkinter (camera/OCR/DB giả). Tự bỏ qua nếu không có màn hình (DISPLAY)."""
++import time
++import tkinter as tk
++
++import pytest
++
++import config
++from helpers import FakeCamera, FakeDb, ScriptedRecognizer
++from services.entry_service import EntryService
++from services.exit_service import ExitService
++from ui.entry_app import EntryApp
++from ui.exit_app import ExitApp
++
++
++@pytest.fixture
++def root():
++    try:
++        r = tk.Tk()
++    except tk.TclError:
++        pytest.skip("không có màn hình để chạy Tkinter")
++    yield r
++    try:
++        r.destroy()
++    except tk.TclError:
++        pass
++
++
++def pump(root, cond, timeout=8.0):
++    end = time.time() + timeout
++    while time.time() < end:
++        root.update()
++        if cond():
++            return True
++        time.sleep(0.01)
++    return False
++
++
++def settings(gate, tmp_path, monkeypatch):
++    monkeypatch.setenv("IMG_DIR", str(tmp_path))
++    return config.load_settings(gate)
++
++
++def idle(app):
++    return app.service.ready and not app.busy
++
++
++def swipe(app, uid):
++    """Quẹt thẻ đúng đường đi thật (luồng RFID -> hàng đợi -> GUI) rồi chờ kết quả được xử lý xong."""
++    seen = []
++    original = app.on_card_outcome
++    app.on_card_outcome = lambda outcome: (seen.append(outcome), original(outcome))
++    try:
++        app.handle_card(uid)
++        assert pump(app.root, lambda: seen), "không nhận được kết quả quẹt thẻ"
++        assert pump(app.root, lambda: not app.busy), "xử lý quá lâu"
++    finally:
++        del app.on_card_outcome            # bỏ bản bọc, trả về phương thức gốc
++    return seen[0]
++
++
++def test_entry_app_flow(root, tmp_path, monkeypatch):
++    db, rec = FakeDb(), ScriptedRecognizer(["25888"])
++    svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None)
++    app = EntryApp(root, svc, FakeCamera(), settings("in", tmp_path, monkeypatch))
++    assert pump(root, lambda: idle(app) and app.last_frame is not None)
++
++    swipe(app, "LA")                                           # thẻ lạ
++    assert "CHƯA ĐĂNG KÝ" in app.status_lbl.cget("text") and db.rows == []
++
++    swipe(app, "CARD1")                                        # đọc rõ -> tự lưu
++    assert "XE VÀO" in app.status_lbl.cget("text") and app.plate_var.get() == "25888"
++    assert len(db.rows) == 1 and app.pending is None
++
++    swipe(app, "CARD1")                                        # quẹt lại -> đang trong bãi
++    assert "ĐANG Ở TRONG BÃI" in app.status_lbl.cget("text") and len(db.rows) == 1
++
++    # đọc thiếu số -> chờ nhân viên; nút Lưu chỉ bật khi đủ 5 số
++    rec.set_script(["2588"])
++    swipe(app, "CARD2")
++    assert app.pending is not None and app.plate_var.get() == "2588"
++    assert str(app.save_btn.cget("state")) == "disabled"
++    app.plate_var.set("25881")
++    root.update()
++    assert str(app.save_btn.cget("state")) == "normal"
++    app.save_entry()
++    assert pump(root, lambda: app.pending is None and not app.busy)
++    assert [e.plate_number for e in db.rows] == ["25888", "25881"]
++
++    # lịch sử hiển thị
++    assert pump(root, lambda: len(app.tree.get_children()) == 2)
++
++
++def test_entry_cancel(root, tmp_path, monkeypatch):
++    db, rec = FakeDb(), ScriptedRecognizer([""])
++    app = EntryApp(root, EntryService(rec, db, str(tmp_path), sleep=lambda s: None),
++                   FakeCamera(), settings("in", tmp_path, monkeypatch))
++    assert pump(root, lambda: idle(app) and app.last_frame is not None)
++    swipe(app, "CARD1")
++    assert app.pending is not None and str(app.save_btn.cget("state")) == "disabled"
++    app.cancel_pending()
++    assert app.pending is None and db.rows == []
++
++
++def test_exit_app_flow(root, tmp_path, monkeypatch):
++    db = FakeDb()
++    entry_svc = EntryService(ScriptedRecognizer(["25888"]), db, str(tmp_path), sleep=lambda s: None)
++    entry_svc.handle_card("CARD1", lambda: FakeCamera().read())      # xe vào trước
++    entry_svc.handle_card("CARD2", lambda: FakeCamera().read())
++
++    rec = ScriptedRecognizer(["25888"])
++    app = ExitApp(root, ExitService(rec, db, str(tmp_path), sleep=lambda s: None), FakeCamera(),
++                  settings("out", tmp_path, monkeypatch))
++    assert pump(root, lambda: idle(app) and app.last_frame is not None)
++
++    swipe(app, "LA")
++    assert "CHƯA ĐĂNG KÝ" in app.status_lbl.cget("text")
++
++    swipe(app, "CARD1")                                              # khớp -> ra luôn
++    assert "XE RA" in app.status_lbl.cget("text") and "TIỀN" in app.status_lbl.cget("text")
++    assert db.find_open_session("CARD1") is None and app.pending is None
++
++    swipe(app, "CARD1")                                              # chưa có lượt vào nữa
++    assert "CHƯA CÓ LƯỢT VÀO" in app.status_lbl.cget("text")
++
++    rec.set_script(["11111"])                                        # CARD2 ra với biển khác hẳn
++    swipe(app, "CARD2")
++    assert app.pending is not None and "KHÔNG KHỚP" in app.match_lbl.cget("text")
++    assert str(app.confirm_btn.cget("state")) == "disabled"          # chưa có lý do -> chặn
++    app.note_var.set("Chủ xe có giấy tờ")
++    root.update()
++    assert str(app.confirm_btn.cget("state")) == "normal"
++
++    app.plate_var.set("25888")                                       # nhân viên sửa đúng số -> khớp, khỏi lý do
++    app.note_var.set("")
++    root.update()
++    assert "KHỚP" in app.match_lbl.cget("text") and str(app.confirm_btn.cget("state")) == "normal"
++    app.confirm_exit()
++    assert pump(root, lambda: app.pending is None and not app.busy)
++    assert db.find_open_session("CARD2") is None
++    assert db.rows[1].match_status == "MATCH" and db.rows[1].plate_out == "25888"
++
++
++def test_exit_deny_keeps_session_open(root, tmp_path, monkeypatch):
++    db = FakeDb()
++    EntryService(ScriptedRecognizer(["25888"]), db, str(tmp_path), sleep=lambda s: None) \
++        .handle_card("CARD1", lambda: FakeCamera().read())
++    app = ExitApp(root, ExitService(ScriptedRecognizer(["11111"]), db, str(tmp_path),
++                                    sleep=lambda s: None),
++                  FakeCamera(), settings("out", tmp_path, monkeypatch))
++    assert pump(root, lambda: idle(app) and app.last_frame is not None)
++    swipe(app, "CARD1")
++    assert app.pending is not None
++    app.cancel_pending()
++    assert app.pending is None and db.find_open_session("CARD1") is not None
+diff --git a/ui/app.py b/ui/base_gate_app.py
+similarity index 54%
+rename from ui/app.py
+rename to ui/base_gate_app.py
+index d5aa3c6..0ecc511 100644
+--- a/ui/app.py
++++ b/ui/base_gate_app.py
+@@ -1,6 +1,9 @@
+-"""Giao diện Tkinter. Chỉ lo hiển thị và điều phối; nghiệp vụ nằm ở AccessService."""
++"""Giao diện Tkinter dùng chung cho cổng vào và cổng ra.
++
++Lớp này lo: camera trực tiếp, nhận thẻ RFID, chạy việc nặng ở luồng nền, ô 5 số, bảng lịch sử.
++Phần riêng của mỗi cổng nằm ở entry_app.py / exit_app.py (override các hook build_*, on_gate_outcome...).
++"""
+ import queue
+-import re
+ import threading
+ import tkinter as tk
+ from tkinter import filedialog, messagebox, ttk
+@@ -9,16 +12,19 @@ import cv2
+ import numpy as np
+ from PIL import Image, ImageTk
+ 
+-from services.access_service import Outcome
++from core.plate_voting import NUMBER_LEN
++from services.gate_service import Outcome
+ 
+-VIEW_W, VIEW_H = 520, 390
+ COLOR_OK = "#1a7f37"
+ COLOR_WARN = "#b35900"
+ COLOR_ERR = "#c62828"
+-NUMBER_LEN = 5
++HISTORY_REFRESH_MS = 5000       # làm mới lịch sử để thấy cả lượt do cổng kia ghi
++
++MATCH_TEXT = {"MATCH": "Khớp", "APPROVED_CLOSE": "Lệch 1 số (đã duyệt)",
++              "APPROVED_MISMATCH": "Không khớp (đã duyệt)"}
+ 
+ 
+-def to_photo(bgr, w=VIEW_W, h=VIEW_H):
++def to_photo(bgr, w, h):
+     img = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+     img.thumbnail((w, h))
+     return ImageTk.PhotoImage(img)
+@@ -37,32 +43,40 @@ def fmt_duration(td):
+     return f"{h} giờ {m} phút" if h else f"{m} phút"
+ 
+ 
+-class App:
+-    def __init__(self, root, service, camera, camera_index=0):
++class BaseGateApp:
++    BANNER_COLOR = "#1a7f37"
++    RESULT_TITLE = "Ảnh đã chụp"
++    NUMBER_HINT = f"{NUMBER_LEN} số ở dòng dưới biển số (bắt buộc đủ {NUMBER_LEN} số):"
++
++    def __init__(self, root, service, camera, cfg):
+         self.root = root
+         self.service = service
+         self.camera = camera
+-        self.camera_index = camera_index
++        self.cfg = cfg
++        self.view_w, self.view_h = cfg.view_w, cfg.view_h
+         self.rfid = None
+ 
+-        root.title("Quản lý xe bằng thẻ RFID + nhận diện biển số")
++        root.title(f"{cfg.label} - Bãi đỗ xe RFID + nhận diện biển số")
+         root.protocol("WM_DELETE_WINDOW", self.on_close)
++        if cfg.window_pos:
++            root.geometry(cfg.window_pos)
+ 
+         self.q = queue.Queue()      # luồng nền -> luồng GUI
+         self.busy = False
++        self.pending = None         # CardOutcome đang chờ nhân viên xử lý
+         self.last_frame = None
+-        self.current_image = None
+-        self.current_plate_full = ""
+-        self.pending_card = None    # thẻ hợp lệ đang chờ người dùng xác nhận 5 số (xe vào)
+         self.rows = {}              # id lượt gửi xe -> dòng trong bảng lịch sử
++        self._hist_sig = None
++        self._history_loading = False
++        self._closing = False
+ 
+         self.build_ui()
+-        self.open_camera(camera_index)
++        self.open_camera(cfg.camera_index)
+         self.update_loop()
+ 
+         self.set_status("Đang tải mô hình OCR (lần đầu cần Internet, hơi lâu)...", COLOR_WARN)
+         self._bg(self.service.load_model, self.on_model_ready)
+-        self._bg(lambda: self.service.recent_events(100), self.fill_history, busy=False)
++        self.refresh_history()
+ 
+     # ---------- Kết nối thành phần ngoài ----------
+     def set_rfid(self, reader):
+@@ -80,75 +94,73 @@ class App:
+ 
+     # ---------- Giao diện ----------
+     def build_ui(self):
+-        main = ttk.Frame(self.root, padding=10)
++        tk.Label(self.root, text=self.cfg.label, bg=self.BANNER_COLOR, fg="white",
++                 font=("Segoe UI", 16, "bold")).pack(fill="x")
++        main = ttk.Frame(self.root, padding=8)
+         main.pack(fill="both", expand=True)
+ 
+         left = ttk.LabelFrame(main, text="Camera trực tiếp", padding=5)
+-        left.grid(row=0, column=0, padx=5, pady=5)
+-        right = ttk.LabelFrame(main, text="Ảnh đã chụp", padding=5)
+-        right.grid(row=0, column=1, padx=5, pady=5)
+-
+-        lf = tk.Frame(left, width=VIEW_W, height=VIEW_H, bg="black")
++        left.grid(row=0, column=0, padx=5, pady=5, sticky="n")
++        lf = tk.Frame(left, width=self.view_w, height=self.view_h, bg="black")
+         lf.pack_propagate(False)
+         lf.pack()
+         self.preview_lbl = tk.Label(lf, bg="black", fg="white", text="Chưa có camera")
+         self.preview_lbl.pack(fill="both", expand=True)
+ 
+-        rf = tk.Frame(right, width=VIEW_W, height=VIEW_H, bg="#222")
+-        rf.pack_propagate(False)
+-        rf.pack()
+-        self.result_lbl = tk.Label(rf, bg="#222", fg="white",
+-                                   text="Quẹt thẻ để xe vào / ra\nKết quả hiện ở đây")
+-        self.result_lbl.pack(fill="both", expand=True)
++        right = ttk.LabelFrame(main, text=self.RESULT_TITLE, padding=5)
++        right.grid(row=0, column=1, padx=5, pady=5, sticky="n")
++        self.build_result_panel(right)
+ 
+         # Hàng 1: camera + RFID | thẻ + 5 số
+         cam_box = ttk.Frame(main)
+-        cam_box.grid(row=1, column=0, pady=5)
++        cam_box.grid(row=1, column=0, pady=5, sticky="n")
+         row = ttk.Frame(cam_box)
+         row.pack()
+         ttk.Label(row, text="Camera số:").pack(side="left")
+-        self.cam_var = tk.StringVar(value=str(self.camera_index))
++        self.cam_var = tk.StringVar(value=str(self.cfg.camera_index))
+         tk.Spinbox(row, from_=0, to=5, width=3, textvariable=self.cam_var).pack(side="left", padx=4)
+         ttk.Button(row, text="Mở camera", command=self.change_camera).pack(side="left")
+-        self.rfid_lbl = ttk.Label(cam_box, text="RFID: chưa kết nối", foreground="gray")
++        self.rfid_lbl = ttk.Label(cam_box, text=f"RFID ({self.cfg.rfid_port}): chưa kết nối",
++                                  foreground="gray")
+         self.rfid_lbl.pack(pady=(4, 0))
++        self.db_lbl = ttk.Label(cam_box, text="SQL Server: đang kiểm tra...", foreground="gray")
++        self.db_lbl.pack()
+ 
+         val_box = ttk.Frame(main)
+-        val_box.grid(row=1, column=1, pady=5)
++        val_box.grid(row=1, column=1, pady=5, sticky="n")
+         self.card_lbl = ttk.Label(val_box, text="Thẻ: —", font=("Consolas", 12, "bold"))
+         self.card_lbl.pack()
+-        ttk.Label(val_box, text="5 số ở dòng dưới biển số (sửa nếu đọc sai):").pack()
++        ttk.Label(val_box, text=self.NUMBER_HINT).pack()
+         self.plate_var = tk.StringVar()
+         vcmd = (self.root.register(lambda P: P == "" or (P.isdigit() and len(P) <= NUMBER_LEN)), "%P")
+         self.plate_entry = tk.Entry(val_box, textvariable=self.plate_var, width=8,
+-                                    font=("Consolas", 32, "bold"), justify="center",
++                                    font=("Consolas", 28, "bold"), justify="center",
+                                     validate="key", validatecommand=vcmd)
+         self.plate_entry.pack(pady=3)
+-        self.status_lbl = ttk.Label(val_box, text="", wraplength=480)
++        self.plate_var.trace_add("write", lambda *_: self.on_number_changed())
++        self.build_extra(val_box)
++        self.status_lbl = ttk.Label(val_box, text="", wraplength=max(self.view_w, 360))
+         self.status_lbl.pack()
+ 
+         # Hàng 2: nút
+         btns = ttk.Frame(main)
+         btns.grid(row=2, column=0, columnspan=2, pady=8)
++        self.build_buttons(btns)
+         self.capture_btn = ttk.Button(btns, text="📷 Thử nhận diện (Space)",
+                                       command=self.capture, state="disabled")
+         self.capture_btn.pack(side="left", padx=5)
+         self.open_btn = ttk.Button(btns, text="📁 Thử với ảnh từ máy",
+                                    command=self.open_image, state="disabled")
+         self.open_btn.pack(side="left", padx=5)
+-        self.save_btn = ttk.Button(btns, text="💾 Lưu xe vào", command=self.save_result)
+-        self.save_btn.pack(side="left", padx=5)
+-        self.cancel_btn = ttk.Button(btns, text="✖ Hủy", command=self.cancel_pending)
+-        self.cancel_btn.pack(side="left", padx=5)
+ 
+         # Hàng 3: lịch sử
+-        hist = ttk.LabelFrame(main, text="Lịch sử gửi xe (từ SQL Server)", padding=5)
++        hist = ttk.LabelFrame(main, text="Lịch sử gửi xe (từ SQL Server, cả hai cổng)", padding=5)
+         hist.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
+-        self.tree = ttk.Treeview(hist, columns=("time_in", "card", "plate", "time_out", "fee", "file"),
+-                                 show="headings", height=6)
+-        for col, text, width in (("time_in", "Giờ vào", 150), ("card", "Mã thẻ", 100),
+-                                 ("plate", "5 số", 70), ("time_out", "Giờ ra", 150),
+-                                 ("fee", "Tiền", 100), ("file", "Ảnh", 400)):
++        cols = (("time_in", "Giờ vào", 135), ("card", "Mã thẻ", 85), ("plate", "5 số vào", 75),
++                ("time_out", "Giờ ra", 135), ("plate_out", "5 số ra", 70), ("fee", "Tiền", 80),
++                ("match", "Đối chiếu", 120), ("note", "Lý do", 160))
++        self.tree = ttk.Treeview(hist, columns=[c[0] for c in cols], show="headings", height=6)
++        for col, text, width in cols:
+             self.tree.heading(col, text=text)
+             self.tree.column(col, width=width)
+         sb = ttk.Scrollbar(hist, orient="vertical", command=self.tree.yview)
+@@ -158,11 +170,46 @@ class App:
+ 
+         self.root.bind("<space>", self.on_space)
+ 
++    # --- Hook cho lớp con ---
++    def build_result_panel(self, parent):
++        """Khung bên phải. Mặc định: một ảnh kết quả."""
++        rf = tk.Frame(parent, width=self.view_w, height=self.view_h, bg="#222")
++        rf.pack_propagate(False)
++        rf.pack()
++        self.result_lbl = tk.Label(rf, bg="#222", fg="white", text="Quẹt thẻ để bắt đầu")
++        self.result_lbl.pack(fill="both", expand=True)
++
++    def build_extra(self, parent):
++        """Thêm widget giữa ô 5 số và dòng trạng thái."""
++
++    def build_buttons(self, parent):
++        """Nút riêng của cổng (đặt bên trái các nút thử)."""
++
++    def update_action_buttons(self):
++        """Bật/tắt nút riêng của cổng theo trạng thái hiện tại."""
++
++    def reset_view(self):
++        """Gọi khi bắt đầu xử lý một lần quẹt thẻ mới."""
++
++    def on_gate_outcome(self, outcome):
++        """Xử lý kết quả riêng của cổng (ENTRY_* hoặc EXIT_*)."""
++        raise NotImplementedError
++
++    def handle_error(self, exc):
++        self.set_status(f"Lỗi: {exc}", COLOR_ERR)
++
++    # --- Tiện ích hiển thị ---
+     def on_space(self, _event):
+         if isinstance(self.root.focus_get(), (tk.Entry, tk.Spinbox)):
+             return
+         self.capture()
+ 
++    def on_number_changed(self):
++        complete = len(self.plate_var.get()) == NUMBER_LEN
++        if self.pending is not None:
++            self.plate_entry.configure(fg=COLOR_OK if complete else COLOR_WARN)
++        self.update_action_buttons()
++
+     def set_status(self, text, color="black"):
+         self.status_lbl.configure(text=text, foreground=color)
+ 
+@@ -170,18 +217,19 @@ class App:
+         self.card_lbl.configure(text=f"Thẻ: {uid}" if uid else "Thẻ: —")
+ 
+     def show_image(self, bgr):
+-        photo = to_photo(bgr)
++        """Hiện ảnh vừa chụp/nhận diện."""
++        photo = to_photo(bgr, self.view_w, self.view_h)
+         self.result_lbl.configure(image=photo, text="")
+         self.result_lbl.image = photo
+ 
+     def refresh_buttons(self):
+-        can_run = self.service.ready and not self.busy
++        can_trial = self.service.ready and not self.busy and self.pending is None
+         for b in (self.capture_btn, self.open_btn):
+-            b.configure(state="normal" if can_run else "disabled")
+-        self.save_btn.configure(state="disabled" if self.busy else "normal")
++            b.configure(state="normal" if can_trial else "disabled")
++        self.update_action_buttons()
+ 
+     # ---------- Chạy việc nặng ở luồng nền ----------
+-    def _bg(self, fn, on_ok, busy=True):
++    def _bg(self, fn, on_ok, busy=True, on_error=None):
+         if busy:
+             self.busy = True
+             self.refresh_buttons()
+@@ -190,7 +238,7 @@ class App:
+             try:
+                 res = fn()
+             except Exception as e:
+-                self.q.put(lambda e=e: self.on_fail(e, busy))
++                self.q.put(lambda e=e: self.on_fail(e, busy, on_error))
+             else:
+                 self.q.put(lambda: self.on_done(on_ok, res, busy))
+ 
+@@ -202,11 +250,11 @@ class App:
+             self.refresh_buttons()
+         on_ok(res)
+ 
+-    def on_fail(self, exc, busy):
++    def on_fail(self, exc, busy, on_error=None):
+         if busy:
+             self.busy = False
+             self.refresh_buttons()
+-        self.set_status(f"Lỗi: {exc}", COLOR_ERR)
++        (on_error or self.handle_error)(exc)
+ 
+     # ---------- Camera ----------
+     def open_camera(self, index):
+@@ -221,6 +269,8 @@ class App:
+             pass
+ 
+     def update_loop(self):
++        if self._closing:
++            return
+         while True:
+             try:
+                 self.q.get_nowait()()
+@@ -230,14 +280,18 @@ class App:
+         frame = self.camera.read()
+         if frame is not None:
+             self.last_frame = frame
+-            photo = to_photo(frame)
++            photo = to_photo(frame, self.view_w, self.view_h)
+             self.preview_lbl.configure(image=photo, text="")
+             self.preview_lbl.image = photo
+         self.root.after(30, self.update_loop)
+ 
+     # ---------- Quẹt thẻ ----------
+     def on_model_ready(self, _):
+-        self.set_status("Sẵn sàng. Quẹt thẻ để xe vào / ra.", COLOR_OK)
++        self.set_status("Sẵn sàng. Quẹt thẻ.", COLOR_OK)
++
++    def get_frame(self):
++        """Khung hình mới nhất. Được gọi từ luồng nền: chỉ đọc tham chiếu, không đụng camera."""
++        return self.last_frame
+ 
+     def on_card(self, uid):
+         if not self.service.ready:
+@@ -246,67 +300,41 @@ class App:
+         if self.busy:
+             self.set_status(f"Thẻ {uid}: đang xử lý, quẹt lại sau.", COLOR_WARN)
+             return
+-        if self.pending_card is not None:
+-            self.set_status(f"Còn thẻ {self.pending_card} chờ xác nhận. Hãy Lưu hoặc Hủy trước khi quẹt thẻ mới.",
+-                            COLOR_WARN)
++        if self.pending is not None:
++            self.set_status(f"Còn thẻ {self.pending.card_uid} chờ xác nhận. "
++                            "Hãy xử lý hoặc Hủy trước khi quẹt thẻ mới.", COLOR_WARN)
+             return
+         if self.last_frame is None:
+             self.set_status(f"Thẻ {uid}: chưa có hình từ camera.", COLOR_ERR)
+             return
+ 
+-        frame = self.last_frame.copy()
++        self.reset_view()
++        self.plate_var.set("")
+         self.set_card(uid)
+         self.set_status(f"Thẻ {uid}: đang kiểm tra...", COLOR_WARN)
+-        self._bg(lambda: self.service.handle_card(uid, frame),
+-                 lambda outcome: self.on_card_outcome(uid, frame, outcome))
+ 
+-    def on_card_outcome(self, uid, frame, outcome):
+-        if outcome.kind is Outcome.REJECTED:
+-            self.pending_card = None
+-            self.set_status(f"THẺ {uid} CHƯA ĐĂNG KÝ. Không nhận diện, không lưu.", COLOR_ERR)
+-            return
++        def progress(done, total):
++            self.q.put(lambda: self.set_status(
++                f"Thẻ {uid}: đang quét ảnh {done}/{total}...", COLOR_WARN))
+ 
+-        if outcome.kind is Outcome.EXIT:
+-            e = outcome.event
+-            self.pending_card = None
+-            self.show_image(frame)
+-            self.plate_var.set(e.plate_number)
+-            self.plate_entry.configure(fg=COLOR_OK)
+-            self.upsert_row(e)
+-            self.set_status(
+-                f"XE RA | thẻ {uid} | biển {e.plate_number} | vào {fmt_time(e.time_in)} | "
+-                f"ra {fmt_time(e.time_out)} ({fmt_duration(e.time_out - e.time_in)}) | "
+-                f"TIỀN: {fmt_money(e.fee)}", COLOR_OK)
+-            return
++        self._bg(lambda: self.service.handle_card(uid, self.get_frame, progress),
++                 self.on_card_outcome)
+ 
+-        # XE VÀO
+-        result, event = outcome.result, outcome.event
+-        self.current_image = result.image
+-        self.current_plate_full = result.plate_full
+-        self.show_image(result.image)
+-        self.plate_var.set(result.number)
+-
+-        if event is not None:                       # đã tự lưu
+-            self.pending_card = None
+-            self.plate_entry.configure(fg=COLOR_OK)
+-            self.upsert_row(event)
+-            self.set_status(f"XE VÀO | thẻ {uid} | biển {result.plate_full or '?'} | 5 số {result.number} | "
+-                            f"{fmt_time(event.time_in)}", COLOR_OK)
+-            return
+-
+-        self.pending_card = uid                     # cần người dùng xác nhận
+-        if result.number:
+-            self.plate_entry.configure(fg=COLOR_WARN)
+-            self.set_status(f"Chỉ đọc được {len(result.number)} chữ số (cần {NUMBER_LEN}). "
+-                            "Hãy sửa rồi bấm Lưu xe vào.", COLOR_WARN)
++    def on_card_outcome(self, outcome):
++        uid, event, kind = outcome.card_uid, outcome.event, outcome.kind
++        if kind is Outcome.UNREGISTERED:
++            self.set_status(f"THẺ {uid} CHƯA ĐĂNG KÝ. Không nhận diện, không lưu.", COLOR_ERR)
++        elif kind is Outcome.ALREADY_INSIDE:
++            where = (f" (vào {fmt_time(event.time_in)}, biển {event.plate_number})" if event else "")
++            self.set_status(f"THẺ {uid} ĐANG Ở TRONG BÃI{where}. Không cho vào lần nữa.", COLOR_ERR)
++        elif kind is Outcome.NOT_INSIDE:
++            self.set_status(f"THẺ {uid} CHƯA CÓ LƯỢT VÀO. Xe chưa vào bãi nên không thể ra.", COLOR_ERR)
+         else:
+-            self.plate_entry.configure(fg=COLOR_WARN)
+-            self.set_status("Không đọc được số ở dòng dưới biển. Nhập tay rồi Lưu, hoặc Hủy và quẹt lại.",
+-                            COLOR_WARN)
++            self.on_gate_outcome(outcome)
+ 
+     # ---------- Chế độ thử (không có thẻ -> không lưu) ----------
+     def capture(self):
+-        if self.busy or not self.service.ready:
++        if self.busy or not self.service.ready or self.pending is not None:
+             return
+         if self.last_frame is None:
+             self.set_status("Chưa có hình từ camera.", COLOR_ERR)
+@@ -314,7 +342,7 @@ class App:
+         self.run_trial(self.last_frame.copy())
+ 
+     def open_image(self):
+-        if self.busy or not self.service.ready:
++        if self.busy or not self.service.ready or self.pending is not None:
+             return
+         path = filedialog.askopenfilename(
+             title="Chọn ảnh xe",
+@@ -329,51 +357,22 @@ class App:
+ 
+     def run_trial(self, frame):
+         self.set_card(None)
+-        self.set_status("Đang nhận diện (chế độ thử)...", COLOR_WARN)
++        self.set_status("Đang nhận diện (chế độ thử, 1 ảnh)...", COLOR_WARN)
+         self._bg(lambda: self.service.identify(frame), self.on_trial_result)
+ 
+     def on_trial_result(self, result):
+         self.show_image(result.image)
+         self.plate_var.set(result.number)
+         self.plate_entry.configure(fg=COLOR_OK if result.is_complete else COLOR_WARN)
+-        self.set_status(f"[THỬ - KHÔNG LƯU] Biển: {result.plate_full or '?'} | 5 số: {result.number or '?'}. "
+-                        "Chỉ lưu khi quẹt thẻ đã đăng ký.", COLOR_WARN)
+-
+-    # ---------- Lưu / hủy ----------
+-    def save_result(self):
+-        if self.pending_card is None:
+-            messagebox.showinfo("Không có gì để lưu",
+-                                "Chỉ lưu được khi có thẻ đã đăng ký đang chờ xác nhận. Hãy quẹt thẻ trước.")
+-            return
+-        number = re.sub(r"\D", "", self.plate_var.get())
+-        if not number:
+-            messagebox.showwarning("Chưa có số", "Hãy nhập 5 số vào ô.")
+-            return
+-        if len(number) != NUMBER_LEN and not messagebox.askyesno(
+-                "Chưa đủ 5 số", f"Mới có {len(number)} chữ số ({number}). Vẫn lưu?"):
+-            return
+-
+-        uid, image, full = self.pending_card, self.current_image, self.current_plate_full
+-        self.set_status("Đang lưu...", COLOR_WARN)
+-        self._bg(lambda: self.service.save_entry(uid, number, full, image), self.on_saved)
+-
+-    def on_saved(self, event):
+-        self.pending_card = None
+-        self.upsert_row(event)
+-        self.set_status(f"XE VÀO | thẻ {event.card_uid} | 5 số {event.plate_number} | "
+-                        f"{fmt_time(event.time_in)}", COLOR_OK)
+-
+-    def cancel_pending(self):
+-        self.pending_card = None
+-        self.plate_var.set("")
+-        self.set_card(None)
+-        self.set_status("Đã hủy. Sẵn sàng cho xe tiếp theo.", COLOR_OK)
++        self.set_status(f"[THỬ - KHÔNG LƯU] Biển: {result.plate_full or '?'} | "
++                        f"{NUMBER_LEN} số: {result.number or '?'}. Chỉ lưu khi quẹt thẻ đã đăng ký.",
++                        COLOR_WARN)
+ 
+     # ---------- Lịch sử ----------
+     @staticmethod
+     def _row(e):
+-        return (fmt_time(e.time_in), e.card_uid, e.plate_number,
+-                fmt_time(e.time_out), fmt_money(e.fee), e.image_path)
++        return (fmt_time(e.time_in), e.card_uid, e.plate_number, fmt_time(e.time_out),
++                e.plate_out, fmt_money(e.fee), MATCH_TEXT.get(e.match_status, ""), e.override_note)
+ 
+     def upsert_row(self, event):
+         """Thêm dòng mới (xe vào) hoặc cập nhật dòng có sẵn (xe ra)."""
+@@ -383,11 +382,33 @@ class App:
+         else:
+             self.rows[event.id] = self.tree.insert("", 0, values=self._row(event))
+ 
+-    def fill_history(self, events):
++    def refresh_history(self):
++        if self._closing:
++            return
++        if not self._history_loading:
++            self._history_loading = True
++            self._bg(lambda: self.service.recent_events(100), self.apply_history,
++                     busy=False, on_error=self.on_history_error)
++        self.root.after(HISTORY_REFRESH_MS, self.refresh_history)
++
++    def apply_history(self, events):
++        self._history_loading = False
++        self.db_lbl.configure(text="SQL Server: kết nối tốt", foreground=COLOR_OK)
++        sig = tuple((e.id, e.time_out, e.match_status) for e in events)
++        if sig == self._hist_sig:
++            return
++        self._hist_sig = sig
++        self.tree.delete(*self.tree.get_children())
++        self.rows = {}
+         for e in events:                     # recent() trả về mới nhất trước
+             self.rows[e.id] = self.tree.insert("", "end", values=self._row(e))
+ 
++    def on_history_error(self, exc):
++        self._history_loading = False
++        self.db_lbl.configure(text=f"SQL Server: LỖI ({str(exc)[:60]})", foreground="red")
++
+     def on_close(self):
++        self._closing = True
+         if self.rfid is not None:
+             self.rfid.stop()
+         self.camera.release()
+diff --git a/ui/entry_app.py b/ui/entry_app.py
+new file mode 100644
+index 0000000..b4a20e5
+--- /dev/null
++++ b/ui/entry_app.py
+@@ -0,0 +1,93 @@
++"""Giao diện CỔNG VÀO."""
++from tkinter import ttk
++
++from core.plate_voting import NUMBER_LEN
++from services.gate_service import Outcome
++from storage.errors import AlreadyInside
++from ui.base_gate_app import COLOR_ERR, COLOR_OK, COLOR_WARN, BaseGateApp, fmt_time
++
++
++class EntryApp(BaseGateApp):
++    BANNER_COLOR = "#1a7f37"
++    RESULT_TITLE = "Ảnh lúc vào"
++
++    def build_buttons(self, parent):
++        self.save_btn = ttk.Button(parent, text="💾 Lưu xe vào", command=self.save_entry,
++                                   state="disabled")
++        self.save_btn.pack(side="left", padx=5)
++        self.cancel_btn = ttk.Button(parent, text="✖ Hủy", command=self.cancel_pending,
++                                     state="disabled")
++        self.cancel_btn.pack(side="left", padx=5)
++
++    def update_action_buttons(self):
++        waiting = self.pending is not None and not self.busy
++        complete = len(self.plate_var.get()) == NUMBER_LEN
++        self.save_btn.configure(state="normal" if waiting and complete else "disabled")
++        self.cancel_btn.configure(state="normal" if waiting else "disabled")
++
++    # ---------- Kết quả quẹt thẻ ----------
++    def on_gate_outcome(self, outcome):
++        scan, uid = outcome.scan, outcome.card_uid
++        self.show_image(scan.image if scan.image is not None else self.last_frame)
++
++        if outcome.kind is Outcome.ENTRY_SAVED:
++            e = outcome.event
++            self.pending = None
++            self.plate_var.set(scan.winner)
++            self.plate_entry.configure(fg=COLOR_OK)
++            self.upsert_row(e)
++            self.set_status(f"XE VÀO | thẻ {uid} | {NUMBER_LEN} số {scan.winner} "
++                            f"({scan.votes}/{scan.scanned} ảnh) | biển {scan.plate_full or '?'} | "
++                            f"{fmt_time(e.time_in)}", COLOR_OK)
++            return
++
++        # ENTRY_PENDING: chưa chốt được -> nhân viên nhập/xác nhận
++        self.pending = outcome
++        self.plate_var.set(scan.number)
++        if scan.decided:    # AUTO_SAVE đang tắt
++            msg = f"Đọc được {scan.winner} ({scan.votes}/{scan.scanned} ảnh). Bấm Lưu xe vào để xác nhận."
++        elif scan.tally:
++            msg = (f"Chưa chốt được {NUMBER_LEN} số (ứng viên: {scan.votes_text()}). "
++                   "Kiểm tra ảnh, sửa nếu cần rồi bấm Lưu xe vào.")
++        elif scan.suggestion:
++            msg = (f"Chỉ đọc được {len(scan.suggestion)} chữ số (cần {NUMBER_LEN}). "
++                   f"Hãy nhập đủ {NUMBER_LEN} số rồi bấm Lưu xe vào.")
++        else:
++            msg = (f"Không đọc được số ở dòng dưới biển. Nhập tay {NUMBER_LEN} số rồi Lưu, "
++                   "hoặc Hủy và quẹt lại.")
++        self.set_status(msg, COLOR_WARN)
++
++    # ---------- Lưu / hủy ----------
++    def save_entry(self):
++        o = self.pending
++        number = self.plate_var.get()
++        if o is None or len(number) != NUMBER_LEN:
++            return
++        self.set_status("Đang lưu...", COLOR_WARN)
++        self._bg(lambda: self.service.save_entry(o.card_uid, number, o.scan, o.swiped_at),
++                 self.on_saved)
++
++    def on_saved(self, event):
++        self.pending = None
++        self.upsert_row(event)
++        self.update_action_buttons()
++        self.set_status(f"XE VÀO | thẻ {event.card_uid} | {NUMBER_LEN} số {event.plate_number} | "
++                        f"{fmt_time(event.time_in)}", COLOR_OK)
++
++    def cancel_pending(self):
++        self.pending = None
++        self.plate_var.set("")
++        self.set_card(None)
++        self.update_action_buttons()
++        self.set_status("Đã hủy. Sẵn sàng cho xe tiếp theo.", COLOR_OK)
++
++    def handle_error(self, exc):
++        if isinstance(exc, AlreadyInside):
++            self.pending = None
++            self.update_action_buttons()
++            self.set_status("Thẻ này vừa có lượt vào khác (xe đã ở trong bãi). Không lưu thêm.",
++                            COLOR_ERR)
++        elif isinstance(exc, ValueError):
++            self.set_status(str(exc), COLOR_WARN)
++        else:
++            super().handle_error(exc)
+diff --git a/ui/exit_app.py b/ui/exit_app.py
+new file mode 100644
+index 0000000..be079e0
+--- /dev/null
++++ b/ui/exit_app.py
+@@ -0,0 +1,201 @@
++"""Giao diện CỔNG RA: đặt ảnh lúc vào cạnh ảnh lúc ra, đối chiếu 5 số, tính tiền."""
++import tkinter as tk
++from tkinter import ttk
++
++from core.plate_match import MatchLevel, compare_numbers
++from core.plate_voting import NUMBER_LEN
++from services.exit_service import MIN_NOTE_LEN
++from services.gate_service import NoteRequired, Outcome, ReviewReason
++from storage.errors import SessionAlreadyClosed
++from ui.base_gate_app import (
++    COLOR_ERR, COLOR_OK, COLOR_WARN, BaseGateApp, fmt_duration, fmt_money, fmt_time, to_photo,
++)
++
++
++class ExitApp(BaseGateApp):
++    BANNER_COLOR = "#1565c0"
++    RESULT_TITLE = "Đối chiếu ảnh lúc vào / lúc ra"
++    NUMBER_HINT = f"{NUMBER_LEN} số lúc RA (sửa nếu đọc sai):"
++
++    # ---------- Bố cục ----------
++    def build_result_panel(self, parent):
++        half_h = max(self.view_h // 2 - 8, 80)
++        self._half_h = half_h
++        self.entry_lbl = self._image_box(parent, "Ảnh lúc vào", half_h)
++        self.result_lbl = self._image_box(parent, "Ảnh lúc ra", half_h)
++
++    def _image_box(self, parent, caption, height):
++        ttk.Label(parent, text=caption).pack(anchor="w")
++        f = tk.Frame(parent, width=self.view_w, height=height, bg="#222")
++        f.pack_propagate(False)
++        f.pack(pady=(0, 3))
++        lbl = tk.Label(f, bg="#222", fg="white", text="—")
++        lbl.pack(fill="both", expand=True)
++        return lbl
++
++    def show_image(self, bgr):
++        """Ảnh lúc RA."""
++        photo = to_photo(bgr, self.view_w, self._half_h)
++        self.result_lbl.configure(image=photo, text="")
++        self.result_lbl.image = photo
++
++    def show_entry_image(self, bgr):
++        if bgr is None:
++            self.entry_lbl.configure(image="", text="(không có ảnh lúc vào)")
++            self.entry_lbl.image = None
++            return
++        photo = to_photo(bgr, self.view_w, self._half_h)
++        self.entry_lbl.configure(image=photo, text="")
++        self.entry_lbl.image = photo
++
++    def build_extra(self, parent):
++        self.match_lbl = tk.Label(parent, text="", font=("Segoe UI", 12, "bold"))
++        self.match_lbl.pack()
++        ttk.Label(parent, text="Lý do cho xe ra (bắt buộc nếu biển không khớp hoàn toàn):").pack()
++        self.note_var = tk.StringVar()
++        self.note_var.trace_add("write", lambda *_: self.update_action_buttons())
++        self.note_entry = ttk.Entry(parent, textvariable=self.note_var, width=44, state="disabled")
++        self.note_entry.pack(pady=2)
++
++    def build_buttons(self, parent):
++        self.confirm_btn = ttk.Button(parent, text="✔ Cho xe ra", command=self.confirm_exit,
++                                      state="disabled")
++        self.confirm_btn.pack(side="left", padx=5)
++        self.deny_btn = ttk.Button(parent, text="✖ Từ chối / Hủy", command=self.cancel_pending,
++                                   state="disabled")
++        self.deny_btn.pack(side="left", padx=5)
++
++    def reset_view(self):
++        self.entry_lbl.configure(image="", text="—")
++        self.entry_lbl.image = None
++        self.note_var.set("")
++        self.match_lbl.configure(text="")
++
++    # ---------- Đối chiếu trực tiếp khi nhân viên sửa số ----------
++    def current_match(self):
++        number = self.plate_var.get()
++        if self.pending is None or len(number) != NUMBER_LEN:
++            return None
++        return compare_numbers(self.pending.event.plate_number, number)
++
++    def on_number_changed(self):
++        """Màu ô số theo kết quả đối chiếu (không chỉ theo việc đã đủ 5 số hay chưa)."""
++        match = self.current_match()
++        if self.pending is not None:
++            if match is None:
++                color = COLOR_WARN
++            else:
++                color = {MatchLevel.EXACT: COLOR_OK, MatchLevel.CLOSE: COLOR_WARN,
++                         MatchLevel.MISMATCH: COLOR_ERR}[match.level]
++            self.plate_entry.configure(fg=color)
++        self.update_action_buttons()
++
++    def update_action_buttons(self):
++        waiting = self.pending is not None and not self.busy
++        self.note_entry.configure(state="normal" if self.pending is not None else "disabled")
++        if self.pending is None:
++            self.confirm_btn.configure(state="disabled")
++            self.deny_btn.configure(state="disabled")
++            return
++
++        match = self.current_match()
++        plate_in = self.pending.event.plate_number
++        if match is None:
++            self.match_lbl.configure(text=f"Nhập đủ {NUMBER_LEN} số để đối chiếu (lúc vào: {plate_in})",
++                                     fg=COLOR_WARN)
++        elif match.level is MatchLevel.EXACT:
++            self.match_lbl.configure(text=f"KHỚP biển lúc vào ({plate_in})", fg=COLOR_OK)
++        elif match.level is MatchLevel.CLOSE:
++            self.match_lbl.configure(text=f"LỆCH {match.distance} SỐ so với lúc vào ({plate_in})",
++                                     fg=COLOR_WARN)
++        else:
++            self.match_lbl.configure(text=f"KHÔNG KHỚP biển lúc vào ({plate_in})", fg=COLOR_ERR)
++
++        note_ok = len(self.note_var.get().strip()) >= MIN_NOTE_LEN
++        can_confirm = waiting and match is not None and (match.level is MatchLevel.EXACT or note_ok)
++        self.confirm_btn.configure(state="normal" if can_confirm else "disabled")
++        self.deny_btn.configure(state="normal" if waiting else "disabled")
++
++    # ---------- Kết quả quẹt thẻ ----------
++    def on_gate_outcome(self, outcome):
++        scan, uid, session = outcome.scan, outcome.card_uid, outcome.event
++        self.show_image(scan.image if scan.image is not None else self.last_frame)
++        self.show_entry_image(self.service.load_image(session.image_in))
++
++        if outcome.kind is Outcome.EXIT_DONE:
++            self.pending = None
++            self.plate_var.set(scan.winner)
++            self.plate_entry.configure(fg=COLOR_OK)
++            self.match_lbl.configure(text=f"KHỚP biển lúc vào ({session.plate_number})", fg=COLOR_OK)
++            self.upsert_row(session)
++            self.set_status(self._exit_text("XE RA", session), COLOR_OK)
++            return
++
++        # EXIT_REVIEW
++        self.pending = outcome
++        self.note_var.set("")
++        self.plate_var.set(scan.number)
++        self.update_action_buttons()
++        plate_in = session.plate_number
++        if outcome.reason is ReviewReason.NEED_NUMBER:
++            msg = (f"Không chốt được {NUMBER_LEN} số lúc ra"
++                   + (f" (ứng viên: {scan.votes_text()})" if scan.tally else "")
++                   + f". Nhập {NUMBER_LEN} số rồi bấm Cho xe ra. Lúc vào: {plate_in}.")
++            color = COLOR_WARN
++        elif outcome.reason is ReviewReason.CLOSE:
++            msg = (f"Lệch 1 số: lúc vào {plate_in}, lúc ra {scan.winner}. "
++                   "So ảnh, nhập lý do rồi bấm Cho xe ra.")
++            color = COLOR_WARN
++        else:
++            msg = (f"BIỂN KHÔNG KHỚP: lúc vào {plate_in}, lúc ra {scan.winner}. "
++                   "Giữ xe lại. Chỉ cho ra khi đã kiểm tra và có lý do.")
++            color = COLOR_ERR
++        self.set_status(msg, color)
++
++    # ---------- Nhân viên chốt / từ chối ----------
++    def confirm_exit(self):
++        o = self.pending
++        number = self.plate_var.get()
++        if o is None or len(number) != NUMBER_LEN:
++            return
++        self.set_status("Đang ghi giờ ra...", COLOR_WARN)
++        note = self.note_var.get()
++        self._bg(lambda: self.service.confirm_exit(o.card_uid, number, o.scan, o.swiped_at, note),
++                 self.on_exit_confirmed)
++
++    def on_exit_confirmed(self, event):
++        self.pending = None
++        self.upsert_row(event)
++        self.update_action_buttons()
++        exact = event.match_status == "MATCH"
++        self.match_lbl.configure(
++            text="KHỚP biển lúc vào" if exact else "ĐÃ DUYỆT CHO RA (biển không khớp hoàn toàn)",
++            fg=COLOR_OK if exact else COLOR_WARN)
++        self.set_status(self._exit_text("XE RA (nhân viên xác nhận)", event),
++                        COLOR_OK if exact else COLOR_WARN)
++
++    def cancel_pending(self):
++        self.pending = None
++        self.plate_var.set("")
++        self.note_var.set("")
++        self.match_lbl.configure(text="")
++        self.set_card(None)
++        self.update_action_buttons()
++        self.set_status("Đã từ chối. Lượt gửi xe vẫn mở, xe chưa được ra.", COLOR_WARN)
++
++    @staticmethod
++    def _exit_text(title, e):
++        return (f"{title} | thẻ {e.card_uid} | vào {fmt_time(e.time_in)} | ra {fmt_time(e.time_out)} "
++                f"({fmt_duration(e.time_out - e.time_in)}) | TIỀN: {fmt_money(e.fee)}")
++
++    def handle_error(self, exc):
++        if isinstance(exc, NoteRequired):
++            self.set_status(str(exc), COLOR_WARN)
++        elif isinstance(exc, SessionAlreadyClosed):
++            self.pending = None
++            self.update_action_buttons()
++            self.set_status(f"{exc}. Làm mới lịch sử để xem trạng thái.", COLOR_ERR)
++        elif isinstance(exc, ValueError):
++            self.set_status(str(exc), COLOR_WARN)
++        else:
++            super().handle_error(exc)

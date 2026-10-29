@@ -1,33 +1,26 @@
 """Lưu trữ vào SQL Server (pyodbc). Mỗi thao tác mở một kết nối ngắn -> an toàn khi gọi từ nhiều luồng
-(ODBC có connection pooling nên không chậm)."""
+và từ nhiều tiến trình (cổng vào + cổng ra chạy song song). ODBC có connection pooling nên không chậm."""
 import re
+import time
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import pyodbc  # pip install pyodbc  (cần cài thêm "ODBC Driver 17/18 for SQL Server")
 
+from storage.errors import AlreadyInside, SessionAlreadyClosed
+from storage.models import AccessEvent
+
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
-_COLUMNS = "id, card_uid, plate_number, plate_full, image_path, time_in, time_out, fee"
-
-
-@dataclass
-class AccessEvent:
-    """Một lượt gửi xe. time_out/fee là None cho đến khi xe ra."""
-    id: int
-    card_uid: str
-    plate_number: str
-    plate_full: str
-    image_path: str
-    time_in: datetime
-    time_out: datetime | None = None
-    fee: int | None = None
+_COLUMNS = ("id, card_uid, plate_number, plate_full, image_in, time_in, time_out, fee, "
+            "plate_out, image_out, match_status, override_note, gate_in, gate_out")
+_OPEN_INDEX = "UX_access_log_open_card"
 
 
 def _to_event(r):
     return AccessEvent(r.id, r.card_uid or "", r.plate_number or "", r.plate_full or "",
-                       r.image_path or "", r.time_in, r.time_out, r.fee)
+                       r.image_in or "", r.time_in, r.time_out, r.fee,
+                       r.plate_out or "", r.image_out or "", r.match_status or "",
+                       r.override_note or "", r.gate_in or "", r.gate_out or "")
 
 
 class Database:
@@ -59,8 +52,21 @@ class Database:
             conn.close()
 
     # ---------- Khởi tạo ----------
-    def init_schema(self):
-        """Tạo database (nếu chưa có), bảng, và nạp thẻ. Ném pyodbc.Error nếu không kết nối được."""
+    def init_schema(self, attempts=3, delay=1.5):
+        """Tạo database (nếu chưa có), bảng, và nạp thẻ. Ném pyodbc.Error nếu không kết nối được.
+
+        Hai cổng có thể khởi động cùng lúc và cùng chạy script này. Script chạy lại nhiều lần được,
+        nên nếu hai bên đụng nhau (VD cùng CREATE TABLE) thì bên sau chỉ cần thử lại."""
+        for attempt in range(1, attempts + 1):
+            try:
+                self._init_schema_once()
+                return
+            except pyodbc.Error:
+                if attempt == attempts:
+                    raise
+                time.sleep(delay)
+
+    def _init_schema_once(self):
         with self._connect("master", autocommit=True) as conn:
             conn.execute(f"IF DB_ID(N'{self.database}') IS NULL CREATE DATABASE [{self.database}]")
 
@@ -89,24 +95,36 @@ class Database:
                 "WHERE card_uid = ? AND time_out IS NULL ORDER BY id DESC", card_uid).fetchone()
         return _to_event(row) if row else None
 
-    def add_entry(self, card_uid, plate_number, plate_full, image_path, time_in):
-        with self._connect() as conn:
-            row = conn.execute(
-                "INSERT INTO dbo.access_log (card_uid, plate_number, plate_full, image_path, time_in) "
-                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)",
-                card_uid, plate_number, plate_full, image_path, time_in).fetchone()
-            conn.commit()
-        return AccessEvent(row.id, card_uid, plate_number, plate_full, image_path, time_in)
+    def add_entry(self, card_uid, plate_number, plate_full, image_in, time_in, votes="", gate=""):
+        """Ghi lượt VÀO. Ném AlreadyInside nếu thẻ đã có lượt đang mở."""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "INSERT INTO dbo.access_log "
+                    "(card_uid, plate_number, plate_full, image_in, time_in, votes_in, gate_in) "
+                    "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    card_uid, plate_number, plate_full, image_in, time_in, votes, gate).fetchone()
+                conn.commit()
+        except pyodbc.IntegrityError as e:
+            if _OPEN_INDEX in str(e):
+                raise AlreadyInside(f"Thẻ {card_uid} đã có lượt vào chưa đóng") from e
+            raise
+        return AccessEvent(row.id, card_uid, plate_number, plate_full, image_in, time_in,
+                           gate_in=gate)
 
-    def close_session(self, session_id, time_out, fee):
-        """Ghi giờ ra + tiền. Chỉ cập nhật nếu lượt này chưa được đóng."""
+    def close_session(self, session_id, time_out, fee, plate_out, image_out, match_status,
+                      override_note="", votes_out="", gate=""):
+        """Ghi giờ ra + tiền + kết quả đối chiếu. Chỉ cập nhật nếu lượt này chưa được đóng."""
         with self._connect() as conn:
             changed = conn.execute(
-                "UPDATE dbo.access_log SET time_out = ?, fee = ? WHERE id = ? AND time_out IS NULL",
-                time_out, fee, session_id).rowcount
+                "UPDATE dbo.access_log SET time_out = ?, fee = ?, plate_out = ?, image_out = ?, "
+                "match_status = ?, override_note = ?, votes_out = ?, gate_out = ? "
+                "WHERE id = ? AND time_out IS NULL",
+                time_out, fee, plate_out, image_out, match_status, override_note,
+                votes_out, gate, session_id).rowcount
             conn.commit()
         if changed != 1:
-            raise RuntimeError("Lượt gửi xe này đã được đóng trước đó")
+            raise SessionAlreadyClosed("Lượt gửi xe này đã được đóng trước đó")
 
     def recent(self, limit=100):
         with self._connect() as conn:

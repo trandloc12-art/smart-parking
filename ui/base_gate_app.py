@@ -1,6 +1,9 @@
-"""Giao diện Tkinter. Chỉ lo hiển thị và điều phối; nghiệp vụ nằm ở AccessService."""
+"""Giao diện Tkinter dùng chung cho cổng vào và cổng ra.
+
+Lớp này lo: camera trực tiếp, nhận thẻ RFID, chạy việc nặng ở luồng nền, ô 5 số, bảng lịch sử.
+Phần riêng của mỗi cổng nằm ở entry_app.py / exit_app.py (override các hook build_*, on_gate_outcome...).
+"""
 import queue
-import re
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -9,16 +12,19 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from services.access_service import Outcome
+from core.plate_voting import NUMBER_LEN
+from services.gate_service import Outcome
 
-VIEW_W, VIEW_H = 520, 390
 COLOR_OK = "#1a7f37"
 COLOR_WARN = "#b35900"
 COLOR_ERR = "#c62828"
-NUMBER_LEN = 5
+HISTORY_REFRESH_MS = 5000       # làm mới lịch sử để thấy cả lượt do cổng kia ghi
+
+MATCH_TEXT = {"MATCH": "Khớp", "APPROVED_CLOSE": "Lệch 1 số (đã duyệt)",
+              "APPROVED_MISMATCH": "Không khớp (đã duyệt)"}
 
 
-def to_photo(bgr, w=VIEW_W, h=VIEW_H):
+def to_photo(bgr, w, h):
     img = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
     img.thumbnail((w, h))
     return ImageTk.PhotoImage(img)
@@ -37,32 +43,40 @@ def fmt_duration(td):
     return f"{h} giờ {m} phút" if h else f"{m} phút"
 
 
-class App:
-    def __init__(self, root, service, camera, camera_index=0):
+class BaseGateApp:
+    BANNER_COLOR = "#1a7f37"
+    RESULT_TITLE = "Ảnh đã chụp"
+    NUMBER_HINT = f"{NUMBER_LEN} số ở dòng dưới biển số (bắt buộc đủ {NUMBER_LEN} số):"
+
+    def __init__(self, root, service, camera, cfg):
         self.root = root
         self.service = service
         self.camera = camera
-        self.camera_index = camera_index
+        self.cfg = cfg
+        self.view_w, self.view_h = cfg.view_w, cfg.view_h
         self.rfid = None
 
-        root.title("Quản lý xe bằng thẻ RFID + nhận diện biển số")
+        root.title(f"{cfg.label} - Bãi đỗ xe RFID + nhận diện biển số")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        if cfg.window_pos:
+            root.geometry(cfg.window_pos)
 
         self.q = queue.Queue()      # luồng nền -> luồng GUI
         self.busy = False
+        self.pending = None         # CardOutcome đang chờ nhân viên xử lý
         self.last_frame = None
-        self.current_image = None
-        self.current_plate_full = ""
-        self.pending_card = None    # thẻ hợp lệ đang chờ người dùng xác nhận 5 số (xe vào)
         self.rows = {}              # id lượt gửi xe -> dòng trong bảng lịch sử
+        self._hist_sig = None
+        self._history_loading = False
+        self._closing = False
 
         self.build_ui()
-        self.open_camera(camera_index)
+        self.open_camera(cfg.camera_index)
         self.update_loop()
 
         self.set_status("Đang tải mô hình OCR (lần đầu cần Internet, hơi lâu)...", COLOR_WARN)
         self._bg(self.service.load_model, self.on_model_ready)
-        self._bg(lambda: self.service.recent_events(100), self.fill_history, busy=False)
+        self.refresh_history()
 
     # ---------- Kết nối thành phần ngoài ----------
     def set_rfid(self, reader):
@@ -80,75 +94,73 @@ class App:
 
     # ---------- Giao diện ----------
     def build_ui(self):
-        main = ttk.Frame(self.root, padding=10)
+        tk.Label(self.root, text=self.cfg.label, bg=self.BANNER_COLOR, fg="white",
+                 font=("Segoe UI", 16, "bold")).pack(fill="x")
+        main = ttk.Frame(self.root, padding=8)
         main.pack(fill="both", expand=True)
 
         left = ttk.LabelFrame(main, text="Camera trực tiếp", padding=5)
-        left.grid(row=0, column=0, padx=5, pady=5)
-        right = ttk.LabelFrame(main, text="Ảnh đã chụp", padding=5)
-        right.grid(row=0, column=1, padx=5, pady=5)
-
-        lf = tk.Frame(left, width=VIEW_W, height=VIEW_H, bg="black")
+        left.grid(row=0, column=0, padx=5, pady=5, sticky="n")
+        lf = tk.Frame(left, width=self.view_w, height=self.view_h, bg="black")
         lf.pack_propagate(False)
         lf.pack()
         self.preview_lbl = tk.Label(lf, bg="black", fg="white", text="Chưa có camera")
         self.preview_lbl.pack(fill="both", expand=True)
 
-        rf = tk.Frame(right, width=VIEW_W, height=VIEW_H, bg="#222")
-        rf.pack_propagate(False)
-        rf.pack()
-        self.result_lbl = tk.Label(rf, bg="#222", fg="white",
-                                   text="Quẹt thẻ để xe vào / ra\nKết quả hiện ở đây")
-        self.result_lbl.pack(fill="both", expand=True)
+        right = ttk.LabelFrame(main, text=self.RESULT_TITLE, padding=5)
+        right.grid(row=0, column=1, padx=5, pady=5, sticky="n")
+        self.build_result_panel(right)
 
         # Hàng 1: camera + RFID | thẻ + 5 số
         cam_box = ttk.Frame(main)
-        cam_box.grid(row=1, column=0, pady=5)
+        cam_box.grid(row=1, column=0, pady=5, sticky="n")
         row = ttk.Frame(cam_box)
         row.pack()
         ttk.Label(row, text="Camera số:").pack(side="left")
-        self.cam_var = tk.StringVar(value=str(self.camera_index))
+        self.cam_var = tk.StringVar(value=str(self.cfg.camera_index))
         tk.Spinbox(row, from_=0, to=5, width=3, textvariable=self.cam_var).pack(side="left", padx=4)
         ttk.Button(row, text="Mở camera", command=self.change_camera).pack(side="left")
-        self.rfid_lbl = ttk.Label(cam_box, text="RFID: chưa kết nối", foreground="gray")
+        self.rfid_lbl = ttk.Label(cam_box, text=f"RFID ({self.cfg.rfid_port}): chưa kết nối",
+                                  foreground="gray")
         self.rfid_lbl.pack(pady=(4, 0))
+        self.db_lbl = ttk.Label(cam_box, text="SQL Server: đang kiểm tra...", foreground="gray")
+        self.db_lbl.pack()
 
         val_box = ttk.Frame(main)
-        val_box.grid(row=1, column=1, pady=5)
+        val_box.grid(row=1, column=1, pady=5, sticky="n")
         self.card_lbl = ttk.Label(val_box, text="Thẻ: —", font=("Consolas", 12, "bold"))
         self.card_lbl.pack()
-        ttk.Label(val_box, text="5 số ở dòng dưới biển số (sửa nếu đọc sai):").pack()
+        ttk.Label(val_box, text=self.NUMBER_HINT).pack()
         self.plate_var = tk.StringVar()
         vcmd = (self.root.register(lambda P: P == "" or (P.isdigit() and len(P) <= NUMBER_LEN)), "%P")
         self.plate_entry = tk.Entry(val_box, textvariable=self.plate_var, width=8,
-                                    font=("Consolas", 32, "bold"), justify="center",
+                                    font=("Consolas", 28, "bold"), justify="center",
                                     validate="key", validatecommand=vcmd)
         self.plate_entry.pack(pady=3)
-        self.status_lbl = ttk.Label(val_box, text="", wraplength=480)
+        self.plate_var.trace_add("write", lambda *_: self.on_number_changed())
+        self.build_extra(val_box)
+        self.status_lbl = ttk.Label(val_box, text="", wraplength=max(self.view_w, 360))
         self.status_lbl.pack()
 
         # Hàng 2: nút
         btns = ttk.Frame(main)
         btns.grid(row=2, column=0, columnspan=2, pady=8)
+        self.build_buttons(btns)
         self.capture_btn = ttk.Button(btns, text="📷 Thử nhận diện (Space)",
                                       command=self.capture, state="disabled")
         self.capture_btn.pack(side="left", padx=5)
         self.open_btn = ttk.Button(btns, text="📁 Thử với ảnh từ máy",
                                    command=self.open_image, state="disabled")
         self.open_btn.pack(side="left", padx=5)
-        self.save_btn = ttk.Button(btns, text="💾 Lưu xe vào", command=self.save_result)
-        self.save_btn.pack(side="left", padx=5)
-        self.cancel_btn = ttk.Button(btns, text="✖ Hủy", command=self.cancel_pending)
-        self.cancel_btn.pack(side="left", padx=5)
 
         # Hàng 3: lịch sử
-        hist = ttk.LabelFrame(main, text="Lịch sử gửi xe (từ SQL Server)", padding=5)
+        hist = ttk.LabelFrame(main, text="Lịch sử gửi xe (từ SQL Server, cả hai cổng)", padding=5)
         hist.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
-        self.tree = ttk.Treeview(hist, columns=("time_in", "card", "plate", "time_out", "fee", "file"),
-                                 show="headings", height=6)
-        for col, text, width in (("time_in", "Giờ vào", 150), ("card", "Mã thẻ", 100),
-                                 ("plate", "5 số", 70), ("time_out", "Giờ ra", 150),
-                                 ("fee", "Tiền", 100), ("file", "Ảnh", 400)):
+        cols = (("time_in", "Giờ vào", 135), ("card", "Mã thẻ", 85), ("plate", "5 số vào", 75),
+                ("time_out", "Giờ ra", 135), ("plate_out", "5 số ra", 70), ("fee", "Tiền", 80),
+                ("match", "Đối chiếu", 120), ("note", "Lý do", 160))
+        self.tree = ttk.Treeview(hist, columns=[c[0] for c in cols], show="headings", height=6)
+        for col, text, width in cols:
             self.tree.heading(col, text=text)
             self.tree.column(col, width=width)
         sb = ttk.Scrollbar(hist, orient="vertical", command=self.tree.yview)
@@ -158,10 +170,45 @@ class App:
 
         self.root.bind("<space>", self.on_space)
 
+    # --- Hook cho lớp con ---
+    def build_result_panel(self, parent):
+        """Khung bên phải. Mặc định: một ảnh kết quả."""
+        rf = tk.Frame(parent, width=self.view_w, height=self.view_h, bg="#222")
+        rf.pack_propagate(False)
+        rf.pack()
+        self.result_lbl = tk.Label(rf, bg="#222", fg="white", text="Quẹt thẻ để bắt đầu")
+        self.result_lbl.pack(fill="both", expand=True)
+
+    def build_extra(self, parent):
+        """Thêm widget giữa ô 5 số và dòng trạng thái."""
+
+    def build_buttons(self, parent):
+        """Nút riêng của cổng (đặt bên trái các nút thử)."""
+
+    def update_action_buttons(self):
+        """Bật/tắt nút riêng của cổng theo trạng thái hiện tại."""
+
+    def reset_view(self):
+        """Gọi khi bắt đầu xử lý một lần quẹt thẻ mới."""
+
+    def on_gate_outcome(self, outcome):
+        """Xử lý kết quả riêng của cổng (ENTRY_* hoặc EXIT_*)."""
+        raise NotImplementedError
+
+    def handle_error(self, exc):
+        self.set_status(f"Lỗi: {exc}", COLOR_ERR)
+
+    # --- Tiện ích hiển thị ---
     def on_space(self, _event):
         if isinstance(self.root.focus_get(), (tk.Entry, tk.Spinbox)):
             return
         self.capture()
+
+    def on_number_changed(self):
+        complete = len(self.plate_var.get()) == NUMBER_LEN
+        if self.pending is not None:
+            self.plate_entry.configure(fg=COLOR_OK if complete else COLOR_WARN)
+        self.update_action_buttons()
 
     def set_status(self, text, color="black"):
         self.status_lbl.configure(text=text, foreground=color)
@@ -170,18 +217,19 @@ class App:
         self.card_lbl.configure(text=f"Thẻ: {uid}" if uid else "Thẻ: —")
 
     def show_image(self, bgr):
-        photo = to_photo(bgr)
+        """Hiện ảnh vừa chụp/nhận diện."""
+        photo = to_photo(bgr, self.view_w, self.view_h)
         self.result_lbl.configure(image=photo, text="")
         self.result_lbl.image = photo
 
     def refresh_buttons(self):
-        can_run = self.service.ready and not self.busy
+        can_trial = self.service.ready and not self.busy and self.pending is None
         for b in (self.capture_btn, self.open_btn):
-            b.configure(state="normal" if can_run else "disabled")
-        self.save_btn.configure(state="disabled" if self.busy else "normal")
+            b.configure(state="normal" if can_trial else "disabled")
+        self.update_action_buttons()
 
     # ---------- Chạy việc nặng ở luồng nền ----------
-    def _bg(self, fn, on_ok, busy=True):
+    def _bg(self, fn, on_ok, busy=True, on_error=None):
         if busy:
             self.busy = True
             self.refresh_buttons()
@@ -190,7 +238,7 @@ class App:
             try:
                 res = fn()
             except Exception as e:
-                self.q.put(lambda e=e: self.on_fail(e, busy))
+                self.q.put(lambda e=e: self.on_fail(e, busy, on_error))
             else:
                 self.q.put(lambda: self.on_done(on_ok, res, busy))
 
@@ -202,11 +250,11 @@ class App:
             self.refresh_buttons()
         on_ok(res)
 
-    def on_fail(self, exc, busy):
+    def on_fail(self, exc, busy, on_error=None):
         if busy:
             self.busy = False
             self.refresh_buttons()
-        self.set_status(f"Lỗi: {exc}", COLOR_ERR)
+        (on_error or self.handle_error)(exc)
 
     # ---------- Camera ----------
     def open_camera(self, index):
@@ -221,6 +269,8 @@ class App:
             pass
 
     def update_loop(self):
+        if self._closing:
+            return
         while True:
             try:
                 self.q.get_nowait()()
@@ -230,14 +280,18 @@ class App:
         frame = self.camera.read()
         if frame is not None:
             self.last_frame = frame
-            photo = to_photo(frame)
+            photo = to_photo(frame, self.view_w, self.view_h)
             self.preview_lbl.configure(image=photo, text="")
             self.preview_lbl.image = photo
         self.root.after(30, self.update_loop)
 
     # ---------- Quẹt thẻ ----------
     def on_model_ready(self, _):
-        self.set_status("Sẵn sàng. Quẹt thẻ để xe vào / ra.", COLOR_OK)
+        self.set_status("Sẵn sàng. Quẹt thẻ.", COLOR_OK)
+
+    def get_frame(self):
+        """Khung hình mới nhất. Được gọi từ luồng nền: chỉ đọc tham chiếu, không đụng camera."""
+        return self.last_frame
 
     def on_card(self, uid):
         if not self.service.ready:
@@ -246,67 +300,41 @@ class App:
         if self.busy:
             self.set_status(f"Thẻ {uid}: đang xử lý, quẹt lại sau.", COLOR_WARN)
             return
-        if self.pending_card is not None:
-            self.set_status(f"Còn thẻ {self.pending_card} chờ xác nhận. Hãy Lưu hoặc Hủy trước khi quẹt thẻ mới.",
-                            COLOR_WARN)
+        if self.pending is not None:
+            self.set_status(f"Còn thẻ {self.pending.card_uid} chờ xác nhận. "
+                            "Hãy xử lý hoặc Hủy trước khi quẹt thẻ mới.", COLOR_WARN)
             return
         if self.last_frame is None:
             self.set_status(f"Thẻ {uid}: chưa có hình từ camera.", COLOR_ERR)
             return
 
-        frame = self.last_frame.copy()
+        self.reset_view()
+        self.plate_var.set("")
         self.set_card(uid)
         self.set_status(f"Thẻ {uid}: đang kiểm tra...", COLOR_WARN)
-        self._bg(lambda: self.service.handle_card(uid, frame),
-                 lambda outcome: self.on_card_outcome(uid, frame, outcome))
 
-    def on_card_outcome(self, uid, frame, outcome):
-        if outcome.kind is Outcome.REJECTED:
-            self.pending_card = None
+        def progress(done, total):
+            self.q.put(lambda: self.set_status(
+                f"Thẻ {uid}: đang quét ảnh {done}/{total}...", COLOR_WARN))
+
+        self._bg(lambda: self.service.handle_card(uid, self.get_frame, progress),
+                 self.on_card_outcome)
+
+    def on_card_outcome(self, outcome):
+        uid, event, kind = outcome.card_uid, outcome.event, outcome.kind
+        if kind is Outcome.UNREGISTERED:
             self.set_status(f"THẺ {uid} CHƯA ĐĂNG KÝ. Không nhận diện, không lưu.", COLOR_ERR)
-            return
-
-        if outcome.kind is Outcome.EXIT:
-            e = outcome.event
-            self.pending_card = None
-            self.show_image(frame)
-            self.plate_var.set(e.plate_number)
-            self.plate_entry.configure(fg=COLOR_OK)
-            self.upsert_row(e)
-            self.set_status(
-                f"XE RA | thẻ {uid} | biển {e.plate_number} | vào {fmt_time(e.time_in)} | "
-                f"ra {fmt_time(e.time_out)} ({fmt_duration(e.time_out - e.time_in)}) | "
-                f"TIỀN: {fmt_money(e.fee)}", COLOR_OK)
-            return
-
-        # XE VÀO
-        result, event = outcome.result, outcome.event
-        self.current_image = result.image
-        self.current_plate_full = result.plate_full
-        self.show_image(result.image)
-        self.plate_var.set(result.number)
-
-        if event is not None:                       # đã tự lưu
-            self.pending_card = None
-            self.plate_entry.configure(fg=COLOR_OK)
-            self.upsert_row(event)
-            self.set_status(f"XE VÀO | thẻ {uid} | biển {result.plate_full or '?'} | 5 số {result.number} | "
-                            f"{fmt_time(event.time_in)}", COLOR_OK)
-            return
-
-        self.pending_card = uid                     # cần người dùng xác nhận
-        if result.number:
-            self.plate_entry.configure(fg=COLOR_WARN)
-            self.set_status(f"Chỉ đọc được {len(result.number)} chữ số (cần {NUMBER_LEN}). "
-                            "Hãy sửa rồi bấm Lưu xe vào.", COLOR_WARN)
+        elif kind is Outcome.ALREADY_INSIDE:
+            where = (f" (vào {fmt_time(event.time_in)}, biển {event.plate_number})" if event else "")
+            self.set_status(f"THẺ {uid} ĐANG Ở TRONG BÃI{where}. Không cho vào lần nữa.", COLOR_ERR)
+        elif kind is Outcome.NOT_INSIDE:
+            self.set_status(f"THẺ {uid} CHƯA CÓ LƯỢT VÀO. Xe chưa vào bãi nên không thể ra.", COLOR_ERR)
         else:
-            self.plate_entry.configure(fg=COLOR_WARN)
-            self.set_status("Không đọc được số ở dòng dưới biển. Nhập tay rồi Lưu, hoặc Hủy và quẹt lại.",
-                            COLOR_WARN)
+            self.on_gate_outcome(outcome)
 
     # ---------- Chế độ thử (không có thẻ -> không lưu) ----------
     def capture(self):
-        if self.busy or not self.service.ready:
+        if self.busy or not self.service.ready or self.pending is not None:
             return
         if self.last_frame is None:
             self.set_status("Chưa có hình từ camera.", COLOR_ERR)
@@ -314,7 +342,7 @@ class App:
         self.run_trial(self.last_frame.copy())
 
     def open_image(self):
-        if self.busy or not self.service.ready:
+        if self.busy or not self.service.ready or self.pending is not None:
             return
         path = filedialog.askopenfilename(
             title="Chọn ảnh xe",
@@ -329,51 +357,22 @@ class App:
 
     def run_trial(self, frame):
         self.set_card(None)
-        self.set_status("Đang nhận diện (chế độ thử)...", COLOR_WARN)
+        self.set_status("Đang nhận diện (chế độ thử, 1 ảnh)...", COLOR_WARN)
         self._bg(lambda: self.service.identify(frame), self.on_trial_result)
 
     def on_trial_result(self, result):
         self.show_image(result.image)
         self.plate_var.set(result.number)
         self.plate_entry.configure(fg=COLOR_OK if result.is_complete else COLOR_WARN)
-        self.set_status(f"[THỬ - KHÔNG LƯU] Biển: {result.plate_full or '?'} | 5 số: {result.number or '?'}. "
-                        "Chỉ lưu khi quẹt thẻ đã đăng ký.", COLOR_WARN)
-
-    # ---------- Lưu / hủy ----------
-    def save_result(self):
-        if self.pending_card is None:
-            messagebox.showinfo("Không có gì để lưu",
-                                "Chỉ lưu được khi có thẻ đã đăng ký đang chờ xác nhận. Hãy quẹt thẻ trước.")
-            return
-        number = re.sub(r"\D", "", self.plate_var.get())
-        if not number:
-            messagebox.showwarning("Chưa có số", "Hãy nhập 5 số vào ô.")
-            return
-        if len(number) != NUMBER_LEN and not messagebox.askyesno(
-                "Chưa đủ 5 số", f"Mới có {len(number)} chữ số ({number}). Vẫn lưu?"):
-            return
-
-        uid, image, full = self.pending_card, self.current_image, self.current_plate_full
-        self.set_status("Đang lưu...", COLOR_WARN)
-        self._bg(lambda: self.service.save_entry(uid, number, full, image), self.on_saved)
-
-    def on_saved(self, event):
-        self.pending_card = None
-        self.upsert_row(event)
-        self.set_status(f"XE VÀO | thẻ {event.card_uid} | 5 số {event.plate_number} | "
-                        f"{fmt_time(event.time_in)}", COLOR_OK)
-
-    def cancel_pending(self):
-        self.pending_card = None
-        self.plate_var.set("")
-        self.set_card(None)
-        self.set_status("Đã hủy. Sẵn sàng cho xe tiếp theo.", COLOR_OK)
+        self.set_status(f"[THỬ - KHÔNG LƯU] Biển: {result.plate_full or '?'} | "
+                        f"{NUMBER_LEN} số: {result.number or '?'}. Chỉ lưu khi quẹt thẻ đã đăng ký.",
+                        COLOR_WARN)
 
     # ---------- Lịch sử ----------
     @staticmethod
     def _row(e):
-        return (fmt_time(e.time_in), e.card_uid, e.plate_number,
-                fmt_time(e.time_out), fmt_money(e.fee), e.image_path)
+        return (fmt_time(e.time_in), e.card_uid, e.plate_number, fmt_time(e.time_out),
+                e.plate_out, fmt_money(e.fee), MATCH_TEXT.get(e.match_status, ""), e.override_note)
 
     def upsert_row(self, event):
         """Thêm dòng mới (xe vào) hoặc cập nhật dòng có sẵn (xe ra)."""
@@ -383,11 +382,33 @@ class App:
         else:
             self.rows[event.id] = self.tree.insert("", 0, values=self._row(event))
 
-    def fill_history(self, events):
+    def refresh_history(self):
+        if self._closing:
+            return
+        if not self._history_loading:
+            self._history_loading = True
+            self._bg(lambda: self.service.recent_events(100), self.apply_history,
+                     busy=False, on_error=self.on_history_error)
+        self.root.after(HISTORY_REFRESH_MS, self.refresh_history)
+
+    def apply_history(self, events):
+        self._history_loading = False
+        self.db_lbl.configure(text="SQL Server: kết nối tốt", foreground=COLOR_OK)
+        sig = tuple((e.id, e.time_out, e.match_status) for e in events)
+        if sig == self._hist_sig:
+            return
+        self._hist_sig = sig
+        self.tree.delete(*self.tree.get_children())
+        self.rows = {}
         for e in events:                     # recent() trả về mới nhất trước
             self.rows[e.id] = self.tree.insert("", "end", values=self._row(e))
 
+    def on_history_error(self, exc):
+        self._history_loading = False
+        self.db_lbl.configure(text=f"SQL Server: LỖI ({str(exc)[:60]})", foreground="red")
+
     def on_close(self):
+        self._closing = True
         if self.rfid is not None:
             self.rfid.stop()
         self.camera.release()

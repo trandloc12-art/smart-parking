@@ -1,4 +1,11 @@
 .venv/
 __pycache__/
-.env
+.pytest_cache/
 anh_chup/
+
+# File cấu hình thật (có mật khẩu / cổng COM riêng từng máy) không được commit
+.env
+.env.*
+# ...nhưng file mẫu thì có
+!.env.example
+!.env.*.example

@@ -2,13 +2,29 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Chạy nhận diện biển số",
+      "name": "Cổng VÀO",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",
+      "args": ["--gate", "in"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal"
+    },
+    {
+      "name": "Cổng RA",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["--gate", "out"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Cả hai cổng (vào + ra)",
+      "configurations": ["Cổng VÀO", "Cổng RA"],
+      "stopAll": true
     }
   ]
 }
