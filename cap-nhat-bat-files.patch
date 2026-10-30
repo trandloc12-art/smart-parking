@@ -1,0 +1,104 @@
+diff --git a/.gitattributes b/.gitattributes
+new file mode 100644
+index 0000000..4b06d03
+--- /dev/null
++++ b/.gitattributes
+@@ -0,0 +1,2 @@
++# Cac file .bat phai la CRLF tren Windows (goto/call :nhan loi neu la LF)
++*.bat text eol=crlf
+diff --git a/README.md b/README.md
+index 468473d..91caf01 100644
+--- a/README.md
++++ b/README.md
+@@ -24,7 +24,14 @@ Cần project **rfid_arduino** đã nạp cho board (hai project chỉ giao ti
+    Các file `.env*` thật **không được commit** (có mật khẩu); chỉ commit các file `*.example`.
+ 
+ ## Chạy
+-- **Windows, không cần gõ lệnh:** bấm đúp `setup.bat` (một lần: tạo `.venv`, cài thư viện, tạo `.env*` từ file mẫu), sửa các file `.env*`, rồi bấm đúp `run.bat` (cả hai cổng, một cửa sổ). `run.bat in` / `run.bat out` chạy riêng từng cổng.
++- **Windows, không cần gõ lệnh:** bấm đúp `setup.bat` một lần (tạo `.venv`, cài thư viện, tạo `.env*` từ file mẫu), sửa các file `.env*`, rồi chọn một trong các file chạy:
++
++  | File | Kết quả |
++  |---|---|
++  | `run.bat` | MỘT cửa sổ chứa cả cổng vào và cổng ra (hai khung camera) |
++  | `run-2-cua-so.bat` | HAI cửa sổ riêng: cổng vào và cổng ra |
++  | `run-vao.bat` | Chỉ cổng vào |
++  | `run-ra.bat` | Chỉ cổng ra |
+ - **Một cửa sổ, hai camera (mặc định):**
+   ```
+   python main.py            (tương đương python main.py --gate both)
+@@ -136,7 +143,7 @@ services/                    gate_service.py    phần chung (quét, lưu ảnh)
+                              entry_service.py   nghiệp vụ cổng vào
+                              exit_service.py    nghiệp vụ cổng ra
+                              pricing.py         tính tiền
+-setup.bat / run.bat          cài đặt một lần / chạy chương trình (Windows)
++setup.bat, run*.bat          cài đặt một lần / các cách chạy chương trình (Windows)
+ ui/                          base_gate_app.py   giao diện chung
+                              entry_app.py       cổng vào
+                              exit_app.py        cổng ra (ảnh vào cạnh ảnh ra, đối chiếu)
+diff --git a/run-2-cua-so.bat b/run-2-cua-so.bat
+new file mode 100644
+index 0000000..eecb2bf
+--- /dev/null
++++ b/run-2-cua-so.bat
+@@ -0,0 +1,15 @@
++@echo off
++chcp 65001 >nul
++cd /d "%~dp0"
++
++if not exist ".venv\Scripts\python.exe" (
++    echo Chua cai dat. Hay chay setup.bat truoc.
++    pause
++    exit /b 1
++)
++
++REM Mo 2 cua so rieng: CONG VAO va CONG RA (moi cong mot tien trinh).
++REM Dong cua so cua cong nao thi chi cong do dung. Cua so dong lenh hien thong bao loi neu co.
++start "CONG VAO" cmd /k .venv\Scripts\python.exe main.py --gate in
++timeout /t 2 /nobreak >nul
++start "CONG RA" cmd /k .venv\Scripts\python.exe main.py --gate out
+diff --git a/run-ra.bat b/run-ra.bat
+new file mode 100644
+index 0000000..6afe5d9
+--- /dev/null
++++ b/run-ra.bat
+@@ -0,0 +1,17 @@
++@echo off
++chcp 65001 >nul
++cd /d "%~dp0"
++
++if not exist ".venv\Scripts\python.exe" (
++    echo Chua cai dat. Hay chay setup.bat truoc.
++    pause
++    exit /b 1
++)
++
++REM Chi chay cong RA (mot cua so).
++".venv\Scripts\python.exe" main.py --gate out
++if errorlevel 1 (
++    echo.
++    echo Chuong trinh dung do loi. Xem thong bao phia tren.
++    pause
++)
+diff --git a/run-vao.bat b/run-vao.bat
+new file mode 100644
+index 0000000..856826e
+--- /dev/null
++++ b/run-vao.bat
+@@ -0,0 +1,17 @@
++@echo off
++chcp 65001 >nul
++cd /d "%~dp0"
++
++if not exist ".venv\Scripts\python.exe" (
++    echo Chua cai dat. Hay chay setup.bat truoc.
++    pause
++    exit /b 1
++)
++
++REM Chi chay cong VAO (mot cua so).
++".venv\Scripts\python.exe" main.py --gate in
++if errorlevel 1 (
++    echo.
++    echo Chuong trinh dung do loi. Xem thong bao phia tren.
++    pause
++)

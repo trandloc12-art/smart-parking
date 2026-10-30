@@ -24,7 +24,14 @@ Cần project **rfid_arduino** đã nạp cho board (hai project chỉ giao ti�
    Các file `.env*` thật **không được commit** (có mật khẩu); chỉ commit các file `*.example`.
 
 ## Chạy
-- **Windows, không cần gõ lệnh:** bấm đúp `setup.bat` (một lần: tạo `.venv`, cài thư viện, tạo `.env*` từ file mẫu), sửa các file `.env*`, rồi bấm đúp `run.bat` (cả hai cổng, một cửa sổ). `run.bat in` / `run.bat out` chạy riêng từng cổng.
+- **Windows, không cần gõ lệnh:** bấm đúp `setup.bat` một lần (tạo `.venv`, cài thư viện, tạo `.env*` từ file mẫu), sửa các file `.env*`, rồi chọn một trong các file chạy:
+
+  | File | Kết quả |
+  |---|---|
+  | `run.bat` | MỘT cửa sổ chứa cả cổng vào và cổng ra (hai khung camera) |
+  | `run-2-cua-so.bat` | HAI cửa sổ riêng: cổng vào và cổng ra |
+  | `run-vao.bat` | Chỉ cổng vào |
+  | `run-ra.bat` | Chỉ cổng ra |
 - **Một cửa sổ, hai camera (mặc định):**
   ```
   python main.py            (tương đương python main.py --gate both)
@@ -136,7 +143,7 @@ services/                    gate_service.py    phần chung (quét, lưu ảnh)
                              entry_service.py   nghiệp vụ cổng vào
                              exit_service.py    nghiệp vụ cổng ra
                              pricing.py         tính tiền
-setup.bat / run.bat          cài đặt một lần / chạy chương trình (Windows)
+setup.bat, run*.bat          cài đặt một lần / các cách chạy chương trình (Windows)
 ui/                          base_gate_app.py   giao diện chung
                              entry_app.py       cổng vào
                              exit_app.py        cổng ra (ảnh vào cạnh ảnh ra, đối chiếu)

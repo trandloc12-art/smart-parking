@@ -1,0 +1,2 @@
+# Cac file .bat phai la CRLF tren Windows (goto/call :nhan loi neu la LF)
+*.bat text eol=crlf
