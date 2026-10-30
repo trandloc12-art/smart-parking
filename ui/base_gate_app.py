@@ -2,6 +2,10 @@
 
 Lớp này lo: camera trực tiếp, nhận thẻ RFID, chạy việc nặng ở luồng nền, ô 5 số, bảng lịch sử.
 Phần riêng của mỗi cổng nằm ở entry_app.py / exit_app.py (override các hook build_*, on_gate_outcome...).
+
+Hai cách dùng:
+  - Cửa sổ riêng (mặc định): BaseGateApp(root, service, camera, cfg) tự dựng cửa sổ + bảng lịch sử.
+  - Nhúng vào cửa sổ chung (ui/dual_app.py): truyền thêm container=<Frame> và history=<HistoryTable>.
 """
 import queue
 import threading
@@ -43,30 +47,81 @@ def fmt_duration(td):
     return f"{h} giờ {m} phút" if h else f"{m} phút"
 
 
+class HistoryTable:
+    """Bảng lịch sử gửi xe. Một bảng có thể dùng chung cho nhiều cổng trong cùng một cửa sổ."""
+    COLUMNS = (("time_in", "Giờ vào", 135), ("card", "Mã thẻ", 85), ("plate", "5 số vào", 75),
+               ("time_out", "Giờ ra", 135), ("plate_out", "5 số ra", 70), ("fee", "Tiền", 80),
+               ("match", "Đối chiếu", 120), ("note", "Lý do", 160))
+
+    def __init__(self, parent, height=6):
+        self.frame = ttk.LabelFrame(parent, text="Lịch sử gửi xe (từ SQL Server, cả hai cổng)",
+                                    padding=5)
+        self.tree = ttk.Treeview(self.frame, columns=[c[0] for c in self.COLUMNS],
+                                 show="headings", height=height)
+        for col, text, width in self.COLUMNS:
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=width)
+        sb = ttk.Scrollbar(self.frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.rows = {}              # id lượt gửi xe -> dòng trong bảng
+        self._sig = None
+
+    @staticmethod
+    def _row(e):
+        return (fmt_time(e.time_in), e.card_uid, e.plate_number, fmt_time(e.time_out),
+                e.plate_out, fmt_money(e.fee), MATCH_TEXT.get(e.match_status, ""), e.override_note)
+
+    def upsert(self, event):
+        """Thêm dòng mới (xe vào) hoặc cập nhật dòng có sẵn (xe ra)."""
+        iid = self.rows.get(event.id)
+        if iid is not None:
+            self.tree.item(iid, values=self._row(event))
+        else:
+            self.rows[event.id] = self.tree.insert("", 0, values=self._row(event))
+
+    def apply(self, events):
+        """Thay toàn bộ bảng bằng `events` (mới nhất trước). Bỏ qua nếu không có gì thay đổi."""
+        sig = tuple((e.id, e.time_out, e.match_status) for e in events)
+        if sig == self._sig:
+            return
+        self._sig = sig
+        self.tree.delete(*self.tree.get_children())
+        self.rows = {}
+        for e in events:
+            self.rows[e.id] = self.tree.insert("", "end", values=self._row(e))
+
+
 class BaseGateApp:
     BANNER_COLOR = "#1a7f37"
     RESULT_TITLE = "Ảnh đã chụp"
     NUMBER_HINT = f"{NUMBER_LEN} số ở dòng dưới biển số (bắt buộc đủ {NUMBER_LEN} số):"
 
-    def __init__(self, root, service, camera, cfg):
+    def __init__(self, root, service, camera, cfg, container=None, history=None):
+        """root: cửa sổ Tk (dùng cho after/bind). container: khung để dựng giao diện vào
+        (None = dựng thẳng vào root và tự lo tiêu đề/đóng cửa sổ). history: bảng lịch sử dùng chung
+        (None = tự tạo bảng riêng ở cuối giao diện)."""
         self.root = root
+        self.embedded = container is not None
+        self.container = container if self.embedded else root
         self.service = service
         self.camera = camera
         self.cfg = cfg
         self.view_w, self.view_h = cfg.view_w, cfg.view_h
         self.rfid = None
 
-        root.title(f"{cfg.label} - Bãi đỗ xe RFID + nhận diện biển số")
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
-        if cfg.window_pos:
-            root.geometry(cfg.window_pos)
+        if not self.embedded:
+            root.title(f"{cfg.label} - Bãi đỗ xe RFID + nhận diện biển số")
+            root.protocol("WM_DELETE_WINDOW", self.on_close)
+            if cfg.window_pos:
+                root.geometry(cfg.window_pos)
 
         self.q = queue.Queue()      # luồng nền -> luồng GUI
         self.busy = False
         self.pending = None         # CardOutcome đang chờ nhân viên xử lý
         self.last_frame = None
-        self.rows = {}              # id lượt gửi xe -> dòng trong bảng lịch sử
-        self._hist_sig = None
+        self.history = history      # None -> build_ui tự tạo
         self._history_loading = False
         self._closing = False
 
@@ -94,9 +149,9 @@ class BaseGateApp:
 
     # ---------- Giao diện ----------
     def build_ui(self):
-        tk.Label(self.root, text=self.cfg.label, bg=self.BANNER_COLOR, fg="white",
+        tk.Label(self.container, text=self.cfg.label, bg=self.BANNER_COLOR, fg="white",
                  font=("Segoe UI", 16, "bold")).pack(fill="x")
-        main = ttk.Frame(self.root, padding=8)
+        main = ttk.Frame(self.container, padding=8)
         main.pack(fill="both", expand=True)
 
         left = ttk.LabelFrame(main, text="Camera trực tiếp", padding=5)
@@ -146,29 +201,22 @@ class BaseGateApp:
         btns = ttk.Frame(main)
         btns.grid(row=2, column=0, columnspan=2, pady=8)
         self.build_buttons(btns)
-        self.capture_btn = ttk.Button(btns, text="📷 Thử nhận diện (Space)",
+        trial_text = "📷 Thử nhận diện (Space)" if not self.embedded \
+            else "📷 Thử nhận diện (Space khi chuột ở đây)"
+        self.capture_btn = ttk.Button(btns, text=trial_text,
                                       command=self.capture, state="disabled")
         self.capture_btn.pack(side="left", padx=5)
         self.open_btn = ttk.Button(btns, text="📁 Thử với ảnh từ máy",
                                    command=self.open_image, state="disabled")
         self.open_btn.pack(side="left", padx=5)
 
-        # Hàng 3: lịch sử
-        hist = ttk.LabelFrame(main, text="Lịch sử gửi xe (từ SQL Server, cả hai cổng)", padding=5)
-        hist.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
-        cols = (("time_in", "Giờ vào", 135), ("card", "Mã thẻ", 85), ("plate", "5 số vào", 75),
-                ("time_out", "Giờ ra", 135), ("plate_out", "5 số ra", 70), ("fee", "Tiền", 80),
-                ("match", "Đối chiếu", 120), ("note", "Lý do", 160))
-        self.tree = ttk.Treeview(hist, columns=[c[0] for c in cols], show="headings", height=6)
-        for col, text, width in cols:
-            self.tree.heading(col, text=text)
-            self.tree.column(col, width=width)
-        sb = ttk.Scrollbar(hist, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        # Hàng 3: lịch sử (cửa sổ chung thì dùng bảng do cửa sổ chung tạo)
+        if self.history is None:
+            self.history = HistoryTable(main)
+            self.history.frame.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
+        self.tree = self.history.tree
 
-        self.root.bind("<space>", self.on_space)
+        self.root.bind("<space>", self.on_space, add="+")
 
     # --- Hook cho lớp con ---
     def build_result_panel(self, parent):
@@ -199,9 +247,20 @@ class BaseGateApp:
         self.set_status(f"Lỗi: {exc}", COLOR_ERR)
 
     # --- Tiện ích hiển thị ---
+    def _pointer_inside(self):
+        """Chuột đang nằm trong khung của cổng này? (chỉ dùng khi hai cổng chung một cửa sổ)"""
+        w = self.root.winfo_containing(*self.root.winfo_pointerxy())
+        while w is not None:
+            if w is self.container:
+                return True
+            w = w.master
+        return False
+
     def on_space(self, _event):
         if isinstance(self.root.focus_get(), (tk.Entry, tk.Spinbox)):
             return
+        if self.embedded and not self._pointer_inside():
+            return      # hai cổng cùng nghe phím Space: chỉ cổng đang được trỏ chuột vào mới chạy
         self.capture()
 
     def on_number_changed(self):
@@ -369,18 +428,9 @@ class BaseGateApp:
                         COLOR_WARN)
 
     # ---------- Lịch sử ----------
-    @staticmethod
-    def _row(e):
-        return (fmt_time(e.time_in), e.card_uid, e.plate_number, fmt_time(e.time_out),
-                e.plate_out, fmt_money(e.fee), MATCH_TEXT.get(e.match_status, ""), e.override_note)
-
     def upsert_row(self, event):
         """Thêm dòng mới (xe vào) hoặc cập nhật dòng có sẵn (xe ra)."""
-        iid = self.rows.get(event.id)
-        if iid is not None:
-            self.tree.item(iid, values=self._row(event))
-        else:
-            self.rows[event.id] = self.tree.insert("", 0, values=self._row(event))
+        self.history.upsert(event)
 
     def refresh_history(self):
         if self._closing:
@@ -394,22 +444,19 @@ class BaseGateApp:
     def apply_history(self, events):
         self._history_loading = False
         self.db_lbl.configure(text="SQL Server: kết nối tốt", foreground=COLOR_OK)
-        sig = tuple((e.id, e.time_out, e.match_status) for e in events)
-        if sig == self._hist_sig:
-            return
-        self._hist_sig = sig
-        self.tree.delete(*self.tree.get_children())
-        self.rows = {}
-        for e in events:                     # recent() trả về mới nhất trước
-            self.rows[e.id] = self.tree.insert("", "end", values=self._row(e))
+        self.history.apply(events)
 
     def on_history_error(self, exc):
         self._history_loading = False
         self.db_lbl.configure(text=f"SQL Server: LỖI ({str(exc)[:60]})", foreground="red")
 
-    def on_close(self):
+    def shutdown(self):
+        """Dừng RFID + camera của cổng này (không đóng cửa sổ)."""
         self._closing = True
         if self.rfid is not None:
             self.rfid.stop()
         self.camera.release()
+
+    def on_close(self):
+        self.shutdown()
         self.root.destroy()

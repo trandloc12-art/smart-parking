@@ -2,11 +2,26 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Một cửa sổ (vào + ra)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": [
+        "--gate",
+        "both"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
       "name": "Cổng VÀO",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",
-      "args": ["--gate", "in"],
+      "args": [
+        "--gate",
+        "in"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
     },
@@ -15,15 +30,21 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",
-      "args": ["--gate", "out"],
+      "args": [
+        "--gate",
+        "out"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
     }
   ],
   "compounds": [
     {
-      "name": "Cả hai cổng (vào + ra)",
-      "configurations": ["Cổng VÀO", "Cổng RA"],
+      "name": "Cả hai cổng (2 cửa sổ riêng)",
+      "configurations": [
+        "Cổng VÀO",
+        "Cổng RA"
+      ],
       "stopAll": true
     }
   ]

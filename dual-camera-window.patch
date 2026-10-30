@@ -1,0 +1,1277 @@
+diff --git a/.env.example b/.env.example
+index e7e388f..31ec3f0 100644
+--- a/.env.example
++++ b/.env.example
+@@ -19,6 +19,6 @@ SCAN_FRAMES=5                  # số ảnh quét
+ SCAN_INTERVAL=0.25             # giây giữa hai ảnh
+ VOTE_MIN=2                     # số phiếu tối thiểu để tự chấp nhận
+ 
+-# Kích thước khung camera (hai cửa sổ ~900px rộng, vừa màn hình 1920)
++# Kích thước khung camera (mỗi cổng ~900px rộng; hai cổng cạnh nhau vừa màn hình 1920, màn nhỏ hơn sẽ tự thu nhỏ)
+ VIEW_W=420
+ VIEW_H=315
+diff --git a/.env.in.example b/.env.in.example
+index 8a3bcb8..7a7ed09 100644
+--- a/.env.in.example
++++ b/.env.in.example
+@@ -1,4 +1,4 @@
+ # RIÊNG CỔNG VÀO. Copy thành .env.in rồi sửa.
+ RFID_PORT=COM3                 # đổi cho trùng cổng COM của đầu đọc RFID (Device Manager, hoặc: python -m serial.tools.list_ports)
+ CAMERA_INDEX=0
+-WINDOW_POS=+0+0                # vị trí cửa sổ trên màn hình (tuỳ chọn) để hai cổng nằm cạnh nhau
++WINDOW_POS=+0+0                # (tuỳ chọn) chỉ dùng khi chạy riêng từng cổng: vị trí cửa sổ. Chế độ một cửa sổ bỏ qua
+diff --git a/.env.out.example b/.env.out.example
+index c0fc4df..d08c470 100644
+--- a/.env.out.example
++++ b/.env.out.example
+@@ -1,4 +1,4 @@
+ # RIÊNG CỔNG RA. Copy thành .env.out rồi sửa. Phải là Arduino và camera KHÁC với cổng vào.
+ RFID_PORT=COM4
+ CAMERA_INDEX=1
+-WINDOW_POS=+920+0
++WINDOW_POS=+920+0               # (tuỳ chọn) chỉ dùng khi chạy riêng từng cổng. Chế độ một cửa sổ bỏ qua
+diff --git a/.vscode/launch.json b/.vscode/launch.json
+index 22d680a..63b3695 100644
+--- a/.vscode/launch.json
++++ b/.vscode/launch.json
+@@ -1,12 +1,27 @@
+ {
+   "version": "0.2.0",
+   "configurations": [
++    {
++      "name": "Một cửa sổ (vào + ra)",
++      "type": "debugpy",
++      "request": "launch",
++      "program": "${workspaceFolder}/main.py",
++      "args": [
++        "--gate",
++        "both"
++      ],
++      "cwd": "${workspaceFolder}",
++      "console": "integratedTerminal"
++    },
+     {
+       "name": "Cổng VÀO",
+       "type": "debugpy",
+       "request": "launch",
+       "program": "${workspaceFolder}/main.py",
+-      "args": ["--gate", "in"],
++      "args": [
++        "--gate",
++        "in"
++      ],
+       "cwd": "${workspaceFolder}",
+       "console": "integratedTerminal"
+     },
+@@ -15,15 +30,21 @@
+       "type": "debugpy",
+       "request": "launch",
+       "program": "${workspaceFolder}/main.py",
+-      "args": ["--gate", "out"],
++      "args": [
++        "--gate",
++        "out"
++      ],
+       "cwd": "${workspaceFolder}",
+       "console": "integratedTerminal"
+     }
+   ],
+   "compounds": [
+     {
+-      "name": "Cả hai cổng (vào + ra)",
+-      "configurations": ["Cổng VÀO", "Cổng RA"],
++      "name": "Cả hai cổng (2 cửa sổ riêng)",
++      "configurations": [
++        "Cổng VÀO",
++        "Cổng RA"
++      ],
+       "stopAll": true
+     }
+   ]
+diff --git a/README.md b/README.md
+index 1347119..468473d 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,8 @@
+ # smart-parking
+ 
+ Bãi đỗ xe thông minh bằng Python: quẹt thẻ RFID (Arduino qua cổng COM) -> chụp camera -> nhận diện biển số -> lưu SQL Server.
+-Hệ thống có **2 cổng chạy độc lập trên cùng một máy**: **cổng vào** và **cổng ra**, mỗi cổng một tiến trình, một camera, một đầu đọc RFID.
++Hệ thống có **2 cổng trên cùng một máy**: **cổng vào** và **cổng ra**, mỗi cổng một camera và một đầu đọc RFID.
++Mặc định cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau: CỔNG VÀO | CỔNG RA, lịch sử dùng chung ở dưới). Vẫn có thể chạy riêng từng cổng, mỗi cổng một cửa sổ / tiến trình.
+ Cần project **rfid_arduino** đã nạp cho board (hai project chỉ giao tiếp qua cổng COM).
+ 
+ ## Cài đặt
+@@ -23,26 +24,33 @@ Cần project **rfid_arduino** đã nạp cho board (hai project chỉ giao ti
+    Các file `.env*` thật **không được commit** (có mật khẩu); chỉ commit các file `*.example`.
+ 
+ ## Chạy
+-- VS Code: chọn cấu hình **Cổng VÀO**, **Cổng RA** hoặc **Cả hai cổng** rồi nhấn F5.
+-- Terminal (mở 2 cửa sổ):
++- **Windows, không cần gõ lệnh:** bấm đúp `setup.bat` (một lần: tạo `.venv`, cài thư viện, tạo `.env*` từ file mẫu), sửa các file `.env*`, rồi bấm đúp `run.bat` (cả hai cổng, một cửa sổ). `run.bat in` / `run.bat out` chạy riêng từng cổng.
++- **Một cửa sổ, hai camera (mặc định):**
++  ```
++  python main.py            (tương đương python main.py --gate both)
++  ```
++  VS Code: chọn cấu hình **Một cửa sổ (vào + ra)** rồi nhấn F5.
++- **Mỗi cổng một cửa sổ riêng** (hai tiến trình, mở 2 terminal):
+   ```
+   python main.py --gate in
+   python main.py --gate out
+   ```
++  VS Code: **Cổng VÀO**, **Cổng RA** hoặc **Cả hai cổng (vào + ra)** (hai cửa sổ).
+ Trước khi chạy: cắm 2 Arduino + 2 camera, **đóng Serial Monitor / Arduino IDE**.
+ Lần đầu chạy cần Internet để EasyOCR tải mô hình; chương trình tự tạo database + bảng (hai cổng khởi động cùng lúc vẫn an toàn).
+-Mỗi cổng nạp một bản EasyOCR riêng nên tốn thêm RAM.
++Chế độ một cửa sổ chỉ nạp **một** bản EasyOCR dùng chung cho cả hai cổng (tiết kiệm RAM); nếu hai cổng quét cùng lúc thì lần lượt từng cổng. Chạy hai tiến trình riêng thì mỗi cổng nạp một bản.
++Hai cổng trong một cửa sổ cần màn hình rộng khoảng 1850 px với `VIEW_W=420`; màn nhỏ hơn thì khung camera tự thu nhỏ cho vừa. Phím **Space** (thử nhận diện) chạy cho cổng đang được trỏ chuột vào.
+ 
+ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera không bị Windows đổi. Camera USB cắm chung một bộ điều khiển USB có thể tranh băng thông.
+ 
+ ## Bảng cấu hình
+-`RFID_PORT`, `CAMERA_INDEX`, `WINDOW_POS` nằm trong `.env.in` / `.env.out` (riêng từng cổng); các biến còn lại nằm trong `.env` (chung). Biến môi trường có sẵn luôn thắng file.
++`RFID_PORT`, `CAMERA_INDEX`, `WINDOW_POS` nằm trong `.env.in` / `.env.out` (riêng từng cổng); các biến còn lại nằm trong `.env` (chung). Thứ tự ưu tiên: biến môi trường có sẵn > `.env.in`/`.env.out` > `.env` > mặc định. Chế độ một cửa sổ vẫn đọc đủ cả `.env.in` và `.env.out`; hai cổng **không được trùng** `RFID_PORT` hay `CAMERA_INDEX` (chương trình báo lỗi ngay khi khởi động).
+ 
+ | Biến | Mặc định | Ý nghĩa |
+ |---|---|---|
+ | `RFID_PORT` | `COM3` (vào), `COM4` (ra) | Cổng COM của đầu đọc RFID |
+ | `CAMERA_INDEX` | `0` (vào), `1` (ra) | Số camera |
+-| `WINDOW_POS` | trống | Vị trí cửa sổ, VD `+0+0` và `+920+0` |
++| `WINDOW_POS` | trống | Vị trí cửa sổ khi chạy từng cổng riêng, VD `+0+0` và `+920+0` (chế độ một cửa sổ bỏ qua biến này) |
+ | `DB_SERVER`, `DB_NAME` | `localhost\SQLEXPRESS`, `BienSoDB` | SQL Server |
+ | `DB_USER`, `DB_PASSWORD` | trống | Để trống `DB_USER` = Windows Authentication |
+ | `DB_DRIVER` | `ODBC Driver 17 for SQL Server` | Tên driver ODBC đã cài |
+@@ -59,6 +67,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | Hộp thoại "Không kết nối được SQL Server" | Kiểm tra `DB_SERVER` trong `.env`, cài ODBC Driver, bật dịch vụ SQL Server |
+ | RFID đỏ "chưa kết nối" | Đổi `RFID_PORT`, đóng Serial Monitor / Arduino IDE. Chương trình tự kết nối lại khi cổng sẵn sàng |
+ | Hai cổng báo lỗi cổng COM hoặc camera | Thiếu `.env.in` / `.env.out`, hoặc hai cổng trùng `RFID_PORT` / `CAMERA_INDEX` |
++| Một cửa sổ nhưng hai khung camera hiện cùng một hình | Hai cổng đang trùng `CAMERA_INDEX`: sửa lại trong `.env.in` / `.env.out` |
++| Cửa sổ chung quá rộng, tràn màn hình | Giảm `VIEW_W` / `VIEW_H` trong `.env` (hoặc để chương trình tự thu nhỏ theo độ rộng màn hình) |
+ | "Không mở được camera" | Đổi số trong ô "Camera số" rồi bấm Mở camera; đóng ứng dụng khác đang dùng camera |
+ | Quẹt thẻ chậm | OCR chạy bằng CPU, mỗi ảnh có thể mất vài giây. Giảm `SCAN_FRAMES` nếu cần |
+ | Thẻ báo "đang ở trong bãi" dù xe đã đi | Lượt cũ chưa đóng: đóng bằng câu SQL ở trên |
+@@ -114,21 +124,23 @@ WHERE card_uid = N'AABBCCDD' AND time_out IS NULL;
+ ## Cấu trúc
+ ```
+ config.py                    cấu hình theo từng cổng (đọc biến môi trường / file .env*)
+-main.py                      python main.py --gate in|out
++main.py                      python main.py [--gate in|out|both]   (mặc định both: một cửa sổ)
+ core/                        plate_utils.py     xử lý ảnh + chuỗi biển
+                              recognizer.py      OCR 1 khung (EasyOCR)
+                              plate_voting.py    bỏ phiếu giữa nhiều lần đọc
+                              scanner.py         quét nhiều khung + bỏ phiếu
+                              plate_match.py     so khớp 5 số vào / ra
+-hardware/                    rfid.py (Serial), camera.py
++hardware/                    rfid.py (Serial), camera.py (đọc camera ở luồng nền)
+ storage/                     database.py (SQL Server), schema.sql, models.py, errors.py
+ services/                    gate_service.py    phần chung (quét, lưu ảnh)
+                              entry_service.py   nghiệp vụ cổng vào
+                              exit_service.py    nghiệp vụ cổng ra
+                              pricing.py         tính tiền
++setup.bat / run.bat          cài đặt một lần / chạy chương trình (Windows)
+ ui/                          base_gate_app.py   giao diện chung
+                              entry_app.py       cổng vào
+                              exit_app.py        cổng ra (ảnh vào cạnh ảnh ra, đối chiếu)
++                             dual_app.py        một cửa sổ chứa cả hai cổng + lịch sử dùng chung
+ tests/                       pytest
+ ```
+ 
+@@ -140,6 +152,8 @@ python -m pytest
+ Test dùng camera, OCR và CSDL giả nên chạy được mà không cần phần cứng hay SQL Server. Test giao diện tự bỏ qua nếu máy không có màn hình.
+ 
+ ## Nâng cấp từ bản cũ
++**Giao diện một cửa sổ:** không cần đổi cấu hình hay database. `python main.py` giờ mở cả hai cổng trong một cửa sổ; muốn giữ cách cũ thì chạy `python main.py --gate in` và `--gate out` như trước.
++
+ **Sao lưu database trước** khi chạy lần đầu, vì chương trình tự sửa cấu trúc bảng `access_log`.
+ 
+ **File cấu hình:** `RFID_PORT` và `CAMERA_INDEX` trong `.env` cũ giờ phải chuyển sang `.env.in` (cổng vào) và `.env.out` (cổng ra); nếu không, hai cổng dùng chung một cổng COM/camera và tranh nhau (chương trình in cảnh báo khi thiếu file). Chú thích cùng dòng (`KEY=giá trị  # ghi chú`) được hỗ trợ.
+diff --git a/config.py b/config.py
+index df1f23a..930c89c 100644
+--- a/config.py
++++ b/config.py
+@@ -1,11 +1,13 @@
+ """Cấu hình tập trung. Đọc từ biến môi trường (có thể nạp từ file .env, xem load_env_file).
+ 
+-Mỗi cổng chạy là một tiến trình riêng: `python main.py --gate in` và `python main.py --gate out`.
+-Mỗi tiến trình nạp `.env.<gate>` (riêng cổng: camera, cổng COM...) rồi `.env` (chung: SQL Server, giá tiền...).
+-Biến môi trường có sẵn luôn được ưu tiên hơn file.
++Có hai cách chạy:
++  - `python main.py`            (hoặc `--gate both`): MỘT cửa sổ chứa cả cổng vào và cổng ra.
++  - `python main.py --gate in|out`: mỗi cổng một tiến trình riêng.
++Cổng nào cũng đọc `.env.<gate>` (riêng cổng: camera, cổng COM...) rồi `.env` (chung: SQL Server, giá tiền...).
++Thứ tự ưu tiên: biến môi trường có sẵn > `.env.<gate>` > `.env` > mặc định.
+ """
+ import os
+-from dataclasses import dataclass
++from dataclasses import dataclass, replace
+ 
+ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ 
+@@ -32,20 +34,41 @@ def _parse_value(raw):
+     return value
+ 
+ 
+-def load_env_file(path):
+-    """Nạp file KEY=VALUE vào os.environ. Biến đã tồn tại KHÔNG bị ghi đè. Trả về True nếu có file."""
++def read_env_file(path):
++    """Đọc file KEY=VALUE thành dict (không đụng os.environ). Trả về None nếu không có file."""
+     if not os.path.isfile(path):
+-        return False
++        return None
++    values = {}
+     with open(path, encoding="utf-8-sig") as f:
+         for line in f:
+             line = line.strip()
+             if not line or line.startswith("#") or "=" not in line:
+                 continue
+             key, value = line.split("=", 1)
+-            os.environ.setdefault(key.strip(), _parse_value(value))
++            values[key.strip()] = _parse_value(value)
++    return values
++
++
++def load_env_file(path):
++    """Nạp file KEY=VALUE vào os.environ. Biến đã tồn tại KHÔNG bị ghi đè. Trả về True nếu có file."""
++    values = read_env_file(path)
++    if values is None:
++        return False
++    for key, value in values.items():
++        os.environ.setdefault(key, value)
+     return True
+ 
+ 
++def gate_env(gate, base_dir=BASE_DIR, environ=None):
++    """Cấu hình đã gộp cho MỘT cổng, không đụng os.environ (nên đọc được cả hai cổng trong một tiến trình).
++
++    Ưu tiên: biến môi trường có sẵn > .env.<gate> > .env. Trả về (dict, có_file_riêng_cổng)."""
++    environ = os.environ if environ is None else environ
++    gate_file = read_env_file(os.path.join(base_dir, f".env.{gate}"))
++    common = read_env_file(os.path.join(base_dir, ".env"))
++    return {**(common or {}), **(gate_file or {}), **environ}, gate_file is not None
++
++
+ @dataclass(frozen=True)
+ class Settings:
+     gate: str                  # "in" | "out"
+@@ -76,15 +99,19 @@ class Settings:
+     window_pos: str            # VD "+0+0" hoặc "+900+0" để xếp hai cửa sổ cạnh nhau; để trống = mặc định
+ 
+ 
+-def _env(name, default):
+-    return os.getenv(name, default)
++def load_settings(gate, env=None):
++    """Đọc cấu hình cho một cổng.
+ 
+-
+-def load_settings(gate):
+-    """Đọc cấu hình cho một cổng (gọi SAU khi đã nạp các file .env)."""
++    env=None: lấy từ os.environ (gọi SAU khi đã nạp các file .env bằng load_env_file).
++    env=dict: lấy từ dict đó (xem gate_env), dùng khi chạy cả hai cổng trong một tiến trình."""
+     if gate not in GATES:
+         raise ValueError(f"Cổng phải là một trong {sorted(GATES)}, không phải '{gate}'")
+     g = GATES[gate]
++    source = os.environ if env is None else env
++
++    def _env(name, default):
++        return source.get(name, default)
++
+     s = Settings(
+         gate=gate,
+         label=g["label"],
+@@ -115,3 +142,37 @@ def load_settings(gate):
+     if s.block_minutes < 1 or s.price_per_block < 0:
+         raise ValueError("BLOCK_MINUTES phải >= 1 và PRICE_PER_BLOCK phải >= 0")
+     return s
++
++
++def check_dual(cfg_in, cfg_out):
++    """Chạy cả hai cổng trong một cửa sổ: hai cổng KHÔNG được dùng chung cổng COM hay camera."""
++    problems = []
++    if cfg_in.rfid_port.strip().upper() == cfg_out.rfid_port.strip().upper():
++        problems.append(f"hai cổng cùng dùng đầu đọc RFID {cfg_in.rfid_port}")
++    if cfg_in.camera_index == cfg_out.camera_index:
++        problems.append(f"hai cổng cùng dùng camera số {cfg_in.camera_index}")
++    if problems:
++        raise ValueError("Cấu hình sai: " + "; ".join(problems)
++                         + ". Sửa RFID_PORT / CAMERA_INDEX trong .env.in và .env.out.")
++
++
++MIN_VIEW_W = 240
++_PANEL_EXTRA_W = 70     # lề + khung chữ quanh mỗi panel (ước lượng)
++
++
++def fit_views(screen_w, *cfgs):
++    """Thu nhỏ khung camera cho vừa chiều ngang màn hình khi xếp các cổng cạnh nhau.
++
++    Mỗi panel rộng ~ 2*VIEW_W (camera + ảnh kết quả) + lề. Giữ tỉ lệ khung hiện tại."""
++    n = len(cfgs)
++    widest = max(c.view_w for c in cfgs)
++    avail = (screen_w - 40) // n - _PANEL_EXTRA_W       # chiều ngang còn cho 2 khung ảnh của một panel
++    max_view_w = max(MIN_VIEW_W, avail // 2)
++    if widest <= max_view_w:
++        return cfgs
++    out = []
++    for c in cfgs:
++        w = min(c.view_w, max_view_w)
++        h = max(1, round(c.view_h * w / c.view_w))
++        out.append(replace(c, view_w=w, view_h=h))
++    return tuple(out)
+diff --git a/core/recognizer.py b/core/recognizer.py
+index e369fab..fb878ee 100644
+--- a/core/recognizer.py
++++ b/core/recognizer.py
+@@ -29,15 +29,22 @@ class PlateRecognizer:
+     def __init__(self):
+         self._reader = None
+         self._lock = threading.Lock()   # EasyOCR không nên chạy song song
++        self._load_lock = threading.Lock()
+ 
+     @property
+     def ready(self):
+         return self._reader is not None
+ 
+     def load(self):
+-        """Tải mô hình OCR (chậm, lần đầu cần Internet). Gọi ở luồng nền."""
+-        import easyocr
+-        self._reader = easyocr.Reader(["en"], gpu=False)
++        """Tải mô hình OCR (chậm, lần đầu cần Internet). Gọi ở luồng nền.
++
++        An toàn khi gọi nhiều lần / từ nhiều luồng (cả hai cổng dùng chung một bộ nhận diện):
++        chỉ nạp mô hình đúng một lần, các lần gọi sau chờ rồi trả về ngay."""
++        with self._load_lock:
++            if self._reader is not None:
++                return
++            import easyocr
++            self._reader = easyocr.Reader(["en"], gpu=False)
+ 
+     def recognize(self, frame):
+         if not self.ready:
+diff --git a/hardware/camera.py b/hardware/camera.py
+index 2a84f6b..f859e9a 100644
+--- a/hardware/camera.py
++++ b/hardware/camera.py
+@@ -1,5 +1,9 @@
+-"""Bao gói camera OpenCV."""
++"""Bao gói camera OpenCV.
++
++Mỗi camera có một luồng nền liên tục đọc khung hình. Nhờ vậy giao diện không bị đứng chờ camera,
++kể cả khi hai camera chạy cùng lúc trong một cửa sổ (mỗi lần cap.read() có thể chờ cả một khung hình)."""
+ import sys
++import threading
+ 
+ import cv2
+ 
+@@ -7,6 +11,12 @@ import cv2
+ class Camera:
+     def __init__(self):
+         self._cap = None
++        self._thread = None
++        self._stop = None
++        self._lock = threading.Lock()
++        self._frame = None
++        self._seq = 0       # số thứ tự khung mới nhất do luồng nền đọc được
++        self._seen = 0      # số thứ tự khung read() đã trả cho người gọi
+ 
+     def open(self, index):
+         """Mở camera số `index`. Trả về True nếu thành công."""
+@@ -14,20 +24,42 @@ class Camera:
+         # CAP_DSHOW ổn định hơn trên Windows
+         cap = cv2.VideoCapture(index, cv2.CAP_DSHOW) if sys.platform == "win32" \
+             else cv2.VideoCapture(index)
+-        if cap.isOpened():
+-            self._cap = cap
+-            return True
+-        cap.release()
+-        return False
++        if not cap.isOpened():
++            cap.release()
++            return False
++        self._cap = cap
++        self._frame, self._seq, self._seen = None, 0, 0
++        self._stop = threading.Event()      # mỗi lần mở một Event mới: luồng cũ không thể "sống lại"
++        self._thread = threading.Thread(target=self._grab, args=(cap, self._stop), daemon=True)
++        self._thread.start()
++        return True
++
++    def _grab(self, cap, stop):
++        while not stop.is_set():
++            ok, frame = cap.read()
++            if not ok:
++                stop.wait(0.05)             # camera chưa có hình / vừa rút: đừng quay vòng 100% CPU
++                continue
++            with self._lock:
++                self._frame = frame
++                self._seq += 1
+ 
+     def read(self):
+-        """Trả về khung hình mới nhất (BGR) hoặc None."""
+-        if self._cap is None:
+-            return None
+-        ok, frame = self._cap.read()
+-        return frame if ok else None
++        """Trả về khung hình MỚI (BGR) từ lần đọc trước, hoặc None nếu chưa có khung mới."""
++        with self._lock:
++            if self._frame is None or self._seq == self._seen:
++                return None
++            self._seen = self._seq
++            return self._frame
+ 
+     def release(self):
+-        if self._cap is not None:
+-            self._cap.release()
+-            self._cap = None
++        stop, thread, cap = self._stop, self._thread, self._cap
++        self._stop = self._thread = self._cap = None
++        if stop is not None:
++            stop.set()
++        if thread is not None:
++            thread.join(timeout=2)          # chờ luồng đọc dừng rồi mới nhả camera
++        if cap is not None:
++            cap.release()
++        with self._lock:
++            self._frame = None
+diff --git a/main.py b/main.py
+index 7b3df38..8b7c89f 100644
+--- a/main.py
++++ b/main.py
+@@ -1,8 +1,9 @@
+ """Điểm khởi chạy: tạo các thành phần rồi nối chúng lại với nhau.
+ 
+ Cài đặt:  python -m pip install -r requirements.txt   (+ ODBC Driver for SQL Server)
+-Chạy:     python main.py --gate in      (cổng vào)
+-          python main.py --gate out     (cổng ra)      -> mở hai cửa sổ terminal, mỗi cổng một tiến trình
++Chạy:     python main.py                (mặc định = --gate both) MỘT cửa sổ chứa cả cổng vào và cổng ra
++          python main.py --gate in      chỉ cổng vào  (một cửa sổ riêng)
++          python main.py --gate out     chỉ cổng ra   (một cửa sổ riêng, tiến trình riêng)
+ """
+ import argparse
+ import os
+@@ -11,64 +12,131 @@ from tkinter import messagebox
+ 
+ import config
+ 
++BOTH = "both"
++
+ 
+ def parse_args(argv=None):
+     p = argparse.ArgumentParser(description="Bãi đỗ xe thông minh: RFID + nhận diện biển số")
+-    p.add_argument("--gate", required=True, choices=sorted(config.GATES),
+-                   help="in = cổng vào, out = cổng ra")
++    p.add_argument("--gate", default=BOTH, choices=sorted(config.GATES) + [BOTH],
++                   help="in = cổng vào, out = cổng ra, both = cả hai trong một cửa sổ (mặc định)")
+     return p.parse_args(argv)
+ 
+ 
+ def main(argv=None):
+     args = parse_args(argv)
++    if args.gate == BOTH:
++        run_both()
++    else:
++        run_single(args.gate)
++
++
++def _service_args(cfg):
++    return dict(scan_frames=cfg.scan_frames, scan_interval=cfg.scan_interval, vote_min=cfg.vote_min)
++
++
++def _make_db(cfg):
++    from storage.database import Database
++    return Database(cfg.db_server, cfg.db_name, cfg.db_user, cfg.db_password, cfg.db_driver)
++
++
++def _make_rfid(cfg, app):
++    from hardware.rfid import SerialRfidReader
++    return SerialRfidReader(cfg.rfid_port, cfg.rfid_baud, on_card=app.handle_card,
++                            on_status=app.handle_rfid_status, debounce=cfg.rfid_debounce)
++
++
++def _make_entry_service(recognizer, db, cfg):
++    from services.entry_service import EntryService
++    return EntryService(recognizer, db, cfg.image_dir, auto_save=cfg.auto_save, **_service_args(cfg))
++
++
++def _make_exit_service(recognizer, db, cfg):
++    from services.exit_service import ExitService
++    return ExitService(recognizer, db, cfg.image_dir, price_per_block=cfg.price_per_block,
++                       block_minutes=cfg.block_minutes, **_service_args(cfg))
++
++
++def _init_db(root, db, cfg):
++    """Tạo database + bảng. Lỗi thì báo bằng hộp thoại và trả về False."""
++    try:
++        db.init_schema()
++        return True
++    except Exception as e:
++        messagebox.showerror("Lỗi SQL Server",
++                             f"Không kết nối được SQL Server ({cfg.db_server}).\n\n{e}")
++        root.destroy()
++        return False
++
++
++# ---------------------------------------------------------------- một cổng, một cửa sổ
++def run_single(gate):
+     # File riêng cổng được nạp trước nên thắng file chung; biến môi trường có sẵn thắng cả hai.
+-    has_gate_file = config.load_env_file(os.path.join(config.BASE_DIR, f".env.{args.gate}"))
++    has_gate_file = config.load_env_file(os.path.join(config.BASE_DIR, f".env.{gate}"))
+     config.load_env_file(os.path.join(config.BASE_DIR, ".env"))
+-    cfg = config.load_settings(args.gate)
++    cfg = config.load_settings(gate)
+     print(f"[{cfg.label}] RFID {cfg.rfid_port} | camera {cfg.camera_index} | SQL {cfg.db_server}/{cfg.db_name}")
+     if not has_gate_file:
+-        print(f"CẢNH BÁO: không thấy .env.{args.gate}. Cổng COM / camera lấy từ .env hoặc mặc định; "
+-              f"nếu hai cổng trùng nhau chúng sẽ tranh nhau. Hãy copy .env.{args.gate}.example "
+-              f"thành .env.{args.gate}.")
++        print(f"CẢNH BÁO: không thấy .env.{gate}. Cổng COM / camera lấy từ .env hoặc mặc định; "
++              f"nếu hai cổng trùng nhau chúng sẽ tranh nhau. Hãy copy .env.{gate}.example "
++              f"thành .env.{gate}.")
+ 
+     # Import muộn để lỗi cấu hình hiện ra trước khi nạp các thư viện nặng (EasyOCR, OpenCV...)
+     from core.recognizer import PlateRecognizer
+     from hardware.camera import Camera
+-    from hardware.rfid import SerialRfidReader
+-    from storage.database import Database
+ 
+     root = tk.Tk()
+-    db = Database(cfg.db_server, cfg.db_name, cfg.db_user, cfg.db_password, cfg.db_driver)
+-    try:
+-        db.init_schema()
+-    except Exception as e:
+-        messagebox.showerror("Lỗi SQL Server",
+-                             f"Không kết nối được SQL Server ({cfg.db_server}).\n\n{e}")
+-        root.destroy()
++    db = _make_db(cfg)
++    if not _init_db(root, db, cfg):
+         return
+ 
+-    common = dict(scan_frames=cfg.scan_frames, scan_interval=cfg.scan_interval,
+-                  vote_min=cfg.vote_min)
+     recognizer = PlateRecognizer()
+     if cfg.gate == "in":
+-        from services.entry_service import EntryService
+         from ui.entry_app import EntryApp
+-        service = EntryService(recognizer, db, cfg.image_dir, auto_save=cfg.auto_save, **common)
+-        app = EntryApp(root, service, Camera(), cfg)
++        app = EntryApp(root, _make_entry_service(recognizer, db, cfg), Camera(), cfg)
+     else:
+-        from services.exit_service import ExitService
+         from ui.exit_app import ExitApp
+-        service = ExitService(recognizer, db, cfg.image_dir,
+-                              price_per_block=cfg.price_per_block,
+-                              block_minutes=cfg.block_minutes, **common)
+-        app = ExitApp(root, service, Camera(), cfg)
+-
+-    app.set_rfid(SerialRfidReader(
+-        cfg.rfid_port, cfg.rfid_baud,
+-        on_card=app.handle_card,
+-        on_status=app.handle_rfid_status,
+-        debounce=cfg.rfid_debounce,
+-    ))
++        app = ExitApp(root, _make_exit_service(recognizer, db, cfg), Camera(), cfg)
++
++    app.set_rfid(_make_rfid(cfg, app))
++    root.mainloop()
++
++
++# ---------------------------------------------------------------- cả hai cổng, một cửa sổ
++def run_both():
++    envs = {g: config.gate_env(g) for g in config.GATES}
++    cfg_in = config.load_settings("in", envs["in"][0])
++    cfg_out = config.load_settings("out", envs["out"][0])
++    for g, cfg in (("in", cfg_in), ("out", cfg_out)):
++        print(f"[{cfg.label}] RFID {cfg.rfid_port} | camera {cfg.camera_index}")
++        if not envs[g][1]:
++            print(f"CẢNH BÁO: không thấy .env.{g}, dùng cổng COM / camera mặc định "
++                  f"({cfg.rfid_port} / {cfg.camera_index}). Nên copy .env.{g}.example thành .env.{g}.")
++    print(f"SQL {cfg_in.db_server}/{cfg_in.db_name}")
++
++    root = tk.Tk()
++    try:
++        config.check_dual(cfg_in, cfg_out)
++    except ValueError as e:
++        messagebox.showerror("Cấu hình hai cổng", str(e))
++        root.destroy()
++        return
++
++    from core.recognizer import PlateRecognizer
++    from hardware.camera import Camera
++    from ui.dual_app import DualGateApp
++
++    db = _make_db(cfg_in)
++    if not _init_db(root, db, cfg_in):
++        return
++
++    cfg_in, cfg_out = config.fit_views(root.winfo_screenwidth(), cfg_in, cfg_out)
++    recognizer = PlateRecognizer()      # dùng chung: chỉ nạp EasyOCR một lần
++    app = DualGateApp(root,
++                      _make_entry_service(recognizer, db, cfg_in),
++                      _make_exit_service(recognizer, db, cfg_out),
++                      Camera(), Camera(), cfg_in, cfg_out)
++    app.entry.set_rfid(_make_rfid(cfg_in, app.entry))
++    app.exit.set_rfid(_make_rfid(cfg_out, app.exit))
+     root.mainloop()
+ 
+ 
+diff --git a/run.bat b/run.bat
+new file mode 100644
+index 0000000..8765947
+--- /dev/null
++++ b/run.bat
+@@ -0,0 +1,24 @@
++@echo off
++chcp 65001 >nul
++cd /d "%~dp0"
++
++if not exist ".venv\Scripts\python.exe" (
++    echo Chua cai dat. Hay chay setup.bat truoc.
++    pause
++    exit /b 1
++)
++
++REM run.bat          -> MOT cua so chua ca cong vao va cong ra (mac dinh)
++REM run.bat in       -> chi cong vao
++REM run.bat out      -> chi cong ra
++if "%~1"=="" (
++    ".venv\Scripts\python.exe" main.py
++) else (
++    ".venv\Scripts\python.exe" main.py --gate %~1
++)
++
++if errorlevel 1 (
++    echo.
++    echo Chuong trinh dung do loi. Xem thong bao phia tren.
++    pause
++)
+diff --git a/setup.bat b/setup.bat
+new file mode 100644
+index 0000000..b56039d
+--- /dev/null
++++ b/setup.bat
+@@ -0,0 +1,37 @@
++@echo off
++chcp 65001 >nul
++cd /d "%~dp0"
++echo === Cai dat Smart Parking (chay MOT LAN) ===
++
++where python >nul 2>nul
++if errorlevel 1 (
++    echo [LOI] Khong tim thay Python. Cai Python 3.10+ tu python.org va tick "Add python.exe to PATH".
++    pause
++    exit /b 1
++)
++
++if not exist ".venv\Scripts\python.exe" (
++    echo Dang tao moi truong ao .venv ...
++    python -m venv .venv
++    if errorlevel 1 goto :loi
++)
++
++echo Dang cai thu vien (lan dau co the mat vai phut) ...
++".venv\Scripts\python.exe" -m pip install --upgrade pip
++".venv\Scripts\python.exe" -m pip install -r requirements.txt
++if errorlevel 1 goto :loi
++
++if not exist ".env"     copy ".env.example"     ".env"     >nul && echo Da tao .env     - hay mo ra sua DB_SERVER, DB_USER...
++if not exist ".env.in"  copy ".env.in.example"  ".env.in"  >nul && echo Da tao .env.in  - sua RFID_PORT, CAMERA_INDEX cua cong VAO
++if not exist ".env.out" copy ".env.out.example" ".env.out" >nul && echo Da tao .env.out - sua RFID_PORT, CAMERA_INDEX cua cong RA
++
++echo.
++echo === Xong. Sua cac file .env* neu can, roi bam dup run.bat de chay. ===
++pause
++exit /b 0
++
++:loi
++echo.
++echo [LOI] Cai dat that bai. Xem thong bao phia tren.
++pause
++exit /b 1
+diff --git a/tests/test_camera.py b/tests/test_camera.py
+new file mode 100644
+index 0000000..311ca71
+--- /dev/null
++++ b/tests/test_camera.py
+@@ -0,0 +1,92 @@
++"""Camera đọc ở luồng nền: dùng cv2.VideoCapture giả, không cần camera thật."""
++import time
++
++import numpy as np
++
++from hardware import camera as camera_mod
++
++
++class FakeCapture:
++    def __init__(self, frames=None, opened=True):
++        self.frames = list(frames) if frames is not None else None
++        self.opened = opened
++        self.released = False
++        self.reads = 0
++
++    def isOpened(self):
++        return self.opened
++
++    def read(self):
++        self.reads += 1
++        if self.frames is None:                       # camera chạy mãi: mỗi lần một khung mới
++            time.sleep(0.005)
++            return True, np.full((4, 4, 3), self.reads % 255, dtype=np.uint8)
++        if self.frames:
++            return True, self.frames.pop(0)
++        time.sleep(0.005)
++        return False, None                            # hết khung
++
++    def release(self):
++        self.released = True
++
++
++def wait_for(cond, timeout=3.0):
++    end = time.time() + timeout
++    while time.time() < end:
++        if cond():
++            return True
++        time.sleep(0.005)
++    return False
++
++
++def patch_capture(monkeypatch, cap):
++    monkeypatch.setattr(camera_mod.cv2, "VideoCapture", lambda *a, **k: cap)
++
++
++def test_open_fails_when_camera_missing(monkeypatch):
++    cap = FakeCapture(opened=False)
++    patch_capture(monkeypatch, cap)
++    cam = camera_mod.Camera()
++    assert cam.open(0) is False and cap.released and cam.read() is None
++
++
++def test_read_returns_only_new_frames(monkeypatch):
++    a, b = np.zeros((2, 2, 3), np.uint8), np.ones((2, 2, 3), np.uint8)
++    patch_capture(monkeypatch, FakeCapture(frames=[a, b]))
++    cam = camera_mod.Camera()
++    assert cam.open(0)
++    try:
++        assert wait_for(lambda: cam._seq == 2)        # luồng nền đã đọc xong cả hai khung
++        assert cam.read() is b                        # đọc được khung MỚI NHẤT
++        assert cam.read() is None                     # không có khung mới -> None, không trả lại khung cũ
++    finally:
++        cam.release()
++
++
++def test_latest_frame_wins_and_release_stops_thread(monkeypatch):
++    cap = FakeCapture()
++    patch_capture(monkeypatch, cap)
++    cam = camera_mod.Camera()
++    assert cam.open(0)
++    assert wait_for(lambda: cam._seq >= 3)
++    frame = cam.read()
++    assert frame is not None and frame.shape == (4, 4, 3)
++    thread = cam._thread
++    cam.release()
++    assert cap.released and not thread.is_alive()     # luồng nền đã dừng, camera đã nhả
++    reads = cap.reads
++    time.sleep(0.05)
++    assert cap.reads == reads                         # không còn ai đọc camera nữa
++    assert cam.read() is None
++
++
++def test_reopen_replaces_old_capture(monkeypatch):
++    caps = [FakeCapture(), FakeCapture()]
++    it = iter(caps)
++    monkeypatch.setattr(camera_mod.cv2, "VideoCapture", lambda *a, **k: next(it))
++    cam = camera_mod.Camera()
++    assert cam.open(0) and cam.open(1)
++    assert caps[0].released and not caps[1].released
++    assert wait_for(lambda: cam.read() is not None)
++    cam.release()
++    assert caps[1].released
+diff --git a/tests/test_config.py b/tests/test_config.py
+index d5f756e..e06b914 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -66,3 +66,61 @@ def test_inline_comments_like_the_real_env_example(tmp_path, monkeypatch):
+         monkeypatch.delenv(k, raising=False)
+     assert got == {"RFID_PORT": "COM3", "DB_SERVER": "localhost\\SQLEXPRESS", "DB_USER": "",
+                    "DB_PASSWORD": "ab#c", "T_QUOTED": "pa ss #1", "BLOCK_MINUTES": "60"}
++
++
++# ---------- Chạy cả hai cổng trong một tiến trình ----------
++def test_read_env_file_returns_dict_without_touching_environ(tmp_path, monkeypatch):
++    f = tmp_path / ".env.x"
++    f.write_text("T_ONLY_FILE=abc  # chú thích\n", encoding="utf-8")
++    monkeypatch.delenv("T_ONLY_FILE", raising=False)
++    import os
++    assert config.read_env_file(str(f)) == {"T_ONLY_FILE": "abc"}
++    assert "T_ONLY_FILE" not in os.environ
++    assert config.read_env_file(str(tmp_path / "khong-co")) is None
++
++
++def test_gate_env_keeps_each_gate_separate(tmp_path):
++    """Lỗi cũ: nạp .env.in rồi .env.out vào os.environ thì RFID_PORT của cổng ra bị cổng vào chiếm."""
++    (tmp_path / ".env").write_text("DB_NAME=Chung\nRFID_PORT=COM1\nSCAN_FRAMES=4\n", encoding="utf-8")
++    (tmp_path / ".env.in").write_text("RFID_PORT=COM3\nCAMERA_INDEX=0\n", encoding="utf-8")
++    (tmp_path / ".env.out").write_text("RFID_PORT=COM4\nCAMERA_INDEX=1\n", encoding="utf-8")
++    env_in, has_in = config.gate_env("in", str(tmp_path), environ={})
++    env_out, has_out = config.gate_env("out", str(tmp_path), environ={})
++    cin, cout = config.load_settings("in", env_in), config.load_settings("out", env_out)
++    assert has_in and has_out
++    assert (cin.rfid_port, cin.camera_index) == ("COM3", 0)
++    assert (cout.rfid_port, cout.camera_index) == ("COM4", 1)
++    assert cin.db_name == cout.db_name == "Chung" and cin.scan_frames == cout.scan_frames == 4
++
++
++def test_gate_env_priority_and_missing_gate_file(tmp_path):
++    (tmp_path / ".env").write_text("RFID_PORT=COM1\n", encoding="utf-8")
++    env, has_file = config.gate_env("out", str(tmp_path), environ={})
++    assert has_file is False and env["RFID_PORT"] == "COM1"      # không có .env.out -> lấy .env
++    (tmp_path / ".env.out").write_text("RFID_PORT=COM4\n", encoding="utf-8")
++    env, _ = config.gate_env("out", str(tmp_path), environ={})
++    assert env["RFID_PORT"] == "COM4"                            # file riêng cổng thắng file chung
++    env, _ = config.gate_env("out", str(tmp_path), environ={"RFID_PORT": "COM9"})
++    assert env["RFID_PORT"] == "COM9"                            # biến môi trường thắng tất cả
++
++
++def test_check_dual():
++    cin, cout = config.load_settings("in", {}), config.load_settings("out", {})
++    config.check_dual(cin, cout)                                 # mặc định COM3/0 và COM4/1: ổn
++    same_port = config.load_settings("out", {"RFID_PORT": "com3"})
++    with pytest.raises(ValueError, match="RFID"):
++        config.check_dual(cin, same_port)
++    same_cam = config.load_settings("out", {"CAMERA_INDEX": "0"})
++    with pytest.raises(ValueError, match="camera"):
++        config.check_dual(cin, same_cam)
++
++
++def test_fit_views():
++    cin, cout = config.load_settings("in", {}), config.load_settings("out", {})      # 420x315
++    assert config.fit_views(1920, cin, cout) == (cin, cout)       # vừa màn 1920: giữ nguyên
++    small_in, small_out = config.fit_views(1366, cin, cout)       # màn nhỏ: thu nhỏ, giữ tỉ lệ 4:3
++    assert small_in.view_w < 420 and small_in.view_w == small_out.view_w
++    assert small_in.view_h == round(315 * small_in.view_w / 420)
++    assert 2 * (2 * small_in.view_w + 70) <= 1366
++    tiny_in, _ = config.fit_views(800, cin, cout)                 # màn quá nhỏ: không nhỏ hơn mức tối thiểu
++    assert tiny_in.view_w == config.MIN_VIEW_W
+diff --git a/tests/test_recognizer_load.py b/tests/test_recognizer_load.py
+new file mode 100644
+index 0000000..00063d3
+--- /dev/null
++++ b/tests/test_recognizer_load.py
+@@ -0,0 +1,27 @@
++"""Hai cổng dùng chung một PlateRecognizer: mô hình OCR chỉ được nạp đúng một lần."""
++import sys
++import threading
++import time
++import types
++
++from core.recognizer import PlateRecognizer
++
++
++def test_load_is_idempotent_and_thread_safe(monkeypatch):
++    created = []
++
++    class FakeReader:
++        def __init__(self, langs, gpu=False):
++            time.sleep(0.05)                          # nạp chậm để hai luồng chắc chắn đụng nhau
++            created.append((tuple(langs), gpu))
++
++    monkeypatch.setitem(sys.modules, "easyocr", types.SimpleNamespace(Reader=FakeReader))
++    rec = PlateRecognizer()
++    assert not rec.ready
++    threads = [threading.Thread(target=rec.load) for _ in range(4)]
++    for t in threads:
++        t.start()
++    for t in threads:
++        t.join()
++    rec.load()                                        # gọi thêm lần nữa vẫn không nạp lại
++    assert rec.ready and created == [(("en",), False)]
+diff --git a/tests/test_ui_smoke.py b/tests/test_ui_smoke.py
+index 6139bd5..114fd14 100644
+--- a/tests/test_ui_smoke.py
++++ b/tests/test_ui_smoke.py
+@@ -8,6 +8,7 @@ import config
+ from helpers import FakeCamera, FakeDb, ScriptedRecognizer
+ from services.entry_service import EntryService
+ from services.exit_service import ExitService
++from ui.dual_app import DualGateApp
+ from ui.entry_app import EntryApp
+ from ui.exit_app import ExitApp
+ 
+@@ -152,3 +153,98 @@ def test_exit_deny_keeps_session_open(root, tmp_path, monkeypatch):
+     assert app.pending is not None
+     app.cancel_pending()
+     assert app.pending is None and db.find_open_session("CARD1") is not None
++
++
++# ---------- Một cửa sổ chứa cả hai cổng ----------
++class SpyCamera(FakeCamera):
++    def __init__(self):
++        self.released = False
++
++    def release(self):
++        self.released = True
++
++
++class SpyRfid:
++    def __init__(self):
++        self.stopped = False
++
++    def stop(self):
++        self.stopped = True
++
++
++def make_dual(root, tmp_path, monkeypatch, entry_script=("25888",), exit_script=("25888",)):
++    monkeypatch.setenv("IMG_DIR", str(tmp_path))
++    db = FakeDb()
++    cfg_in, cfg_out = config.load_settings("in", {"IMG_DIR": str(tmp_path)}), \
++        config.load_settings("out", {"IMG_DIR": str(tmp_path)})
++    rec = ScriptedRecognizer(entry_script)            # MỘT bộ nhận diện dùng chung cho cả hai cổng
++    entry_svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None)
++    exit_svc = ExitService(rec, db, str(tmp_path), sleep=lambda s: None)
++    app = DualGateApp(root, entry_svc, exit_svc, SpyCamera(), SpyCamera(), cfg_in, cfg_out)
++    assert pump(root, lambda: idle(app.entry) and idle(app.exit)
++                and app.entry.last_frame is not None and app.exit.last_frame is not None)
++    return app, db, rec
++
++
++def test_dual_window_has_two_camera_panels_and_one_history(root, tmp_path, monkeypatch):
++    app, _, _ = make_dual(root, tmp_path, monkeypatch)
++    entry, exit_ = app.entry, app.exit
++    assert entry.container is not exit_.container and entry.embedded and exit_.embedded
++    assert entry.preview_lbl is not exit_.preview_lbl             # hai khung camera riêng
++    assert entry.preview_lbl.cget("image") and exit_.preview_lbl.cget("image")   # cả hai đang có hình
++    assert entry.history is exit_.history is app.history          # chỉ MỘT bảng lịch sử
++    assert entry.service.recognizer is exit_.service.recognizer   # chỉ MỘT bộ OCR
++    assert root.title() == "Bãi đỗ xe RFID + nhận diện biển số — CỔNG VÀO | CỔNG RA"
++
++
++def test_dual_full_flow_entry_then_exit_in_one_window(root, tmp_path, monkeypatch):
++    app, db, _ = make_dual(root, tmp_path, monkeypatch)
++
++    swipe(app.entry, "CARD1")                                     # xe vào ở panel trái
++    assert "XE VÀO" in app.entry.status_lbl.cget("text") and len(db.rows) == 1
++    assert pump(root, lambda: len(app.history.tree.get_children()) == 1)
++    assert app.exit.status_lbl.cget("text") != app.entry.status_lbl.cget("text")   # trạng thái riêng
++
++    swipe(app.exit, "CARD1")                                      # cùng thẻ ra ở panel phải
++    assert "XE RA" in app.exit.status_lbl.cget("text") and "TIỀN" in app.exit.status_lbl.cget("text")
++    assert db.find_open_session("CARD1") is None
++    rows = app.history.tree.get_children()
++    assert len(rows) == 1                                         # cập nhật dòng cũ, không thêm dòng mới
++    assert db.rows[0].gate_in == "in" and db.rows[0].gate_out == "out"
++    assert "5.000" in app.history.tree.item(rows[0], "values")[5]
++
++
++def test_dual_gates_are_independent(root, tmp_path, monkeypatch):
++    """Cổng vào đang chờ nhân viên xác nhận thì cổng ra vẫn quẹt thẻ bình thường (và ngược lại)."""
++    app, db, rec = make_dual(root, tmp_path, monkeypatch, entry_script=("25888",))
++    swipe(app.entry, "CARD1")                                     # CARD1 vào bãi
++    rec.set_script(["2588"])                                      # lần đọc kế tiếp thiếu số
++    swipe(app.entry, "CARD2")
++    assert app.entry.pending is not None and app.exit.pending is None
++
++    rec.set_script(["25888"])
++    swipe(app.exit, "CARD1")                                      # cổng ra không bị cổng vào chặn
++    assert "XE RA" in app.exit.status_lbl.cget("text") and app.entry.pending is not None
++
++    app.entry.cancel_pending()
++    assert app.entry.pending is None and db.find_open_session("CARD2") is None
++
++
++def test_dual_space_goes_only_to_panel_under_pointer(root, tmp_path, monkeypatch):
++    app, _, _ = make_dual(root, tmp_path, monkeypatch)
++    inside_entry = app.entry.preview_lbl                          # một widget nằm trong panel trái
++    monkeypatch.setattr(root, "winfo_containing", lambda x, y: inside_entry)
++    assert app.entry._pointer_inside() is True
++    assert app.exit._pointer_inside() is False
++    monkeypatch.setattr(root, "winfo_containing", lambda x, y: None)   # chuột ngoài cửa sổ
++    assert app.entry._pointer_inside() is False and app.exit._pointer_inside() is False
++
++
++def test_dual_close_stops_both_gates(root, tmp_path, monkeypatch):
++    app, _, _ = make_dual(root, tmp_path, monkeypatch)
++    rfids = SpyRfid(), SpyRfid()
++    app.entry.rfid, app.exit.rfid = rfids
++    app.on_close()
++    assert all(r.stopped for r in rfids)
++    assert app.entry.camera.released and app.exit.camera.released
++    assert app.entry._closing and app.exit._closing
+diff --git a/ui/base_gate_app.py b/ui/base_gate_app.py
+index 0ecc511..67e7052 100644
+--- a/ui/base_gate_app.py
++++ b/ui/base_gate_app.py
+@@ -2,6 +2,10 @@
+ 
+ Lớp này lo: camera trực tiếp, nhận thẻ RFID, chạy việc nặng ở luồng nền, ô 5 số, bảng lịch sử.
+ Phần riêng của mỗi cổng nằm ở entry_app.py / exit_app.py (override các hook build_*, on_gate_outcome...).
++
++Hai cách dùng:
++  - Cửa sổ riêng (mặc định): BaseGateApp(root, service, camera, cfg) tự dựng cửa sổ + bảng lịch sử.
++  - Nhúng vào cửa sổ chung (ui/dual_app.py): truyền thêm container=<Frame> và history=<HistoryTable>.
+ """
+ import queue
+ import threading
+@@ -43,30 +47,81 @@ def fmt_duration(td):
+     return f"{h} giờ {m} phút" if h else f"{m} phút"
+ 
+ 
++class HistoryTable:
++    """Bảng lịch sử gửi xe. Một bảng có thể dùng chung cho nhiều cổng trong cùng một cửa sổ."""
++    COLUMNS = (("time_in", "Giờ vào", 135), ("card", "Mã thẻ", 85), ("plate", "5 số vào", 75),
++               ("time_out", "Giờ ra", 135), ("plate_out", "5 số ra", 70), ("fee", "Tiền", 80),
++               ("match", "Đối chiếu", 120), ("note", "Lý do", 160))
++
++    def __init__(self, parent, height=6):
++        self.frame = ttk.LabelFrame(parent, text="Lịch sử gửi xe (từ SQL Server, cả hai cổng)",
++                                    padding=5)
++        self.tree = ttk.Treeview(self.frame, columns=[c[0] for c in self.COLUMNS],
++                                 show="headings", height=height)
++        for col, text, width in self.COLUMNS:
++            self.tree.heading(col, text=text)
++            self.tree.column(col, width=width)
++        sb = ttk.Scrollbar(self.frame, orient="vertical", command=self.tree.yview)
++        self.tree.configure(yscrollcommand=sb.set)
++        self.tree.pack(side="left", fill="both", expand=True)
++        sb.pack(side="right", fill="y")
++        self.rows = {}              # id lượt gửi xe -> dòng trong bảng
++        self._sig = None
++
++    @staticmethod
++    def _row(e):
++        return (fmt_time(e.time_in), e.card_uid, e.plate_number, fmt_time(e.time_out),
++                e.plate_out, fmt_money(e.fee), MATCH_TEXT.get(e.match_status, ""), e.override_note)
++
++    def upsert(self, event):
++        """Thêm dòng mới (xe vào) hoặc cập nhật dòng có sẵn (xe ra)."""
++        iid = self.rows.get(event.id)
++        if iid is not None:
++            self.tree.item(iid, values=self._row(event))
++        else:
++            self.rows[event.id] = self.tree.insert("", 0, values=self._row(event))
++
++    def apply(self, events):
++        """Thay toàn bộ bảng bằng `events` (mới nhất trước). Bỏ qua nếu không có gì thay đổi."""
++        sig = tuple((e.id, e.time_out, e.match_status) for e in events)
++        if sig == self._sig:
++            return
++        self._sig = sig
++        self.tree.delete(*self.tree.get_children())
++        self.rows = {}
++        for e in events:
++            self.rows[e.id] = self.tree.insert("", "end", values=self._row(e))
++
++
+ class BaseGateApp:
+     BANNER_COLOR = "#1a7f37"
+     RESULT_TITLE = "Ảnh đã chụp"
+     NUMBER_HINT = f"{NUMBER_LEN} số ở dòng dưới biển số (bắt buộc đủ {NUMBER_LEN} số):"
+ 
+-    def __init__(self, root, service, camera, cfg):
++    def __init__(self, root, service, camera, cfg, container=None, history=None):
++        """root: cửa sổ Tk (dùng cho after/bind). container: khung để dựng giao diện vào
++        (None = dựng thẳng vào root và tự lo tiêu đề/đóng cửa sổ). history: bảng lịch sử dùng chung
++        (None = tự tạo bảng riêng ở cuối giao diện)."""
+         self.root = root
++        self.embedded = container is not None
++        self.container = container if self.embedded else root
+         self.service = service
+         self.camera = camera
+         self.cfg = cfg
+         self.view_w, self.view_h = cfg.view_w, cfg.view_h
+         self.rfid = None
+ 
+-        root.title(f"{cfg.label} - Bãi đỗ xe RFID + nhận diện biển số")
+-        root.protocol("WM_DELETE_WINDOW", self.on_close)
+-        if cfg.window_pos:
+-            root.geometry(cfg.window_pos)
++        if not self.embedded:
++            root.title(f"{cfg.label} - Bãi đỗ xe RFID + nhận diện biển số")
++            root.protocol("WM_DELETE_WINDOW", self.on_close)
++            if cfg.window_pos:
++                root.geometry(cfg.window_pos)
+ 
+         self.q = queue.Queue()      # luồng nền -> luồng GUI
+         self.busy = False
+         self.pending = None         # CardOutcome đang chờ nhân viên xử lý
+         self.last_frame = None
+-        self.rows = {}              # id lượt gửi xe -> dòng trong bảng lịch sử
+-        self._hist_sig = None
++        self.history = history      # None -> build_ui tự tạo
+         self._history_loading = False
+         self._closing = False
+ 
+@@ -94,9 +149,9 @@ class BaseGateApp:
+ 
+     # ---------- Giao diện ----------
+     def build_ui(self):
+-        tk.Label(self.root, text=self.cfg.label, bg=self.BANNER_COLOR, fg="white",
++        tk.Label(self.container, text=self.cfg.label, bg=self.BANNER_COLOR, fg="white",
+                  font=("Segoe UI", 16, "bold")).pack(fill="x")
+-        main = ttk.Frame(self.root, padding=8)
++        main = ttk.Frame(self.container, padding=8)
+         main.pack(fill="both", expand=True)
+ 
+         left = ttk.LabelFrame(main, text="Camera trực tiếp", padding=5)
+@@ -146,29 +201,22 @@ class BaseGateApp:
+         btns = ttk.Frame(main)
+         btns.grid(row=2, column=0, columnspan=2, pady=8)
+         self.build_buttons(btns)
+-        self.capture_btn = ttk.Button(btns, text="📷 Thử nhận diện (Space)",
++        trial_text = "📷 Thử nhận diện (Space)" if not self.embedded \
++            else "📷 Thử nhận diện (Space khi chuột ở đây)"
++        self.capture_btn = ttk.Button(btns, text=trial_text,
+                                       command=self.capture, state="disabled")
+         self.capture_btn.pack(side="left", padx=5)
+         self.open_btn = ttk.Button(btns, text="📁 Thử với ảnh từ máy",
+                                    command=self.open_image, state="disabled")
+         self.open_btn.pack(side="left", padx=5)
+ 
+-        # Hàng 3: lịch sử
+-        hist = ttk.LabelFrame(main, text="Lịch sử gửi xe (từ SQL Server, cả hai cổng)", padding=5)
+-        hist.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
+-        cols = (("time_in", "Giờ vào", 135), ("card", "Mã thẻ", 85), ("plate", "5 số vào", 75),
+-                ("time_out", "Giờ ra", 135), ("plate_out", "5 số ra", 70), ("fee", "Tiền", 80),
+-                ("match", "Đối chiếu", 120), ("note", "Lý do", 160))
+-        self.tree = ttk.Treeview(hist, columns=[c[0] for c in cols], show="headings", height=6)
+-        for col, text, width in cols:
+-            self.tree.heading(col, text=text)
+-            self.tree.column(col, width=width)
+-        sb = ttk.Scrollbar(hist, orient="vertical", command=self.tree.yview)
+-        self.tree.configure(yscrollcommand=sb.set)
+-        self.tree.pack(side="left", fill="both", expand=True)
+-        sb.pack(side="right", fill="y")
++        # Hàng 3: lịch sử (cửa sổ chung thì dùng bảng do cửa sổ chung tạo)
++        if self.history is None:
++            self.history = HistoryTable(main)
++            self.history.frame.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
++        self.tree = self.history.tree
+ 
+-        self.root.bind("<space>", self.on_space)
++        self.root.bind("<space>", self.on_space, add="+")
+ 
+     # --- Hook cho lớp con ---
+     def build_result_panel(self, parent):
+@@ -199,9 +247,20 @@ class BaseGateApp:
+         self.set_status(f"Lỗi: {exc}", COLOR_ERR)
+ 
+     # --- Tiện ích hiển thị ---
++    def _pointer_inside(self):
++        """Chuột đang nằm trong khung của cổng này? (chỉ dùng khi hai cổng chung một cửa sổ)"""
++        w = self.root.winfo_containing(*self.root.winfo_pointerxy())
++        while w is not None:
++            if w is self.container:
++                return True
++            w = w.master
++        return False
++
+     def on_space(self, _event):
+         if isinstance(self.root.focus_get(), (tk.Entry, tk.Spinbox)):
+             return
++        if self.embedded and not self._pointer_inside():
++            return      # hai cổng cùng nghe phím Space: chỉ cổng đang được trỏ chuột vào mới chạy
+         self.capture()
+ 
+     def on_number_changed(self):
+@@ -369,18 +428,9 @@ class BaseGateApp:
+                         COLOR_WARN)
+ 
+     # ---------- Lịch sử ----------
+-    @staticmethod
+-    def _row(e):
+-        return (fmt_time(e.time_in), e.card_uid, e.plate_number, fmt_time(e.time_out),
+-                e.plate_out, fmt_money(e.fee), MATCH_TEXT.get(e.match_status, ""), e.override_note)
+-
+     def upsert_row(self, event):
+         """Thêm dòng mới (xe vào) hoặc cập nhật dòng có sẵn (xe ra)."""
+-        iid = self.rows.get(event.id)
+-        if iid is not None:
+-            self.tree.item(iid, values=self._row(event))
+-        else:
+-            self.rows[event.id] = self.tree.insert("", 0, values=self._row(event))
++        self.history.upsert(event)
+ 
+     def refresh_history(self):
+         if self._closing:
+@@ -394,22 +444,19 @@ class BaseGateApp:
+     def apply_history(self, events):
+         self._history_loading = False
+         self.db_lbl.configure(text="SQL Server: kết nối tốt", foreground=COLOR_OK)
+-        sig = tuple((e.id, e.time_out, e.match_status) for e in events)
+-        if sig == self._hist_sig:
+-            return
+-        self._hist_sig = sig
+-        self.tree.delete(*self.tree.get_children())
+-        self.rows = {}
+-        for e in events:                     # recent() trả về mới nhất trước
+-            self.rows[e.id] = self.tree.insert("", "end", values=self._row(e))
++        self.history.apply(events)
+ 
+     def on_history_error(self, exc):
+         self._history_loading = False
+         self.db_lbl.configure(text=f"SQL Server: LỖI ({str(exc)[:60]})", foreground="red")
+ 
+-    def on_close(self):
++    def shutdown(self):
++        """Dừng RFID + camera của cổng này (không đóng cửa sổ)."""
+         self._closing = True
+         if self.rfid is not None:
+             self.rfid.stop()
+         self.camera.release()
++
++    def on_close(self):
++        self.shutdown()
+         self.root.destroy()
+diff --git a/ui/dual_app.py b/ui/dual_app.py
+new file mode 100644
+index 0000000..1221ee1
+--- /dev/null
++++ b/ui/dual_app.py
+@@ -0,0 +1,52 @@
++"""MỘT cửa sổ chứa cả hai cổng: CỔNG VÀO (trái) | CỔNG RA (phải), bảng lịch sử dùng chung ở dưới.
++
++Mỗi cổng vẫn là một EntryApp / ExitApp nguyên vẹn (camera, RFID, nghiệp vụ riêng), chỉ khác là được
++dựng vào một khung con thay vì một cửa sổ riêng. Hai cổng dùng chung:
++  - một PlateRecognizer (nạp EasyOCR một lần; hai cổng quét cùng lúc thì lần lượt),
++  - một Database,
++  - một bảng lịch sử.
++"""
++import tkinter as tk
++from tkinter import ttk
++
++from ui.base_gate_app import HistoryTable
++from ui.entry_app import EntryApp
++from ui.exit_app import ExitApp
++
++TITLE = "Bãi đỗ xe RFID + nhận diện biển số — CỔNG VÀO | CỔNG RA"
++
++
++class DualGateApp:
++    def __init__(self, root, entry_service, exit_service, entry_camera, exit_camera,
++                 cfg_in, cfg_out):
++        self.root = root
++        root.title(TITLE)
++        root.protocol("WM_DELETE_WINDOW", self.on_close)
++        root.geometry("+0+0")       # sát góc trái trên để hai panel (~1800 px) không bị tràn màn hình
++        root.columnconfigure(0, weight=1)
++        root.columnconfigure(1, weight=1)
++
++        left = ttk.Frame(root)
++        right = ttk.Frame(root)
++        left.grid(row=0, column=0, sticky="n")
++        right.grid(row=0, column=1, sticky="n")
++        # đường kẻ phân cách giữa hai cổng
++        tk.Frame(root, width=2, bg="#999").grid(row=0, column=0, sticky="nse")
++
++        self.history = HistoryTable(root)
++        self.history.frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=8, pady=6)
++        root.rowconfigure(1, weight=1)
++
++        self.entry = EntryApp(root, entry_service, entry_camera, cfg_in,
++                              container=left, history=self.history)
++        self.exit = ExitApp(root, exit_service, exit_camera, cfg_out,
++                            container=right, history=self.history)
++
++    @property
++    def gates(self):
++        return (self.entry, self.exit)
++
++    def on_close(self):
++        for gate in self.gates:
++            gate.shutdown()
++        self.root.destroy()

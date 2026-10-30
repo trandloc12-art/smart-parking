@@ -29,15 +29,22 @@ class PlateRecognizer:
     def __init__(self):
         self._reader = None
         self._lock = threading.Lock()   # EasyOCR không nên chạy song song
+        self._load_lock = threading.Lock()
 
     @property
     def ready(self):
         return self._reader is not None
 
     def load(self):
-        """Tải mô hình OCR (chậm, lần đầu cần Internet). Gọi ở luồng nền."""
-        import easyocr
-        self._reader = easyocr.Reader(["en"], gpu=False)
+        """Tải mô hình OCR (chậm, lần đầu cần Internet). Gọi ở luồng nền.
+
+        An toàn khi gọi nhiều lần / từ nhiều luồng (cả hai cổng dùng chung một bộ nhận diện):
+        chỉ nạp mô hình đúng một lần, các lần gọi sau chờ rồi trả về ngay."""
+        with self._load_lock:
+            if self._reader is not None:
+                return
+            import easyocr
+            self._reader = easyocr.Reader(["en"], gpu=False)
 
     def recognize(self, frame):
         if not self.ready:
