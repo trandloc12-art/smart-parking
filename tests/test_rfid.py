@@ -2,7 +2,9 @@
 import pytest
 import serial
 
-from hardware.rfid import ArduinoRfidReader, BadLine, CardSwipe, ReaderStatus, parse_line
+from hardware.rfid import (
+    ArduinoRfidReader, BadLine, CardSwipe, ReaderStatus, format_lcd_command, lcd_text, parse_line,
+)
 
 
 # ---------------------------------------------------------------- parse_line
@@ -174,3 +176,110 @@ def test_boot_garbage_does_not_alert():
     rec = run_reader([[b"\xff\xfe\n", b"~~\n", b"STATUS:IN=1,OUT=1\n", b"IN:AAAA1111\n"]])
     assert [c for c, _ in rec.status] == [True]
     assert rec.cards == [("in", "AAAA1111")]
+
+
+# ---------------------------------------------------------------- màn LCD 1602 (máy tính -> Arduino)
+def test_lcd_text_strips_vietnamese_accents_and_limits_width():
+    assert lcd_text("BIỂN SỐ LỆCH") == "BIEN SO LECH"
+    assert lcd_text("Đã vào bãi") == "Da vao bai"
+    assert lcd_text("X" * 40) == "X" * 16
+    assert lcd_text("a|b") == "a/b"                       # '|' là dấu ngăn hai dòng trong giao thức
+    assert lcd_text("a\tb\nc") == "abc"                   # bỏ ký tự điều khiển
+    assert lcd_text("日本") == "??"                         # ký tự không biểu diễn được -> '?'
+    assert lcd_text(None) == "" and lcd_text("") == ""
+
+
+def test_format_lcd_command():
+    assert format_lcd_command("XE VÀO OK", "BIỂN SỐ 25888") == "LCDIN:XE VAO OK|BIEN SO 25888\n"       # mặc định: cổng vào
+    assert format_lcd_command("XE VÀO OK", "BIỂN SỐ 25888", "in") == "LCDIN:XE VAO OK|BIEN SO 25888\n"
+    assert format_lcd_command("XE RA OK", "TIỀN 5.000 Đ", "out") == "LCDOUT:XE RA OK|TIEN 5.000 D\n"
+    assert format_lcd_command("CONG VAO") == "LCDIN:CONG VAO|\n"
+    for gate in ("in", "out"):
+        cmd = format_lcd_command("A" * 99, "B" * 99, gate)
+        body = cmd.split(":", 1)[1].rstrip("\n")
+        assert len(body) == 16 + 1 + 16
+        assert len(cmd.rstrip("\n")) <= 40                   # vừa bộ đệm 48 ký tự của Arduino (LCDOUT: dài nhất)
+
+
+def test_format_lcd_command_rejects_unknown_gate():
+    with pytest.raises(ValueError, match="cổng không hợp lệ"):
+        format_lcd_command("A", "B", "left")
+
+
+class WritableSerial:
+    """Serial giả có write(): ghi lại các byte đã gửi xuống Arduino."""
+
+    def __init__(self, script, clock, stop, sent, fail_write=False):
+        self.script, self.clock, self.stop, self.sent, self.fail_write = list(script), clock, stop, sent, fail_write
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def write(self, data):
+        if self.fail_write:
+            raise serial.SerialException("write failed")
+        self.sent.append(data)
+
+    def readline(self):
+        if not self.script:
+            self.stop()
+            return b""
+        return self.script.pop(0)
+
+
+def _reader_with_writable_serial(script, sent, on_card, fail_write=False):
+    clock, box = Clock(), {}
+
+    def factory(port, baud, timeout):
+        return WritableSerial(script, clock, lambda: box["reader"].stop(), sent, fail_write)
+
+    box["reader"] = ArduinoRfidReader("COM3", 9600, on_card, serial_factory=factory, clock=clock,
+                                      sleep=lambda s: None)
+    return box["reader"]
+
+
+def test_send_lcd_writes_one_ascii_line_per_gate_while_connected():
+    sent, results = [], []
+    box = {}
+
+    def on_card(gate, uid):
+        send = box["reader"].send_lcd
+        results.append(send("BIỂN SỐ LỆCH", "HÃY CHỈNH XE"))                # mặc định: cổng vào
+        results.append(send("XE RA OK", "TIỀN 5.000 Đ", gate="out"))        # cổng ra
+
+    box["reader"] = _reader_with_writable_serial([b"STATUS:IN=1,OUT=1\n", b"IN:AAAA1111\n"], sent, on_card=on_card)
+    box["reader"].run()
+    assert results == [True, True]
+    assert sent == [b"LCDIN:BIEN SO LECH|HAY CHINH XE\n", b"LCDOUT:XE RA OK|TIEN 5.000 D\n"]
+
+
+def test_send_lcd_unknown_gate_is_a_programming_error():
+    reader = ArduinoRfidReader("COM3", 9600, lambda gate, uid: None, serial_factory=None)
+    with pytest.raises(ValueError):
+        reader.send_lcd("A", "B", gate="middle")
+
+
+def test_send_lcd_when_not_connected_returns_false_without_raising():
+    reader = ArduinoRfidReader("COM3", 9600, lambda gate, uid: None, serial_factory=None)
+    assert reader.send_lcd("CONG VAO", "MOI QUET THE") is False      # chưa mở cổng COM
+
+
+def test_send_lcd_after_connection_closed_returns_false():
+    sent = []
+    reader = _reader_with_writable_serial([b"STATUS:IN=1,OUT=1\n"], sent, on_card=lambda g, u: None)
+    reader.run()                                                      # hết script -> đóng cổng
+    assert reader.send_lcd("A") is False and sent == []
+
+
+def test_send_lcd_write_error_is_swallowed():
+    sent, results = [], []
+    box = {}
+    reader = _reader_with_writable_serial(
+        [b"IN:AAAA1111\n"], sent, fail_write=True,
+        on_card=lambda gate, uid: results.append(box["reader"].send_lcd("A", "B")))
+    box["reader"] = reader
+    reader.run()
+    assert results == [False] and sent == []                          # không ném ngoại lệ ra làm hỏng việc quẹt thẻ

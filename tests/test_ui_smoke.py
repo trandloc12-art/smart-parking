@@ -92,6 +92,189 @@ def test_entry_app_flow(root, tmp_path, monkeypatch):
     assert pump(root, lambda: len(app.tree.get_children()) == 2)
 
 
+def test_entry_position_offset_warning(root, tmp_path, monkeypatch):
+    db, rec = FakeDb(), ScriptedRecognizer([""])
+    app = EntryApp(root, EntryService(rec, db, str(tmp_path), sleep=lambda s: None),
+                   FakeCamera(), settings("in", tmp_path, monkeypatch))
+    assert pump(root, lambda: idle(app) and app.last_frame is not None)
+    assert not app.offset_lbl.winfo_ismapped()
+
+    # không đọc được số nào -> hiện cảnh báo lệch vị trí, chưa cho lưu
+    swipe(app, "CARD1")
+    root.update()
+    assert app.pending is not None and app.offset_lbl.winfo_ismapped()
+    assert "LỆCH VỊ TRÍ" in app.offset_lbl.cget("text")
+    assert str(app.save_btn.cget("state")) == "disabled"
+
+    # hủy -> cảnh báo biến mất
+    app.cancel_pending()
+    root.update()
+    assert not app.offset_lbl.winfo_ismapped()
+
+    # lần sau đọc đủ 5 số -> tự lưu, không có cảnh báo
+    rec.set_script(["25888"])
+    swipe(app, "CARD1")
+    assert "XE VÀO" in app.status_lbl.cget("text") and not app.offset_lbl.winfo_ismapped()
+
+
+class LcdSpy:
+    """Giả bộ đọc RFID: chỉ ghi lại các lần gửi lên LCD dưới dạng (cổng, dòng 1, dòng 2)."""
+
+    def __init__(self):
+        self.sent = []
+
+    def send_lcd(self, line1, line2="", gate="in"):
+        self.sent.append((gate, line1, line2))
+        return True
+
+    def stop(self):
+        pass
+
+
+def make_entry(root, tmp_path, monkeypatch, script):
+    db, rec = FakeDb(), ScriptedRecognizer(script)
+    app = EntryApp(root, EntryService(rec, db, str(tmp_path), sleep=lambda s: None),
+                   FakeCamera(), settings("in", tmp_path, monkeypatch))
+    lcd = app.rfid = LcdSpy()
+    assert pump(root, lambda: idle(app) and app.last_frame is not None)
+    return app, db, rec, lcd
+
+
+def test_entry_lcd_messages(root, tmp_path, monkeypatch):
+    app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, [""])
+
+    app.on_model_ready(None)
+    assert lcd.sent[-1] == ("in", "CONG VAO", "MOI QUET THE")
+
+    swipe(app, "NOPE")                                       # thẻ chưa đăng ký
+    assert lcd.sent[-2:] == [("in", "DANG KIEM TRA", "VUI LONG CHO"),
+                             ("in", "THE CHUA DANG KY", "KHONG CHO VAO")]
+
+    lcd.sent.clear()
+    swipe(app, "CARD1")                                      # không đọc được số nào -> lệch vị trí
+    assert lcd.sent == [("in", "DANG KIEM TRA", "VUI LONG CHO"), ("in", "XE LECH VI TRI", "HAY CHINH XE")]
+
+    app.cancel_pending()
+    assert lcd.sent[-1] == ("in", "CONG VAO", "MOI QUET THE")
+
+    rec.set_script(["2588"])                                 # đọc thiếu số -> cũng là lệch vị trí
+    swipe(app, "CARD1")
+    assert lcd.sent[-1] == ("in", "XE LECH VI TRI", "HAY CHINH XE")
+    app.plate_var.set("25881")                               # nhân viên nhập đủ rồi lưu
+    app.save_entry()
+    assert pump(root, lambda: app.pending is None and not app.busy)
+    assert lcd.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25881")
+
+    rec.set_script(["25888"])
+    swipe(app, "CARD1")                                      # thẻ đang ở trong bãi
+    assert lcd.sent[-1] == ("in", "THE DA VAO BAI", "KHONG CHO VAO")
+    rec.set_script(["25888"])
+    swipe(app, "CARD2")                                      # đọc đủ, tự lưu
+    assert lcd.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25888")
+    assert {g for g, _, _ in lcd.sent} == {"in"}             # cổng vào chỉ nói chuyện với LCD cổng vào
+
+
+def test_entry_lcd_conflicting_candidates_asks_staff(root, tmp_path, monkeypatch):
+    # 5 ảnh: 25888, 25883, 25888, 25883, (không đọc được) -> hòa 2:2, đủ 5 số nhưng chưa chốt được
+    app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, ["25888", "25883", "25888", "25883", ""])
+    swipe(app, "CARD1")
+    assert app.pending is not None and not app.pending.scan.decided and app.pending.scan.tally
+    assert lcd.sent[-1] == ("in", "CHO NHAN VIEN", "XAC NHAN BIEN SO")      # không phải 'lệch vị trí'
+    assert not app.offset_lbl.winfo_ismapped()
+
+
+def make_exit(root, tmp_path, monkeypatch, script, inside=("CARD1", "CARD2")):
+    db = FakeDb()
+    entry_svc = EntryService(ScriptedRecognizer(["25888"]), db, str(tmp_path), sleep=lambda s: None)
+    for uid in inside:                                       # các xe đã vào bãi (biển 25888)
+        entry_svc.handle_card(uid, lambda: FakeCamera().read())
+    rec = ScriptedRecognizer(script)
+    app = ExitApp(root, ExitService(rec, db, str(tmp_path), sleep=lambda s: None), FakeCamera(),
+                  settings("out", tmp_path, monkeypatch))
+    lcd = app.rfid = LcdSpy()
+    assert pump(root, lambda: idle(app) and app.last_frame is not None)
+    return app, db, rec, lcd
+
+
+def test_exit_lcd_messages(root, tmp_path, monkeypatch):
+    app, db, rec, lcd = make_exit(root, tmp_path, monkeypatch, ["25888"])
+
+    app.on_model_ready(None)
+    assert lcd.sent[-1] == ("out", "CONG RA", "MOI QUET THE")
+
+    swipe(app, "NOPE")                                       # thẻ chưa đăng ký
+    assert lcd.sent[-2:] == [("out", "DANG KIEM TRA", "VUI LONG CHO"),
+                             ("out", "THE CHUA DANG KY", "KHONG CHO RA")]
+
+    swipe(app, "CARD1")                                      # khớp -> ra luôn, hiện tiền (tối thiểu 1 khối = 5.000 đ)
+    assert lcd.sent[-1] == ("out", "XE RA OK", "TIEN 5.000 D")
+
+    swipe(app, "CARD1")                                      # đã ra rồi, chưa có lượt vào mới
+    assert lcd.sent[-1] == ("out", "THE CHUA VAO BAI", "KHONG CHO RA")
+
+    rec.set_script(["11111"])                                # biển khác hẳn
+    swipe(app, "CARD2")
+    assert lcd.sent[-1] == ("out", "BIEN KHONG KHOP", "GOI NHAN VIEN")
+    app.cancel_pending()                                     # nhân viên từ chối: LCD giữ thông báo, không về "chờ"
+    assert lcd.sent[-1] == ("out", "XE CHUA DUOC RA", "GOI NHAN VIEN")
+    assert db.find_open_session("CARD2") is not None
+
+    rec.set_script(["25889"])                                # lệch đúng 1 số
+    swipe(app, "CARD2")
+    assert lcd.sent[-1] == ("out", "BIEN LECH 1 SO", "CHO NHAN VIEN")
+    app.note_var.set("Chu xe co giay to")
+    app.confirm_exit()                                       # nhân viên duyệt cho ra
+    assert pump(root, lambda: app.pending is None and not app.busy)
+    assert lcd.sent[-1] == ("out", "XE RA OK", "TIEN 5.000 D")
+    assert {g for g, _, _ in lcd.sent} == {"out"}            # cổng ra chỉ nói chuyện với LCD cổng ra
+
+
+def test_exit_lcd_position_offset_and_tie(root, tmp_path, monkeypatch):
+    app, db, rec, lcd = make_exit(root, tmp_path, monkeypatch, [""], inside=("CARD1",))
+    swipe(app, "CARD1")                                      # không đọc được số nào -> lệch vị trí
+    assert lcd.sent[-1] == ("out", "XE LECH VI TRI", "HAY CHINH XE")
+    app.cancel_pending()
+
+    rec.set_script(["25888", "25883", "25888", "25883", ""])     # hòa 2:2 -> nhân viên kiểm tra
+    swipe(app, "CARD1")
+    assert app.pending is not None and app.pending.scan.tally and not app.pending.scan.decided
+    assert lcd.sent[-1] == ("out", "CHO NHAN VIEN", "KIEM TRA BIEN SO")
+
+
+def test_lcd_exit_ok_formats_money_within_16_columns():
+    from ui.exit_app import lcd_exit_ok
+    assert lcd_exit_ok(5000) == ("XE RA OK", "TIEN 5.000 D")
+    assert lcd_exit_ok(120000) == ("XE RA OK", "TIEN 120.000 D")
+    assert lcd_exit_ok(1250000) == ("XE RA OK", "TIEN 1.250.000 D")
+    assert lcd_exit_ok(10000000) == ("XE RA OK", "TIEN 10.000.000")        # quá dài thì bỏ chữ D
+    assert lcd_exit_ok(99999999999999) == ("XE RA OK", "XEM TREN MAY")      # không cắt cụt thành số sai
+    assert lcd_exit_ok(None) == ("XE RA OK", "TIEN ? D")
+    for fee in (0, 5000, 10**7, 10**10, 10**15, None):
+        assert all(len(line) <= 16 for line in lcd_exit_ok(fee))
+
+
+def test_dual_lcd_each_gate_drives_its_own_screen(root, tmp_path, monkeypatch):
+    app, db, rec = make_dual(root, tmp_path, monkeypatch)
+    lcd = app.entry.rfid = app.exit.rfid = LcdSpy()           # MỘT Arduino dùng chung, hai màn LCD
+    swipe(app.entry, "CARD1")
+    assert lcd.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25888")
+    swipe(app.exit, "CARD1")
+    assert lcd.sent[-1] == ("out", "XE RA OK", "TIEN 5.000 D")
+    by_gate = {"in": [m for g, *m in lcd.sent if g == "in"], "out": [m for g, *m in lcd.sent if g == "out"]}
+    assert ["XE RA OK", "TIEN 5.000 D"] not in by_gate["in"] and ["XE VAO OK", "BIEN SO 25888"] not in by_gate["out"]
+
+
+def test_entry_works_without_lcd(root, tmp_path, monkeypatch):
+    """Arduino cũ / không có LCD / chưa gắn RFID: mọi thứ vẫn chạy như trước."""
+    db, rec = FakeDb(), ScriptedRecognizer(["25888"])
+    app = EntryApp(root, EntryService(rec, db, str(tmp_path), sleep=lambda s: None),
+                   FakeCamera(), settings("in", tmp_path, monkeypatch))
+    assert app.rfid is None
+    assert pump(root, lambda: idle(app) and app.last_frame is not None)
+    swipe(app, "CARD1")
+    assert len(db.rows) == 1 and "XE VÀO" in app.status_lbl.cget("text")
+
+
 def test_entry_cancel(root, tmp_path, monkeypatch):
     db, rec = FakeDb(), ScriptedRecognizer([""])
     app = EntryApp(root, EntryService(rec, db, str(tmp_path), sleep=lambda s: None),
@@ -372,6 +555,35 @@ def test_one_arduino_feeds_both_gates_and_shows_reader_fault(root, tmp_path, mon
     assert app.devices.state[ARDUINO][0] is True and app.devices.state[reader_key("in")][0] is True
     app.on_close()
     assert reader._running is False
+
+
+class LiveSerialW(LiveSerial):
+    """LiveSerial có write(): ghi lại byte gửi xuống Arduino."""
+
+    def __init__(self, lines):
+        super().__init__(lines)
+        self.sent = []
+
+    def write(self, data):
+        self.sent.append(data)
+
+
+def test_real_reader_sends_lcd_commands_to_the_right_screen(root, tmp_path, monkeypatch):
+    """Đường đi thật: quẹt thẻ -> giao diện -> ArduinoRfidReader.send_lcd -> byte gửi xuống cổng COM."""
+    import main
+    app, db, _ = make_dual(root, tmp_path, monkeypatch)
+    ser = LiveSerialW(["STATUS:IN=1,OUT=1\n", "IN:CARD1\n"])
+    reader = main._make_rfid(config.load_settings("in", {}), {"in": app.entry, "out": app.exit},
+                             serial_factory=lambda port, baud, timeout: ser)
+    app.set_rfid(reader)
+    assert pump(root, lambda: "XE VÀO" in app.entry.status_lbl.cget("text"))
+    assert pump(root, lambda: b"LCDIN:XE VAO OK|BIEN SO 25888\n" in ser.sent)
+
+    ser.lines.append(b"OUT:CARD1\n")                               # cùng thẻ quẹt ở cổng ra
+    assert pump(root, lambda: "XE RA" in app.exit.status_lbl.cget("text"))
+    assert pump(root, lambda: b"LCDOUT:XE RA OK|TIEN 5.000 D\n" in ser.sent)
+    assert all(m.startswith((b"LCDIN:", b"LCDOUT:")) and m.endswith(b"\n") for m in ser.sent)
+    app.on_close()
 
 
 def test_arduino_unplugged_is_shown_and_readers_are_not_blamed(root, tmp_path, monkeypatch):

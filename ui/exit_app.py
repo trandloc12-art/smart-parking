@@ -8,14 +8,37 @@ from services.exit_service import MIN_NOTE_LEN
 from services.gate_service import NoteRequired, Outcome, ReviewReason
 from storage.errors import SessionAlreadyClosed
 from ui.base_gate_app import (
-    COLOR_ERR, COLOR_OK, COLOR_WARN, BaseGateApp, fmt_duration, fmt_money, fmt_time, to_photo,
+    COLOR_ERR, COLOR_OK, COLOR_WARN, BaseGateApp, fmt_duration, fmt_money, fmt_time, plate_position_offset,
+    to_photo,
 )
+
+
+def lcd_exit_ok(fee):
+    """Hai dòng LCD khi cho xe ra: 'XE RA OK' + số tiền (dấu chấm ngăn nghìn, đủ 16 cột).
+    Số tiền quá dài so với 16 cột thì KHÔNG cắt cụt (sẽ hiện sai số): báo xem trên máy tính."""
+    if fee is None:
+        return ("XE RA OK", "TIEN ? D")
+    money = f"{fee:,}".replace(",", ".")
+    for line2 in (f"TIEN {money} D", f"TIEN {money}"):
+        if len(line2) <= 16:
+            return ("XE RA OK", line2)
+    return ("XE RA OK", "XEM TREN MAY")
 
 
 class ExitApp(BaseGateApp):
     BANNER_COLOR = "#1565c0"
     RESULT_TITLE = "Đối chiếu ảnh lúc vào / lúc ra"
     NUMBER_HINT = f"{NUMBER_LEN} số lúc RA (sửa nếu đọc sai):"
+
+    # Nội dung màn LCD ở CỔNG RA: (dòng 1, dòng 2), mỗi dòng tối đa 16 ký tự
+    LCD_IDLE = ("CONG RA", "MOI QUET THE")
+    LCD_UNREGISTERED = ("THE CHUA DANG KY", "KHONG CHO RA")
+    LCD_NOT_INSIDE = ("THE CHUA VAO BAI", "KHONG CHO RA")
+    LCD_NEED_STAFF = ("CHO NHAN VIEN", "KIEM TRA BIEN SO")
+    LCD_CLOSE = ("BIEN LECH 1 SO", "CHO NHAN VIEN")
+    LCD_MISMATCH = ("BIEN KHONG KHOP", "GOI NHAN VIEN")
+    LCD_DENIED = ("XE CHUA DUOC RA", "GOI NHAN VIEN")
+    LCD_SESSION_CLOSED = ("LUOT DA DONG", "GOI NHAN VIEN")
 
     # ---------- Bố cục ----------
     def build_result_panel(self, parent):
@@ -128,6 +151,7 @@ class ExitApp(BaseGateApp):
             self.plate_entry.configure(fg=COLOR_OK)
             self.match_lbl.configure(text=f"KHỚP biển lúc vào ({session.plate_number})", fg=COLOR_OK)
             self.upsert_row(session)
+            self.lcd(lcd_exit_ok(session.fee))
             self.set_status(self._exit_text("XE RA", session), COLOR_OK)
             return
 
@@ -142,14 +166,18 @@ class ExitApp(BaseGateApp):
                    + (f" (ứng viên: {scan.votes_text()})" if scan.tally else "")
                    + f". Nhập {NUMBER_LEN} số rồi bấm Cho xe ra. Lúc vào: {plate_in}.")
             color = COLOR_WARN
+            # không đọc được số nào -> xe lệch vị trí; có ứng viên nhưng hòa phiếu -> nhân viên kiểm tra
+            self.lcd(self.LCD_OFFSET if plate_position_offset(scan) else self.LCD_NEED_STAFF)
         elif outcome.reason is ReviewReason.CLOSE:
             msg = (f"Lệch 1 số: lúc vào {plate_in}, lúc ra {scan.winner}. "
                    "So ảnh, nhập lý do rồi bấm Cho xe ra.")
             color = COLOR_WARN
+            self.lcd(self.LCD_CLOSE)
         else:
             msg = (f"BIỂN KHÔNG KHỚP: lúc vào {plate_in}, lúc ra {scan.winner}. "
                    "Giữ xe lại. Chỉ cho ra khi đã kiểm tra và có lý do.")
             color = COLOR_ERR
+            self.lcd(self.LCD_MISMATCH)
         self.set_status(msg, color)
 
     # ---------- Nhân viên chốt / từ chối ----------
@@ -166,6 +194,7 @@ class ExitApp(BaseGateApp):
     def on_exit_confirmed(self, event):
         self.pending = None
         self.upsert_row(event)
+        self.lcd(lcd_exit_ok(event.fee))
         self.update_action_buttons()
         exact = event.match_status == "MATCH"
         self.match_lbl.configure(
@@ -181,6 +210,7 @@ class ExitApp(BaseGateApp):
         self.match_lbl.configure(text="")
         self.set_card(None)
         self.update_action_buttons()
+        self.lcd(self.LCD_DENIED)
         self.set_status("Đã từ chối. Lượt gửi xe vẫn mở, xe chưa được ra.", COLOR_WARN)
 
     @staticmethod
@@ -194,6 +224,7 @@ class ExitApp(BaseGateApp):
         elif isinstance(exc, SessionAlreadyClosed):
             self.pending = None
             self.update_action_buttons()
+            self.lcd(self.LCD_SESSION_CLOSED)
             self.set_status(f"{exc}. Làm mới lịch sử để xem trạng thái.", COLOR_ERR)
         elif isinstance(exc, ValueError):
             self.set_status(str(exc), COLOR_WARN)

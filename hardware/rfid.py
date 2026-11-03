@@ -8,6 +8,13 @@ Giao thức (9600 baud, mỗi dòng kết thúc bằng \\n; xem arduino/dual_rfi
                            với module RFID). Arduino gửi lúc khởi động và định kỳ (~2 giây).
     # ...                  dòng chú thích / log, bị bỏ qua
 
+Chiều NGƯỢC LẠI (máy tính -> Arduino), chỉ để hiển thị lên hai màn LCD 1602 I2C (một ở mỗi cổng):
+    LCDIN:dòng 1|dòng 2    hiển thị lên LCD CỔNG VÀO
+    LCDOUT:dòng 1|dòng 2   hiển thị lên LCD CỔNG RA
+    LCD:dòng 1|dòng 2      lệnh cũ, Arduino coi như LCDIN (giữ lại cho tương thích)
+                           Mỗi dòng tối đa 16 ký tự ASCII không dấu (xem lcd_text). Arduino không có LCD
+                           tương ứng hoặc còn firmware cũ thì bỏ qua dòng này, không ảnh hưởng gì.
+
 Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
     on_card(gate, uid)                  có thẻ quẹt ở cổng `gate` ("in" | "out")
     on_status(connected, message)       tình trạng Arduino: mất cổng COM, không phản hồi, sai định dạng...
@@ -18,12 +25,40 @@ LƯU Ý: các callback chạy ở luồng nền, KHÔNG được đụng trực 
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 
 import serial  # pip install pyserial
 
 GATE_CODES = {"IN": "in", "OUT": "out"}      # tiền tố trong giao thức -> mã cổng trong chương trình
 _UID_RE = re.compile(r"^[0-9A-Z]{4,32}$")
+LCD_WIDTH = 16                                # LCD 1602: 16 cột x 2 dòng
+
+
+# ---------------------------------------------------------------- màn LCD (hàm thuần)
+def lcd_text(text, width=LCD_WIDTH):
+    """Đổi chuỗi sang dạng LCD 1602 hiển thị được: ASCII không dấu, không ký tự điều khiển, tối đa `width` ký tự.
+
+    LCD 1602 không có chữ có dấu tiếng Việt: 'BIỂN SỐ' -> 'BIEN SO'. Ký tự '|' là dấu ngăn hai dòng trong
+    giao thức nên bị thay bằng '/'."""
+    text = (text or "").replace("đ", "d").replace("Đ", "D")
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.replace("|", "/")
+    text = "".join(ch if 0x20 <= ord(ch) <= 0x7E else "?" for ch in text if ch.isprintable() or ch == " ")
+    return text[:width]
+
+
+LCD_PREFIX = {"in": "LCDIN", "out": "LCDOUT"}     # mã cổng -> tiền tố lệnh
+
+
+def format_lcd_command(line1, line2="", gate="in"):
+    """Một dòng lệnh gửi Arduino, VD 'LCDOUT:XE RA OK|TIEN 5.000 D\\n'. gate: 'in' (cổng vào) hoặc 'out' (cổng ra)."""
+    try:
+        prefix = LCD_PREFIX[gate]
+    except KeyError:
+        raise ValueError(f"cổng không hợp lệ: {gate!r} (chỉ nhận 'in' hoặc 'out')") from None
+    return f"{prefix}:{lcd_text(line1)}|{lcd_text(line2)}\n"
 
 
 # ---------------------------------------------------------------- phân tích một dòng (hàm thuần)
@@ -88,6 +123,8 @@ class ArduinoRfidReader(threading.Thread):
         self._silent = False            # đang báo "Arduino không phản hồi"
         self._bad_streak = 0
         self._format_alert = False      # đang báo "sai định dạng"
+        self._ser = None                # cổng Serial đang mở (None = đang mất kết nối)
+        self._write_lock = threading.Lock()
 
     def stop(self):
         self._running = False
@@ -98,17 +135,39 @@ class ArduinoRfidReader(threading.Thread):
             try:
                 with self._serial_factory(self.port, self.baudrate, timeout=1) as ser:
                     self._reset_state()
-                    self.on_status(True, self._connected_text())
-                    while self._running:
-                        data = ser.readline()
-                        if data:
-                            self._on_data(data.decode(errors="ignore"))
-                        self._check_silence()
+                    self._ser = ser
+                    try:
+                        self.on_status(True, self._connected_text())
+                        while self._running:
+                            data = ser.readline()
+                            if data:
+                                self._on_data(data.decode(errors="ignore"))
+                            self._check_silence()
+                    finally:
+                        self._ser = None
             except (serial.SerialException, OSError) as e:
                 self.on_status(False, f"Arduino: MẤT KẾT NỐI {self.port} ({e}). "
                                       "Kiểm tra cáp USB, đóng Serial Monitor / Arduino IDE. Đang thử lại...")
                 self._set_all_readers(None)
                 self._sleep(self.RECONNECT_DELAY)
+
+    # ---------- gửi lệnh xuống Arduino ----------
+    def send_lcd(self, line1, line2="", gate="in"):
+        """Hiển thị hai dòng lên LCD của cổng `gate` ('in' / 'out') trên Arduino. Gọi được từ luồng bất kỳ.
+
+        Trả về True nếu đã ghi ra cổng COM; False nếu đang mất kết nối hoặc ghi lỗi (không ném ngoại lệ:
+        LCD chỉ là phần phụ, không được làm hỏng việc xử lý thẻ. Nếu cổng COM hỏng thật thì vòng đọc
+        sẽ tự báo MẤT KẾT NỐI và kết nối lại)."""
+        data = format_lcd_command(line1, line2, gate).encode("ascii")     # gate sai là lỗi lập trình: ném ra
+        ser = self._ser
+        if ser is None:
+            return False
+        try:
+            with self._write_lock:
+                ser.write(data)
+            return True
+        except (serial.SerialException, OSError, ValueError):
+            return False
 
     def _reset_state(self):
         self._last_rx = self._clock()

@@ -4,6 +4,7 @@ Bãi đỗ xe thông minh bằng Python: quẹt thẻ RFID (Arduino qua cổng C
 Hệ thống có **2 cổng trên cùng một máy**: **cổng vào** và **cổng ra**. Phần cứng gồm **MỘT Arduino** (một cổng COM) nối **hai đầu đọc RFID**, và mỗi cổng một camera.
 Cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau: CỔNG VÀO | CỔNG RA, lịch sử dùng chung ở dưới). Ngay trên cùng cửa sổ có **thanh tình trạng thiết bị**: thiết bị nào mất kết nối (Arduino, từng đầu đọc, từng camera, SQL Server) sẽ hiện dải cảnh báo đỏ nêu đúng tên thiết bị.
 Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này (xem mục *Giao thức với Arduino*).
+Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một ở cổng ra) để báo cho tài xế (VD "XE LECH VI TRI" khi không đọc đủ 5 số, "XE RA OK - TIEN 5.000 D") — xem mục *Hai màn LCD 1602 I2C*.
 
 ## Cài đặt
 1. Python 3.10+, SQL Server, **ODBC Driver 17/18 for SQL Server**.
@@ -95,10 +96,61 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `OUT:DB2B11CA` | Thẻ quẹt ở đầu đọc **cổng ra** |
 | `STATUS:IN=1,OUT=0` | Tình trạng từng đầu đọc (`1` = hoạt động, `0` = không nói chuyện được với module). Gửi lúc khởi động và mỗi ~2 giây; cũng là "nhịp tim" để phát hiện Arduino treo |
 | `# ...` | Chú thích / log, bị bỏ qua |
+| `LCDIN:dòng 1\|dòng 2` | **Chiều ngược lại (máy tính -> Arduino)**: hiển thị lên LCD **cổng vào**. Mỗi dòng tối đa 16 ký tự ASCII không dấu. Arduino không có LCD đó hoặc còn firmware cũ thì bỏ qua |
+| `LCDOUT:dòng 1\|dòng 2` | Như trên nhưng cho LCD **cổng ra** |
+| `LCD:dòng 1\|dòng 2` | Lệnh cũ, Arduino coi như `LCDIN:` (giữ lại cho tương thích) |
 
 Hướng đi do **tiền tố** (`IN:` / `OUT:`) quyết định. Dòng UID trần không có tiền tố (firmware cũ) bị coi là sai định dạng và báo lỗi trên thanh tình trạng, chương trình không đoán cổng.
 
 Sketch mẫu `arduino/dual_rfid/dual_rfid.ino` dùng hai module **RC522** (thư viện MFRC522), đấu dây và chân SS ghi ngay đầu file. Đổi baud thì sửa `RFID_BAUD` trong `.env` và `BAUD_RATE` trong sketch.
+
+## Hai màn LCD 1602 I2C (tùy chọn: một ở cổng vào, một ở cổng ra)
+Hai màn LCD 1602 có **module I2C** gắn vào chính Arduino đó. Không gắn màn nào thì chương trình vẫn chạy bình thường; gắn một trong hai màn cũng được (màn vắng mặt bị bỏ qua, màn còn lại vẫn chạy).
+
+**Đấu dây (cắm SONG SONG hai màn vào cùng 4 chân, không trùng chân nào của RFID):**
+
+| LCD (module I2C) | Arduino Uno/Nano |
+|---|---|
+| GND | GND |
+| VCC | **5V** (LCD cần 5V; **không** nối vào ray 3.3V của hai module RC522) |
+| SDA | A4 |
+| SCL | A5 |
+
+Tất cả GND nối chung. Cài thêm thư viện **LiquidCrystal I2C** (Frank de Brabander) trong Arduino IDE rồi nạp lại `dual_rfid.ino`.
+
+**Quan trọng: hai module I2C phải có ĐỊA CHỈ KHÁC NHAU.** Module I2C bán sẵn đều có địa chỉ mặc định giống nhau (`0x27` nếu chip PCF8574, `0x3F` nếu chip PCF8574A). Cắm hai màn cùng địa chỉ thì xung đột và chỉ một màn chạy. Cách xử lý: **hàn nối chân A0** (cặp chân A0 / A1 / A2 ở mặt sau module, gần con chip) trên module của **LCD cổng ra**. Sketch tự dò:
+
+| Màn | Chip PCF8574 | Chip PCF8574A |
+|---|---|---|
+| LCD cổng **VÀO** (giữ nguyên) | `0x27` | `0x3F` |
+| LCD cổng **RA** (đã hàn nối A0) | `0x26` | `0x3E` |
+
+Nếu hai module khác chip sẵn (một cái `0x27`, một cái `0x3F`) và bạn không muốn hàn, sửa hai mảng `LCD_IN_ADDRS` / `LCD_OUT_ADDRS` ở đầu `dual_rfid.ino` (VD `LCD_IN_ADDRS = {0x27}`, `LCD_OUT_ADDRS = {0x3F}`) rồi nạp lại.
+
+**Nội dung hiển thị** (LCD 1602 không có chữ có dấu nên viết không dấu; `hardware/rfid.py: lcd_text` tự bỏ dấu và cắt còn 16 ký tự):
+
+| Tình huống | Dòng 1 | Dòng 2 |
+|---|---|---|
+| **Cổng vào** — sẵn sàng / nhân viên bấm Hủy | `CONG VAO` | `MOI QUET THE` |
+| Vừa quẹt thẻ, đang quét ảnh (cả hai cổng) | `DANG KIEM TRA` | `VUI LONG CHO` |
+| **Không đọc đủ 5 số (xe lệch vị trí)** (cả hai cổng) | `XE LECH VI TRI` | `HAY CHINH XE` |
+| Hòa phiếu, chờ nhân viên — vào | `CHO NHAN VIEN` | `XAC NHAN BIEN SO` |
+| Lưu xe vào thành công | `XE VAO OK` | `BIEN SO 25888` |
+| Thẻ chưa đăng ký — vào / ra | `THE CHUA DANG KY` | `KHONG CHO VAO` / `KHONG CHO RA` |
+| Thẻ đang ở trong bãi (cổng vào) | `THE DA VAO BAI` | `KHONG CHO VAO` |
+| **Cổng ra** — sẵn sàng | `CONG RA` | `MOI QUET THE` |
+| Biển khớp, cho ra (hoặc nhân viên duyệt) | `XE RA OK` | `TIEN 5.000 D` |
+| Hòa phiếu, chờ nhân viên — ra | `CHO NHAN VIEN` | `KIEM TRA BIEN SO` |
+| Lệch 1 số | `BIEN LECH 1 SO` | `CHO NHAN VIEN` |
+| Lệch từ 2 số (không khớp) | `BIEN KHONG KHOP` | `GOI NHAN VIEN` |
+| Nhân viên từ chối cho ra (giữ đến lần quẹt kế tiếp) | `XE CHUA DUOC RA` | `GOI NHAN VIEN` |
+| Thẻ chưa có lượt vào (cổng ra) | `THE CHUA VAO BAI` | `KHONG CHO RA` |
+| Lượt gửi xe đã bị đóng trước khi chốt | `LUOT DA DONG` | `GOI NHAN VIEN` |
+| Lỗi hệ thống (VD mất SQL Server) | `LOI HE THONG` | `GOI NHAN VIEN` |
+
+Số tiền hiện đủ trong 16 cột; nếu quá dài thì LCD báo `XEM TREN MAY` thay vì cắt cụt thành số sai. Cổng vào còn có dải đỏ "BIỂN SỐ LỆCH VỊ TRÍ" trên cửa sổ chương trình, hiện cùng lúc với dòng `XE LECH VI TRI` trên LCD. Nội dung LCD sửa ở các thuộc tính `LCD_*` đầu lớp `EntryApp` (`ui/entry_app.py`) và `ExitApp` (`ui/exit_app.py`); phần dùng chung ở đầu `ui/base_gate_app.py`.
+
+**LCD không lên chữ:** mở Serial Monitor (9600), sẽ thấy `# LCD VAO: dia chi 0x27` và `# LCD RA: dia chi 0x26` nếu tìm thấy; `# LCD ...: khong tim thay` thì kiểm tra dây SDA/SCL/VCC/GND và địa chỉ I2C của màn đó. Nếu chỉ thấy `LCD VAO` mà `LCD RA` không tìm thấy dù đã cắm cả hai: nhiều khả năng hai module còn cùng địa chỉ, hãy hàn nối A0 như trên. Có đèn nền mà không thấy chữ: vặn biến trở xanh ở mặt sau module I2C để chỉnh độ tương phản.
 
 ## Quy tắc nghiệp vụ
 

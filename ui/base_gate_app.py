@@ -51,6 +51,19 @@ def fmt_duration(td):
     return f"{h} giờ {m} phút" if h else f"{m} phút"
 
 
+def plate_position_offset(scan):
+    """True nếu không khung hình nào đọc đủ NUMBER_LEN số -> thường do xe đứng lệch vị trí so với camera
+    (biển nằm ngoài khung, quá xa/gần, nghiêng). Trường hợp có ứng viên đủ 5 số nhưng chưa đủ phiếu
+    thì KHÔNG tính là lệch vị trí (đó là OCR chưa chắc chắn, nhân viên tự xác nhận)."""
+    return scan is not None and not scan.decided and not scan.tally
+
+
+# Nội dung màn LCD 1602 dùng chung cho cả hai cổng: (dòng 1, dòng 2), mỗi dòng tối đa 16 ký tự
+# (hardware.rfid.lcd_text tự bỏ dấu tiếng Việt). Phần riêng từng cổng là thuộc tính LCD_* của EntryApp / ExitApp.
+LCD_CHECKING = ("DANG KIEM TRA", "VUI LONG CHO")
+LCD_ERROR = ("LOI HE THONG", "GOI NHAN VIEN")
+
+
 class HistoryTable:
     """Bảng lịch sử gửi xe. Một bảng có thể dùng chung cho nhiều cổng trong cùng một cửa sổ."""
     COLUMNS = (("time_in", "Giờ vào", 135), ("card", "Mã thẻ", 85), ("plate", "5 số vào", 75),
@@ -102,6 +115,14 @@ class BaseGateApp:
     RESULT_TITLE = "Ảnh đã chụp"
     NUMBER_HINT = f"{NUMBER_LEN} số ở dòng dưới biển số (bắt buộc đủ {NUMBER_LEN} số):"
 
+    # Nội dung LCD của cổng này (EntryApp / ExitApp ghi đè phần riêng)
+    LCD_IDLE = ("MOI QUET THE", "")
+    LCD_UNREGISTERED = ("THE CHUA DANG KY", "")
+    LCD_ALREADY_INSIDE = ("THE DA VAO BAI", "")
+    LCD_NOT_INSIDE = ("THE CHUA VAO BAI", "")
+    LCD_OFFSET = ("XE LECH VI TRI", "HAY CHINH XE")        # không đọc được số nào: xe lệch vị trí so với camera
+    LCD_NEED_STAFF = ("CHO NHAN VIEN", "KIEM TRA BIEN SO")  # có ứng viên đủ 5 số nhưng chưa chốt được
+
     def __init__(self, root, service, camera, cfg, container=None, history=None, devices=None):
         """root: cửa sổ Tk (dùng cho after/bind). container: khung để dựng giao diện vào
         (None = dựng thẳng vào root và tự lo tiêu đề/đóng cửa sổ). history: bảng lịch sử dùng chung
@@ -147,6 +168,18 @@ class BaseGateApp:
         self.rfid = reader
         if start:
             reader.start()
+
+    def lcd(self, message):
+        """Hiển thị (dòng 1, dòng 2) lên màn LCD của CỔNG NÀY (cfg.gate: 'in' / 'out') qua Arduino.
+        Chưa có Arduino, Arduino không có LCD hay đang mất kết nối thì bỏ qua: LCD chỉ là phần phụ,
+        không bao giờ được làm hỏng việc xử lý thẻ."""
+        send = getattr(self.rfid, "send_lcd", None)
+        if send is None:
+            return
+        try:
+            send(message[0], message[1], gate=self.cfg.gate)
+        except Exception:
+            pass
 
     def handle_card(self, uid):
         """Gọi được từ luồng nền: chuyển sang luồng GUI."""
@@ -263,6 +296,7 @@ class BaseGateApp:
         raise NotImplementedError
 
     def handle_error(self, exc):
+        self.lcd(LCD_ERROR)
         self.set_status(f"Lỗi: {exc}", COLOR_ERR)
 
     # --- Tiện ích hiển thị ---
@@ -389,6 +423,7 @@ class BaseGateApp:
     # ---------- Quẹt thẻ ----------
     def on_model_ready(self, _):
         self.set_status("Sẵn sàng. Quẹt thẻ.", COLOR_OK)
+        self.lcd(self.LCD_IDLE)
 
     def get_frame(self):
         """Khung hình mới nhất. Được gọi từ luồng nền: chỉ đọc tham chiếu, không đụng camera."""
@@ -410,6 +445,7 @@ class BaseGateApp:
             return
 
         self.reset_view()
+        self.lcd(LCD_CHECKING)
         self.plate_var.set("")
         self.set_card(uid)
         self.set_status(f"Thẻ {uid}: đang kiểm tra...", COLOR_WARN)
@@ -424,11 +460,14 @@ class BaseGateApp:
     def on_card_outcome(self, outcome):
         uid, event, kind = outcome.card_uid, outcome.event, outcome.kind
         if kind is Outcome.UNREGISTERED:
+            self.lcd(self.LCD_UNREGISTERED)
             self.set_status(f"THẺ {uid} CHƯA ĐĂNG KÝ. Không nhận diện, không lưu.", COLOR_ERR)
         elif kind is Outcome.ALREADY_INSIDE:
+            self.lcd(self.LCD_ALREADY_INSIDE)
             where = (f" (vào {fmt_time(event.time_in)}, biển {event.plate_number})" if event else "")
             self.set_status(f"THẺ {uid} ĐANG Ở TRONG BÃI{where}. Không cho vào lần nữa.", COLOR_ERR)
         elif kind is Outcome.NOT_INSIDE:
+            self.lcd(self.LCD_NOT_INSIDE)
             self.set_status(f"THẺ {uid} CHƯA CÓ LƯỢT VÀO. Xe chưa vào bãi nên không thể ra.", COLOR_ERR)
         else:
             self.on_gate_outcome(outcome)
