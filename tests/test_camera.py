@@ -90,3 +90,48 @@ def test_reopen_replaces_old_capture(monkeypatch):
     assert wait_for(lambda: cam.read() is not None)
     cam.release()
     assert caps[1].released
+
+
+class Clock:
+    def __init__(self):
+        self.t = 100.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_status_closed_when_never_opened_or_open_failed(monkeypatch):
+    cam = camera_mod.Camera()
+    assert cam.status() == camera_mod.CLOSED
+    patch_capture(monkeypatch, FakeCapture(opened=False))
+    assert cam.open(0) is False and cam.status() == camera_mod.CLOSED
+
+
+def test_status_ok_then_no_signal_when_frames_stop(monkeypatch):
+    clock = Clock()
+    patch_capture(monkeypatch, FakeCapture(frames=[np.zeros((2, 2, 3), np.uint8)]))   # đúng một khung rồi mất hình
+    cam = camera_mod.Camera(clock=clock)
+    assert cam.open(0)
+    try:
+        assert wait_for(lambda: cam._seq == 1)
+        assert cam.status() == camera_mod.OK
+        clock.t += cam.STALE_AFTER - 0.5
+        assert cam.status() == camera_mod.OK              # chưa quá hạn
+        clock.t += 1.0
+        assert cam.status() == camera_mod.NO_SIGNAL       # camera mở nhưng đã quá lâu không có hình
+    finally:
+        cam.release()
+    assert cam.status() == camera_mod.CLOSED
+
+
+def test_status_starting_then_no_signal_if_never_any_frame(monkeypatch):
+    clock = Clock()
+    patch_capture(monkeypatch, FakeCapture(frames=[]))     # mở được nhưng không bao giờ ra hình
+    cam = camera_mod.Camera(clock=clock)
+    assert cam.open(0)
+    try:
+        assert cam.status() == camera_mod.STARTING
+        clock.t += cam.STALE_AFTER + 0.1
+        assert cam.status() == camera_mod.NO_SIGNAL
+    finally:
+        cam.release()

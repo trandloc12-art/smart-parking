@@ -78,6 +78,9 @@ class FakeCamera:
     def open(self, index):
         return True
 
+    def status(self):
+        return "ok"
+
     def read(self):
         return make_frame(128)
 

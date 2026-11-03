@@ -22,11 +22,13 @@ def test_missing_file():
 
 
 def test_gate_defaults(monkeypatch):
-    for k in ("CAMERA_INDEX", "RFID_PORT", "SCAN_FRAMES", "VOTE_MIN"):
+    for k in ("CAMERA_INDEX", "RFID_PORT", "SCAN_FRAMES", "VOTE_MIN", "RFID_HEARTBEAT_TIMEOUT"):
         monkeypatch.delenv(k, raising=False)
     cin, cout = config.load_settings("in"), config.load_settings("out")
-    assert (cin.camera_index, cin.rfid_port, cin.label) == (0, "COM3", "CỔNG VÀO")
-    assert (cout.camera_index, cout.rfid_port, cout.label) == (1, "COM4", "CỔNG RA")
+    assert (cin.camera_index, cin.label) == (0, "CỔNG VÀO")
+    assert (cout.camera_index, cout.label) == (1, "CỔNG RA")
+    assert cin.rfid_port == cout.rfid_port == "COM3"        # MỘT Arduino chung cho cả hai cổng
+    assert cin.rfid_heartbeat == 8
     assert cin.scan_frames == 5 and cin.vote_min == 2
 
 
@@ -80,16 +82,16 @@ def test_read_env_file_returns_dict_without_touching_environ(tmp_path, monkeypat
 
 
 def test_gate_env_keeps_each_gate_separate(tmp_path):
-    """Lỗi cũ: nạp .env.in rồi .env.out vào os.environ thì RFID_PORT của cổng ra bị cổng vào chiếm."""
-    (tmp_path / ".env").write_text("DB_NAME=Chung\nRFID_PORT=COM1\nSCAN_FRAMES=4\n", encoding="utf-8")
-    (tmp_path / ".env.in").write_text("RFID_PORT=COM3\nCAMERA_INDEX=0\n", encoding="utf-8")
-    (tmp_path / ".env.out").write_text("RFID_PORT=COM4\nCAMERA_INDEX=1\n", encoding="utf-8")
+    """Lỗi cũ: nạp .env.in rồi .env.out vào os.environ thì CAMERA_INDEX của cổng ra bị cổng vào chiếm."""
+    (tmp_path / ".env").write_text("DB_NAME=Chung\nRFID_PORT=COM7\nSCAN_FRAMES=4\n", encoding="utf-8")
+    (tmp_path / ".env.in").write_text("CAMERA_INDEX=0\n", encoding="utf-8")
+    (tmp_path / ".env.out").write_text("CAMERA_INDEX=1\n", encoding="utf-8")
     env_in, has_in = config.gate_env("in", str(tmp_path), environ={})
     env_out, has_out = config.gate_env("out", str(tmp_path), environ={})
     cin, cout = config.load_settings("in", env_in), config.load_settings("out", env_out)
     assert has_in and has_out
-    assert (cin.rfid_port, cin.camera_index) == ("COM3", 0)
-    assert (cout.rfid_port, cout.camera_index) == ("COM4", 1)
+    assert (cin.camera_index, cout.camera_index) == (0, 1)
+    assert cin.rfid_port == cout.rfid_port == "COM7"             # một Arduino: RFID_PORT khai báo chung ở .env
     assert cin.db_name == cout.db_name == "Chung" and cin.scan_frames == cout.scan_frames == 4
 
 
@@ -106,13 +108,21 @@ def test_gate_env_priority_and_missing_gate_file(tmp_path):
 
 def test_check_dual():
     cin, cout = config.load_settings("in", {}), config.load_settings("out", {})
-    config.check_dual(cin, cout)                                 # mặc định COM3/0 và COM4/1: ổn
-    same_port = config.load_settings("out", {"RFID_PORT": "com3"})
-    with pytest.raises(ValueError, match="RFID"):
-        config.check_dual(cin, same_port)
+    config.check_dual(cin, cout)                                 # mặc định: cùng COM3, camera 0 và 1: ổn
+    same_port_other_case = config.load_settings("out", {"RFID_PORT": "com3"})
+    config.check_dual(cin, same_port_other_case)                 # cùng cổng COM (khác hoa/thường) vẫn ổn
+    leftover = config.load_settings("out", {"RFID_PORT": "COM4"})   # sót RFID_PORT của thời hai Arduino
+    with pytest.raises(ValueError, match="RFID_PORT.*MỘT Arduino"):
+        config.check_dual(cin, leftover)
     same_cam = config.load_settings("out", {"CAMERA_INDEX": "0"})
     with pytest.raises(ValueError, match="camera"):
         config.check_dual(cin, same_cam)
+
+
+def test_heartbeat_setting():
+    assert config.load_settings("in", {"RFID_HEARTBEAT_TIMEOUT": "0"}).rfid_heartbeat == 0   # 0 = tắt
+    with pytest.raises(ValueError, match="RFID_HEARTBEAT_TIMEOUT"):
+        config.load_settings("in", {"RFID_HEARTBEAT_TIMEOUT": "-1"})
 
 
 def test_fit_views():
@@ -124,3 +134,55 @@ def test_fit_views():
     assert 2 * (2 * small_in.view_w + 70) <= 1366
     tiny_in, _ = config.fit_views(800, cin, cout)                 # màn quá nhỏ: không nhỏ hơn mức tối thiểu
     assert tiny_in.view_w == config.MIN_VIEW_W
+
+
+# ---------------------------------------------------------------- VS Code tự nạp .env (kèm chú thích)
+def vscode_environ(text):
+    """Mô phỏng python.envFile của VS Code (parseEnvLine): chỉ bỏ cặp nháy, KHÔNG bỏ chú thích cùng dòng."""
+    import re
+    env = {}
+    for line in text.split("\n"):
+        m = re.match(r"^\s*(_*[a-zA-Z]\w*)\s*=\s*(.*?)?\s*$", line)
+        if not m:
+            continue
+        value = m.group(2) or ""
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        env[m.group(1)] = value
+    return env
+
+
+def test_vscode_injected_env_with_inline_comments_is_ignored(tmp_path):
+    """Lỗi thật: bấm F5 trong VS Code -> RFID_DEBOUNCE='2.0   # giây, ...' nằm trong os.environ và thắng file."""
+    import os
+    example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
+    (tmp_path / ".env").write_text(example, encoding="utf-8")
+    injected = vscode_environ(example)
+    assert "#" in injected["RFID_DEBOUNCE"]                       # đúng là VS Code mang cả chú thích vào
+
+    env, _ = config.gate_env("in", str(tmp_path), environ=injected)
+    s = config.load_settings("in", env)                           # trước đây: ValueError ở RFID_DEBOUNCE
+    assert s.rfid_debounce == 2.0 and s.rfid_heartbeat == 8 and s.scan_frames == 5
+    assert s.auto_save is True                                    # "1   # ..." trước đây lặng lẽ thành False
+    assert s.db_server == "localhost\\SQLEXPRESS"                 # không dính chú thích vào tên server
+    assert s.rfid_port == "COM3"
+
+
+def test_real_environment_variable_still_wins_over_file(tmp_path):
+    (tmp_path / ".env").write_text("RFID_DEBOUNCE=2.0   # giây\nRFID_PORT=COM3\n", encoding="utf-8")
+    environ = {"RFID_DEBOUNCE": "5.0", "RFID_PORT": "COM3"}       # người dùng tự đặt khác chữ trong file
+    env, _ = config.gate_env("in", str(tmp_path), environ=environ)
+    assert env["RFID_DEBOUNCE"] == "5.0"
+
+
+def test_quoted_value_injected_by_vscode_keeps_hash(tmp_path):
+    (tmp_path / ".env").write_text('DB_PASSWORD="ab #c"   # mật khẩu\n', encoding="utf-8")
+    env, _ = config.gate_env("in", str(tmp_path), environ=vscode_environ('DB_PASSWORD="ab #c"   # mật khẩu\n'))
+    assert env["DB_PASSWORD"] == "ab #c"
+
+
+def test_bad_number_error_names_the_variable():
+    with pytest.raises(ValueError, match=r"RFID_DEBOUNCE phải là số nhưng đang là '2\.0 # giây'"):
+        config.load_settings("in", {"RFID_DEBOUNCE": "2.0 # giây"})
+    with pytest.raises(ValueError, match="SCAN_FRAMES phải là số"):
+        config.load_settings("in", {"SCAN_FRAMES": "năm"})

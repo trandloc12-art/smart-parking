@@ -14,7 +14,7 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "Cổng VÀO",
+      "name": "Chỉ cổng VÀO",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",
@@ -26,7 +26,7 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "Cổng RA",
+      "name": "Chỉ cổng RA",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",
@@ -36,16 +36,6 @@
       ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
-    }
-  ],
-  "compounds": [
-    {
-      "name": "Cả hai cổng (2 cửa sổ riêng)",
-      "configurations": [
-        "Cổng VÀO",
-        "Cổng RA"
-      ],
-      "stopAll": true
     }
   ]
 }

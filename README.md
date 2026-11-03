@@ -1,9 +1,9 @@
 # smart-parking
 
 Bãi đỗ xe thông minh bằng Python: quẹt thẻ RFID (Arduino qua cổng COM) -> chụp camera -> nhận diện biển số -> lưu SQL Server.
-Hệ thống có **2 cổng trên cùng một máy**: **cổng vào** và **cổng ra**, mỗi cổng một camera và một đầu đọc RFID.
-Mặc định cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau: CỔNG VÀO | CỔNG RA, lịch sử dùng chung ở dưới). Vẫn có thể chạy riêng từng cổng, mỗi cổng một cửa sổ / tiến trình.
-Cần project **rfid_arduino** đã nạp cho board (hai project chỉ giao tiếp qua cổng COM).
+Hệ thống có **2 cổng trên cùng một máy**: **cổng vào** và **cổng ra**. Phần cứng gồm **MỘT Arduino** (một cổng COM) nối **hai đầu đọc RFID**, và mỗi cổng một camera.
+Cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau: CỔNG VÀO | CỔNG RA, lịch sử dùng chung ở dưới). Ngay trên cùng cửa sổ có **thanh tình trạng thiết bị**: thiết bị nào mất kết nối (Arduino, từng đầu đọc, từng camera, SQL Server) sẽ hiện dải cảnh báo đỏ nêu đúng tên thiết bị.
+Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này (xem mục *Giao thức với Arduino*).
 
 ## Cài đặt
 1. Python 3.10+, SQL Server, **ODBC Driver 17/18 for SQL Server**.
@@ -16,9 +16,9 @@ Cần project **rfid_arduino** đã nạp cho board (hai project chỉ giao ti�
 3. Ctrl+Shift+P -> **Python: Select Interpreter** -> chọn `.venv\Scripts\python.exe`.
 4. Tạo file cấu hình từ các file mẫu:
    ```
-   copy .env.example .env          (chung: SQL Server, giá tiền...)
-   copy .env.in.example .env.in    (riêng cổng vào: RFID_PORT, CAMERA_INDEX)
-   copy .env.out.example .env.out  (riêng cổng ra)
+   copy .env.example .env          (chung: RFID_PORT của Arduino, SQL Server, giá tiền...)
+   copy .env.in.example .env.in    (riêng cổng vào: CAMERA_INDEX)
+   copy .env.out.example .env.out  (riêng cổng ra: CAMERA_INDEX)
    ```
    Xem cổng COM: Device Manager, hoặc `python -m serial.tools.list_ports`.
    Các file `.env*` thật **không được commit** (có mật khẩu); chỉ commit các file `*.example`.
@@ -29,21 +29,20 @@ Cần project **rfid_arduino** đã nạp cho board (hai project chỉ giao ti�
   | File | Kết quả |
   |---|---|
   | `run.bat` | MỘT cửa sổ chứa cả cổng vào và cổng ra (hai khung camera) |
-  | `run-2-cua-so.bat` | HAI cửa sổ riêng: cổng vào và cổng ra |
-  | `run-vao.bat` | Chỉ cổng vào |
-  | `run-ra.bat` | Chỉ cổng ra |
+  | `run-vao.bat` | Chỉ cổng vào (thẻ quẹt ở đầu đọc cổng ra bị bỏ qua) |
+  | `run-ra.bat` | Chỉ cổng ra (thẻ quẹt ở đầu đọc cổng vào bị bỏ qua) |
 - **Một cửa sổ, hai camera (mặc định):**
   ```
   python main.py            (tương đương python main.py --gate both)
   ```
   VS Code: chọn cấu hình **Một cửa sổ (vào + ra)** rồi nhấn F5.
-- **Mỗi cổng một cửa sổ riêng** (hai tiến trình, mở 2 terminal):
+- **Chỉ một cổng** (VD camera cổng kia đang hỏng, hoặc để thử):
   ```
   python main.py --gate in
   python main.py --gate out
   ```
-  VS Code: **Cổng VÀO**, **Cổng RA** hoặc **Cả hai cổng (vào + ra)** (hai cửa sổ).
-Trước khi chạy: cắm 2 Arduino + 2 camera, **đóng Serial Monitor / Arduino IDE**.
+  Chỉ chạy được **một tiến trình tại một thời điểm** vì cổng COM của Arduino chỉ một chương trình mở được (nên không còn chế độ "hai cửa sổ riêng").
+Trước khi chạy: cắm 1 Arduino + 2 camera, **đóng Serial Monitor / Arduino IDE**.
 Lần đầu chạy cần Internet để EasyOCR tải mô hình; chương trình tự tạo database + bảng (hai cổng khởi động cùng lúc vẫn an toàn).
 Chế độ một cửa sổ chỉ nạp **một** bản EasyOCR dùng chung cho cả hai cổng (tiết kiệm RAM); nếu hai cổng quét cùng lúc thì lần lượt từng cổng. Chạy hai tiến trình riêng thì mỗi cổng nạp một bản.
 Hai cổng trong một cửa sổ cần màn hình rộng khoảng 1850 px với `VIEW_W=420`; màn nhỏ hơn thì khung camera tự thu nhỏ cho vừa. Phím **Space** (thử nhận diện) chạy cho cổng đang được trỏ chuột vào.
@@ -51,17 +50,18 @@ Hai cổng trong một cửa sổ cần màn hình rộng khoảng 1850 px với
 Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera không bị Windows đổi. Camera USB cắm chung một bộ điều khiển USB có thể tranh băng thông.
 
 ## Bảng cấu hình
-`RFID_PORT`, `CAMERA_INDEX`, `WINDOW_POS` nằm trong `.env.in` / `.env.out` (riêng từng cổng); các biến còn lại nằm trong `.env` (chung). Thứ tự ưu tiên: biến môi trường có sẵn > `.env.in`/`.env.out` > `.env` > mặc định. Chế độ một cửa sổ vẫn đọc đủ cả `.env.in` và `.env.out`; hai cổng **không được trùng** `RFID_PORT` hay `CAMERA_INDEX` (chương trình báo lỗi ngay khi khởi động).
+`CAMERA_INDEX`, `WINDOW_POS` nằm trong `.env.in` / `.env.out` (riêng từng cổng); các biến còn lại, kể cả `RFID_PORT`, nằm trong `.env` (chung). Thứ tự ưu tiên: biến môi trường có sẵn > `.env.in`/`.env.out` > `.env` > mặc định. Chế độ một cửa sổ đọc đủ cả `.env.in` và `.env.out`; hai cổng **không được trùng** `CAMERA_INDEX`, và vì chỉ có một Arduino nên **`RFID_PORT` chỉ khai báo một lần trong `.env`** (chương trình báo lỗi ngay khi khởi động nếu sai).
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `RFID_PORT` | `COM3` (vào), `COM4` (ra) | Cổng COM của đầu đọc RFID |
-| `CAMERA_INDEX` | `0` (vào), `1` (ra) | Số camera |
+| `RFID_PORT` | `COM3` | Cổng COM của **Arduino** (chung cho cả hai đầu đọc), trong `.env` |
+| `CAMERA_INDEX` | `0` (vào), `1` (ra) | Số camera, trong `.env.in` / `.env.out` |
 | `WINDOW_POS` | trống | Vị trí cửa sổ khi chạy từng cổng riêng, VD `+0+0` và `+920+0` (chế độ một cửa sổ bỏ qua biến này) |
 | `DB_SERVER`, `DB_NAME` | `localhost\SQLEXPRESS`, `BienSoDB` | SQL Server |
 | `DB_USER`, `DB_PASSWORD` | trống | Để trống `DB_USER` = Windows Authentication |
 | `DB_DRIVER` | `ODBC Driver 17 for SQL Server` | Tên driver ODBC đã cài |
-| `RFID_BAUD`, `RFID_DEBOUNCE` | `9600`, `2.0` | Tốc độ serial; số giây bỏ qua quẹt trùng |
+| `RFID_BAUD`, `RFID_DEBOUNCE` | `9600`, `2.0` | Tốc độ serial; số giây bỏ qua quẹt trùng (tính riêng từng cổng) |
+| `RFID_HEARTBEAT_TIMEOUT` | `8` | Số giây không nhận được gì từ Arduino thì báo "không phản hồi" (`0` = không kiểm tra) |
 | `AUTO_SAVE` | `1` | Cổng vào: `1` tự lưu khi chốt được 5 số, `0` luôn chờ xác nhận |
 | `PRICE_PER_BLOCK`, `BLOCK_MINUTES` | `5000`, `60` | Giá một khối và độ dài khối |
 | `SCAN_FRAMES`, `SCAN_INTERVAL`, `VOTE_MIN` | `5`, `0.25`, `2` | Số ảnh quét, giây giữa hai ảnh, số phiếu tối thiểu (`1..SCAN_FRAMES`) |
@@ -72,8 +72,13 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | Hiện tượng | Cách xử lý |
 |---|---|
 | Hộp thoại "Không kết nối được SQL Server" | Kiểm tra `DB_SERVER` trong `.env`, cài ODBC Driver, bật dịch vụ SQL Server |
-| RFID đỏ "chưa kết nối" | Đổi `RFID_PORT`, đóng Serial Monitor / Arduino IDE. Chương trình tự kết nối lại khi cổng sẵn sàng |
-| Hai cổng báo lỗi cổng COM hoặc camera | Thiếu `.env.in` / `.env.out`, hoặc hai cổng trùng `RFID_PORT` / `CAMERA_INDEX` |
+| "Arduino: MẤT KẾT NỐI" | Đổi `RFID_PORT` trong `.env`, kiểm tra cáp USB, đóng Serial Monitor / Arduino IDE. Chương trình tự kết nối lại khi cổng sẵn sàng. Hai đầu đọc hiện "chưa rõ" (xám) cho tới khi Arduino trở lại |
+| "Arduino: KHÔNG PHẢN HỒI" | Cổng COM còn mở nhưng Arduino im lặng (treo / mất nguồn / chưa nạp sketch). Nạp lại `dual_rfid.ino`, hoặc chỉnh `RFID_HEARTBEAT_TIMEOUT` |
+| "Arduino: ... gửi dữ liệu sai định dạng" | Arduino còn nạp firmware cũ chỉ gửi UID trần. Nạp `arduino/dual_rfid/dual_rfid.ino` |
+| "Đầu đọc CỔNG VÀO/RA: KHÔNG NHẬN ĐƯỢC module RFID" | Arduino vẫn tốt nhưng không nói chuyện được với module RC522 đó: kiểm tra dây SPI, chân SDA (SS), nguồn 3.3V |
+| "Camera ...: KHÔNG MỞ ĐƯỢC" / "MẤT TÍN HIỆU" | Camera chưa mở được hoặc đã hết hình (rút dây, treo). Cắm lại, đổi số trong ô "Camera số" rồi bấm Mở camera |
+| Chương trình báo "Cấu hình sai: ... RFID_PORT khác nhau" | Còn sót `RFID_PORT` của thời hai Arduino trong `.env.in` / `.env.out`: xóa dòng đó, chỉ giữ `RFID_PORT` trong `.env` |
+| Báo thiếu `.env.in` / `.env.out` hoặc hai cổng trùng `CAMERA_INDEX` | Copy từ file `*.example` và sửa `CAMERA_INDEX` cho khác nhau |
 | Một cửa sổ nhưng hai khung camera hiện cùng một hình | Hai cổng đang trùng `CAMERA_INDEX`: sửa lại trong `.env.in` / `.env.out` |
 | Cửa sổ chung quá rộng, tràn màn hình | Giảm `VIEW_W` / `VIEW_H` trong `.env` (hoặc để chương trình tự thu nhỏ theo độ rộng màn hình) |
 | "Không mở được camera" | Đổi số trong ô "Camera số" rồi bấm Mở camera; đóng ứng dụng khác đang dùng camera |
@@ -82,7 +87,18 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
 
 ## Giao thức với Arduino
-Serial 9600 baud, mỗi thẻ một dòng HEX (VD `A1B2C3D4\n`). Đổi baud thì sửa `RFID_BAUD` ở đây và `BAUD_RATE` bên rfid_arduino.
+**MỘT Arduino, MỘT cổng COM, hai đầu đọc.** Serial 9600 baud, mỗi dòng kết thúc bằng `\n`:
+
+| Dòng | Ý nghĩa |
+|---|---|
+| `IN:AB1992CA` | Thẻ quẹt ở đầu đọc **cổng vào** (UID dạng HEX) |
+| `OUT:DB2B11CA` | Thẻ quẹt ở đầu đọc **cổng ra** |
+| `STATUS:IN=1,OUT=0` | Tình trạng từng đầu đọc (`1` = hoạt động, `0` = không nói chuyện được với module). Gửi lúc khởi động và mỗi ~2 giây; cũng là "nhịp tim" để phát hiện Arduino treo |
+| `# ...` | Chú thích / log, bị bỏ qua |
+
+Hướng đi do **tiền tố** (`IN:` / `OUT:`) quyết định. Dòng UID trần không có tiền tố (firmware cũ) bị coi là sai định dạng và báo lỗi trên thanh tình trạng, chương trình không đoán cổng.
+
+Sketch mẫu `arduino/dual_rfid/dual_rfid.ino` dùng hai module **RC522** (thư viện MFRC522), đấu dây và chân SS ghi ngay đầu file. Đổi baud thì sửa `RFID_BAUD` trong `.env` và `BAUD_RATE` trong sketch.
 
 ## Quy tắc nghiệp vụ
 
@@ -131,13 +147,14 @@ WHERE card_uid = N'AABBCCDD' AND time_out IS NULL;
 ## Cấu trúc
 ```
 config.py                    cấu hình theo từng cổng (đọc biến môi trường / file .env*)
+arduino/dual_rfid/           dual_rfid.ino      firmware: MỘT Arduino đọc HAI module RFID (giao thức ở trên)
 main.py                      python main.py [--gate in|out|both]   (mặc định both: một cửa sổ)
 core/                        plate_utils.py     xử lý ảnh + chuỗi biển
                              recognizer.py      OCR 1 khung (EasyOCR)
                              plate_voting.py    bỏ phiếu giữa nhiều lần đọc
                              scanner.py         quét nhiều khung + bỏ phiếu
                              plate_match.py     so khớp 5 số vào / ra
-hardware/                    rfid.py (Serial), camera.py (đọc camera ở luồng nền)
+hardware/                    rfid.py (Serial: một Arduino, hai đầu đọc, báo tình trạng), camera.py (đọc camera ở luồng nền, báo mất hình)
 storage/                     database.py (SQL Server), schema.sql, models.py, errors.py
 services/                    gate_service.py    phần chung (quét, lưu ảnh)
                              entry_service.py   nghiệp vụ cổng vào
@@ -148,6 +165,7 @@ ui/                          base_gate_app.py   giao diện chung
                              entry_app.py       cổng vào
                              exit_app.py        cổng ra (ảnh vào cạnh ảnh ra, đối chiếu)
                              dual_app.py        một cửa sổ chứa cả hai cổng + lịch sử dùng chung
+                             device_status.py   thanh tình trạng thiết bị (cảnh báo đỏ khi mất kết nối)
 tests/                       pytest
 ```
 
@@ -159,6 +177,8 @@ python -m pytest
 Test dùng camera, OCR và CSDL giả nên chạy được mà không cần phần cứng hay SQL Server. Test giao diện tự bỏ qua nếu máy không có màn hình.
 
 ## Nâng cấp từ bản cũ
+**Từ hai Arduino lên một Arduino:** (1) nạp `arduino/dual_rfid/dual_rfid.ino` cho board còn dùng và đấu hai module RC522 vào cùng board (xem đầu file sketch); (2) trong `.env` đặt `RFID_PORT=` đúng cổng COM của board đó; (3) **xóa dòng `RFID_PORT`** khỏi `.env.in` và `.env.out` (còn sót hai giá trị khác nhau thì chương trình báo lỗi ngay khi khởi động); (4) chạy `run.bat`. Database và danh sách thẻ giữ nguyên. File `run-2-cua-so.bat` đã bị bỏ vì hai tiến trình không thể cùng mở một cổng COM.
+
 **Giao diện một cửa sổ:** không cần đổi cấu hình hay database. `python main.py` giờ mở cả hai cổng trong một cửa sổ; muốn giữ cách cũ thì chạy `python main.py --gate in` và `--gate out` như trước.
 
 **Sao lưu database trước** khi chạy lần đầu, vì chương trình tự sửa cấu trúc bảng `access_log`.

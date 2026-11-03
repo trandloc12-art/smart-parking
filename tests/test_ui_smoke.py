@@ -8,6 +8,7 @@ import config
 from helpers import FakeCamera, FakeDb, ScriptedRecognizer
 from services.entry_service import EntryService
 from services.exit_service import ExitService
+from ui.device_status import ARDUINO, DB, DeviceStatusBar, camera_key, reader_key
 from ui.dual_app import DualGateApp
 from ui.entry_app import EntryApp
 from ui.exit_app import ExitApp
@@ -172,7 +173,24 @@ class SpyRfid:
         self.stopped = True
 
 
-def make_dual(root, tmp_path, monkeypatch, entry_script=("25888",), exit_script=("25888",)):
+class BrokenCamera(FakeCamera):
+    """Camera không mở được (CLOSED) hoặc mất tín hiệu (NO_SIGNAL), chỉnh được trong lúc chạy."""
+
+    def __init__(self, state="closed"):
+        self.state = state
+
+    def open(self, index):
+        return self.state not in ("closed",)
+
+    def status(self):
+        return self.state
+
+    def read(self):
+        return None
+
+
+def make_dual(root, tmp_path, monkeypatch, entry_script=("25888",), exit_script=("25888",),
+              exit_camera=None, wait=True):
     monkeypatch.setenv("IMG_DIR", str(tmp_path))
     db = FakeDb()
     cfg_in, cfg_out = config.load_settings("in", {"IMG_DIR": str(tmp_path)}), \
@@ -180,9 +198,10 @@ def make_dual(root, tmp_path, monkeypatch, entry_script=("25888",), exit_script=
     rec = ScriptedRecognizer(entry_script)            # MỘT bộ nhận diện dùng chung cho cả hai cổng
     entry_svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None)
     exit_svc = ExitService(rec, db, str(tmp_path), sleep=lambda s: None)
-    app = DualGateApp(root, entry_svc, exit_svc, SpyCamera(), SpyCamera(), cfg_in, cfg_out)
-    assert pump(root, lambda: idle(app.entry) and idle(app.exit)
-                and app.entry.last_frame is not None and app.exit.last_frame is not None)
+    app = DualGateApp(root, entry_svc, exit_svc, SpyCamera(), exit_camera or SpyCamera(), cfg_in, cfg_out)
+    if wait:
+        assert pump(root, lambda: idle(app.entry) and idle(app.exit)
+                    and app.entry.last_frame is not None and app.exit.last_frame is not None)
     return app, db, rec
 
 
@@ -248,3 +267,120 @@ def test_dual_close_stops_both_gates(root, tmp_path, monkeypatch):
     assert all(r.stopped for r in rfids)
     assert app.entry.camera.released and app.exit.camera.released
     assert app.entry._closing and app.exit._closing
+
+
+# ---------------------------------------------------------------- tình trạng thiết bị
+def test_device_bar_alerts_only_on_real_problems(root):
+    bar = DeviceStatusBar(root, [("in", "CỔNG VÀO"), ("out", "CỔNG RA")], "COM3")
+    root.update()
+    assert bar.problems() == [] and bar.alert.winfo_manager() == ""       # chưa có lỗi: không có dải đỏ
+
+    bar.set(ARDUINO, False, "Arduino: MẤT KẾT NỐI COM3")
+    bar.set(reader_key("in"), None, "Đầu đọc CỔNG VÀO: chưa rõ")           # "chưa rõ" không phải lỗi
+    root.update()
+    assert bar.problems() == ["Arduino (COM3)"]
+    assert bar.alert.winfo_manager() == "pack" and "Arduino (COM3)" in bar.alert.cget("text")
+    assert "Đầu đọc" not in bar.alert.cget("text")
+
+    bar.set(camera_key("out"), False, "Camera CỔNG RA: KHÔNG MỞ ĐƯỢC")
+    assert bar.problems() == ["Arduino (COM3)", "Camera CỔNG RA"]
+    assert "Camera CỔNG RA" in bar.alert.cget("text")
+
+    bar.set(ARDUINO, True, "Arduino: đã kết nối COM3")
+    bar.set(camera_key("out"), True, "Camera CỔNG RA: có hình")
+    root.update()
+    assert bar.problems() == [] and bar.alert.winfo_manager() == ""       # hết lỗi: dải đỏ tự ẩn
+
+
+def test_single_gate_window_has_its_own_device_bar(root, tmp_path, monkeypatch):
+    app = EntryApp(root, EntryService(ScriptedRecognizer(["25888"]), FakeDb(), str(tmp_path), sleep=lambda s: None),
+                   FakeCamera(), settings("in", tmp_path, monkeypatch))
+    assert set(app.devices.titles) == {ARDUINO, reader_key("in"), camera_key("in"), DB}   # không có thiết bị cổng kia
+    assert pump(root, lambda: app.devices.state[camera_key("in")][0] is True)
+    app.handle_reader_status(False)
+    assert pump(root, lambda: app.devices.problems() == ["Đầu đọc CỔNG VÀO"])
+
+
+def test_dual_window_shows_one_shared_device_bar(root, tmp_path, monkeypatch):
+    app, _, _ = make_dual(root, tmp_path, monkeypatch)
+    assert app.entry.devices is app.exit.devices is app.devices
+    assert set(app.devices.titles) == {ARDUINO, DB, reader_key("in"), reader_key("out"),
+                                       camera_key("in"), camera_key("out")}
+    assert app.devices.frame.winfo_manager() == "grid"
+    assert app.devices.state[camera_key("in")][0] is True and app.devices.state[camera_key("out")][0] is True
+
+
+def test_dual_names_the_camera_that_is_not_connected(root, tmp_path, monkeypatch):
+    broken = BrokenCamera("closed")
+    app, _, _ = make_dual(root, tmp_path, monkeypatch, exit_camera=broken, wait=False)
+    root.update()
+    assert app.devices.problems() == ["Camera CỔNG RA"]
+    assert "KHÔNG MỞ ĐƯỢC" in app.devices.state[camera_key("out")][1]
+    assert app.devices.state[camera_key("in")][0] is True                 # camera cổng vào vẫn tốt
+
+    broken.state = "no_signal"                                            # cắm lại nhưng không có hình
+    app.exit.update_camera_status()
+    assert "MẤT TÍN HIỆU" in app.devices.state[camera_key("out")][1]
+    broken.state = "ok"
+    app.exit.update_camera_status()
+    assert app.devices.problems() == []
+
+
+def test_dual_reports_sql_server_down_and_up(root, tmp_path, monkeypatch):
+    app, _, _ = make_dual(root, tmp_path, monkeypatch)
+    app.entry.on_history_error(RuntimeError("không kết nối được"))
+    assert app.devices.problems() == ["SQL Server"]
+    app.entry.apply_history([])
+    assert app.devices.problems() == []
+
+
+class LiveSerial:
+    """Cổng Serial giả cho luồng đọc thật: phát các dòng rồi im lặng (như Arduino đang chờ thẻ)."""
+
+    def __init__(self, lines):
+        self.lines = [line.encode() for line in lines]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def readline(self):
+        if self.lines:
+            return self.lines.pop(0)
+        time.sleep(0.02)
+        return b""
+
+
+def test_one_arduino_feeds_both_gates_and_shows_reader_fault(root, tmp_path, monkeypatch):
+    """Đường đi thật: Arduino -> luồng đọc -> đúng cổng -> giao diện. Đầu đọc RA hỏng chỉ bị báo ở cổng RA."""
+    import main
+    app, db, _ = make_dual(root, tmp_path, monkeypatch)
+    lines = ["# san sang\n", "STATUS:IN=1,OUT=0\n", "IN:CARD1\n"]
+    reader = main._make_rfid(config.load_settings("in", {}), {"in": app.entry, "out": app.exit},
+                             serial_factory=lambda port, baud, timeout: LiveSerial(lines))
+    app.set_rfid(reader)                                       # MỘT bộ đọc, khởi động đúng một lần
+    assert app.entry.rfid is app.exit.rfid is reader
+
+    assert pump(root, lambda: "XE VÀO" in app.entry.status_lbl.cget("text")), \
+        "thẻ gửi từ Arduino với tiền tố IN: phải vào cổng VÀO"
+    assert len(db.rows) == 1 and db.rows[0].card_uid == "CARD1" and db.rows[0].gate_in == "in"
+    assert app.exit.pending is None and app.exit.status_lbl.cget("text") != app.entry.status_lbl.cget("text")
+
+    assert pump(root, lambda: app.devices.problems() == ["Đầu đọc CỔNG RA"])
+    assert app.devices.state[ARDUINO][0] is True and app.devices.state[reader_key("in")][0] is True
+    app.on_close()
+    assert reader._running is False
+
+
+def test_arduino_unplugged_is_shown_and_readers_are_not_blamed(root, tmp_path, monkeypatch):
+    app, _, _ = make_dual(root, tmp_path, monkeypatch)
+    app.entry.handle_reader_status(True)
+    app.exit.handle_reader_status(True)
+    app.entry.handle_rfid_status(False, "Arduino: MẤT KẾT NỐI COM3")
+    app.entry.handle_reader_status(None)
+    app.exit.handle_reader_status(None)
+    assert pump(root, lambda: app.devices.problems() == ["Arduino (COM3)"])
+    assert "MẤT KẾT NỐI" in app.devices.state[ARDUINO][1]
+    assert app.devices.state[reader_key("in")][0] is None and app.devices.state[reader_key("out")][0] is None

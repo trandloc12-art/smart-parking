@@ -4,8 +4,9 @@ Lớp này lo: camera trực tiếp, nhận thẻ RFID, chạy việc nặng ở
 Phần riêng của mỗi cổng nằm ở entry_app.py / exit_app.py (override các hook build_*, on_gate_outcome...).
 
 Hai cách dùng:
-  - Cửa sổ riêng (mặc định): BaseGateApp(root, service, camera, cfg) tự dựng cửa sổ + bảng lịch sử.
-  - Nhúng vào cửa sổ chung (ui/dual_app.py): truyền thêm container=<Frame> và history=<HistoryTable>.
+  - Cửa sổ riêng: BaseGateApp(root, service, camera, cfg) tự dựng cửa sổ + bảng lịch sử + thanh tình trạng thiết bị.
+  - Nhúng vào cửa sổ chung (ui/dual_app.py): truyền thêm container=<Frame>, history=<HistoryTable>
+    và devices=<DeviceStatusBar> (dùng chung cho cả hai cổng).
 """
 import queue
 import threading
@@ -17,12 +18,15 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from core.plate_voting import NUMBER_LEN
+from hardware import camera as cam_state
 from services.gate_service import Outcome
+from ui.device_status import ARDUINO, DB, DeviceStatusBar, camera_key, reader_key
 
 COLOR_OK = "#1a7f37"
 COLOR_WARN = "#b35900"
 COLOR_ERR = "#c62828"
 HISTORY_REFRESH_MS = 5000       # làm mới lịch sử để thấy cả lượt do cổng kia ghi
+CAMERA_CHECK_MS = 1000          # kiểm tra camera còn có hình không
 
 MATCH_TEXT = {"MATCH": "Khớp", "APPROVED_CLOSE": "Lệch 1 số (đã duyệt)",
               "APPROVED_MISMATCH": "Không khớp (đã duyệt)"}
@@ -98,10 +102,11 @@ class BaseGateApp:
     RESULT_TITLE = "Ảnh đã chụp"
     NUMBER_HINT = f"{NUMBER_LEN} số ở dòng dưới biển số (bắt buộc đủ {NUMBER_LEN} số):"
 
-    def __init__(self, root, service, camera, cfg, container=None, history=None):
+    def __init__(self, root, service, camera, cfg, container=None, history=None, devices=None):
         """root: cửa sổ Tk (dùng cho after/bind). container: khung để dựng giao diện vào
         (None = dựng thẳng vào root và tự lo tiêu đề/đóng cửa sổ). history: bảng lịch sử dùng chung
-        (None = tự tạo bảng riêng ở cuối giao diện)."""
+        (None = tự tạo bảng riêng ở cuối giao diện). devices: thanh tình trạng thiết bị dùng chung
+        (None = tự tạo thanh riêng cho cổng này)."""
         self.root = root
         self.embedded = container is not None
         self.container = container if self.embedded else root
@@ -122,11 +127,14 @@ class BaseGateApp:
         self.pending = None         # CardOutcome đang chờ nhân viên xử lý
         self.last_frame = None
         self.history = history      # None -> build_ui tự tạo
+        self.devices = devices      # None -> build_ui tự tạo
+        self.camera_index = cfg.camera_index
         self._history_loading = False
         self._closing = False
 
         self.build_ui()
         self.open_camera(cfg.camera_index)
+        self.poll_camera()
         self.update_loop()
 
         self.set_status("Đang tải mô hình OCR (lần đầu cần Internet, hơi lâu)...", COLOR_WARN)
@@ -134,23 +142,39 @@ class BaseGateApp:
         self.refresh_history()
 
     # ---------- Kết nối thành phần ngoài ----------
-    def set_rfid(self, reader):
-        """Gắn đầu đọc RFID (đã tạo với on_card=app.handle_card, on_status=app.handle_rfid_status)."""
+    def set_rfid(self, reader, start=True):
+        """Gắn bộ đọc RFID dùng chung (ArduinoRfidReader). start=False khi cửa sổ chung đã tự khởi động nó."""
         self.rfid = reader
-        reader.start()
+        if start:
+            reader.start()
 
     def handle_card(self, uid):
         """Gọi được từ luồng nền: chuyển sang luồng GUI."""
         self.q.put(lambda: self.on_card(uid))
 
     def handle_rfid_status(self, connected, message):
-        self.q.put(lambda: self.rfid_lbl.configure(
-            text=message, foreground=COLOR_OK if connected else "red"))
+        """Tình trạng Arduino (cổng COM). Gọi được từ luồng nền."""
+        self.q.put(lambda: self.devices.set(ARDUINO, connected, message))
+
+    def handle_reader_status(self, ok):
+        """Tình trạng đầu đọc RFID của cổng này: True / False / None (chưa rõ). Gọi được từ luồng nền."""
+        label = self.cfg.label
+        if ok:
+            text = f"Đầu đọc {label}: hoạt động"
+        elif ok is False:
+            text = f"Đầu đọc {label}: KHÔNG NHẬN ĐƯỢC module RFID (kiểm tra dây nối)"
+        else:
+            text = f"Đầu đọc {label}: chưa rõ"
+        self.q.put(lambda: self.devices.set(reader_key(self.cfg.gate), ok, text))
 
     # ---------- Giao diện ----------
     def build_ui(self):
         tk.Label(self.container, text=self.cfg.label, bg=self.BANNER_COLOR, fg="white",
                  font=("Segoe UI", 16, "bold")).pack(fill="x")
+        if self.devices is None:        # chạy một cổng: thanh tình trạng riêng, nằm dưới tiêu đề
+            self.devices = DeviceStatusBar(self.container, [(self.cfg.gate, self.cfg.label)],
+                                           self.cfg.rfid_port)
+            self.devices.frame.pack(fill="x")
         main = ttk.Frame(self.container, padding=8)
         main.pack(fill="both", expand=True)
 
@@ -166,7 +190,7 @@ class BaseGateApp:
         right.grid(row=0, column=1, padx=5, pady=5, sticky="n")
         self.build_result_panel(right)
 
-        # Hàng 1: camera + RFID | thẻ + 5 số
+        # Hàng 1: camera | thẻ + 5 số
         cam_box = ttk.Frame(main)
         cam_box.grid(row=1, column=0, pady=5, sticky="n")
         row = ttk.Frame(cam_box)
@@ -175,11 +199,6 @@ class BaseGateApp:
         self.cam_var = tk.StringVar(value=str(self.cfg.camera_index))
         tk.Spinbox(row, from_=0, to=5, width=3, textvariable=self.cam_var).pack(side="left", padx=4)
         ttk.Button(row, text="Mở camera", command=self.change_camera).pack(side="left")
-        self.rfid_lbl = ttk.Label(cam_box, text=f"RFID ({self.cfg.rfid_port}): chưa kết nối",
-                                  foreground="gray")
-        self.rfid_lbl.pack(pady=(4, 0))
-        self.db_lbl = ttk.Label(cam_box, text="SQL Server: đang kiểm tra...", foreground="gray")
-        self.db_lbl.pack()
 
         val_box = ttk.Frame(main)
         val_box.grid(row=1, column=1, pady=5, sticky="n")
@@ -317,9 +336,32 @@ class BaseGateApp:
 
     # ---------- Camera ----------
     def open_camera(self, index):
+        self.camera_index = index
         if not self.camera.open(index):
             self.preview_lbl.configure(image="", text=f"Không mở được camera {index}")
             self.last_frame = None
+        self.update_camera_status()
+
+    def update_camera_status(self):
+        """Báo lên thanh tình trạng: camera của cổng này đang có hình, mất tín hiệu hay không mở được."""
+        label, state = self.cfg.label, self.camera.status()
+        if state == cam_state.OK:
+            ok, text = True, f"Camera {label}: có hình"
+        elif state == cam_state.STARTING:
+            ok, text = None, f"Camera {label}: đang khởi động..."
+        elif state == cam_state.NO_SIGNAL:
+            ok, text = False, (f"Camera {label}: MẤT TÍN HIỆU (số {self.camera_index}). "
+                               "Kiểm tra dây, rồi bấm 'Mở camera'")
+        else:
+            ok, text = False, (f"Camera {label}: KHÔNG MỞ ĐƯỢC (số {self.camera_index}). "
+                               "Đổi số camera rồi bấm 'Mở camera'")
+        self.devices.set(camera_key(self.cfg.gate), ok, text)
+
+    def poll_camera(self):
+        if self._closing:
+            return
+        self.update_camera_status()
+        self.root.after(CAMERA_CHECK_MS, self.poll_camera)
 
     def change_camera(self):
         try:
@@ -443,12 +485,12 @@ class BaseGateApp:
 
     def apply_history(self, events):
         self._history_loading = False
-        self.db_lbl.configure(text="SQL Server: kết nối tốt", foreground=COLOR_OK)
+        self.devices.set(DB, True, "SQL Server: kết nối tốt")
         self.history.apply(events)
 
     def on_history_error(self, exc):
         self._history_loading = False
-        self.db_lbl.configure(text=f"SQL Server: LỖI ({str(exc)[:60]})", foreground="red")
+        self.devices.set(DB, False, f"SQL Server: LỖI ({str(exc)[:60]})")
 
     def shutdown(self):
         """Dừng RFID + camera của cổng này (không đóng cửa sổ)."""
