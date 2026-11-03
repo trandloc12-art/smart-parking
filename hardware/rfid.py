@@ -15,6 +15,12 @@ Chiều NGƯỢC LẠI (máy tính -> Arduino), chỉ để hiển thị lên ha
                            Mỗi dòng tối đa 16 ký tự ASCII không dấu (xem lcd_text). Arduino không có LCD
                            tương ứng hoặc còn firmware cũ thì bỏ qua dòng này, không ảnh hưởng gì.
 
+Chiều NGƯỢC LẠI thứ hai: mở thanh chắn (servo) của từng cổng khi quẹt thẻ thành công:
+    SERVOIN:OPEN           mở servo CỔNG VÀO (Arduino tự đóng lại sau thời gian mặc định trong firmware)
+    SERVOOUT:OPEN:3000     mở servo CỔNG RA và giữ 3000 ms rồi Arduino tự đóng lại
+    SERVOIN:CLOSE          đóng servo ngay (dự phòng)
+                           Arduino tự đóng, nên dù máy tính treo thì thanh chắn cũng không kẹt ở trạng thái mở.
+
 Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
     on_card(gate, uid)                  có thẻ quẹt ở cổng `gate` ("in" | "out")
     on_status(connected, message)       tình trạng Arduino: mất cổng COM, không phản hồi, sai định dạng...
@@ -59,6 +65,29 @@ def format_lcd_command(line1, line2="", gate="in"):
     except KeyError:
         raise ValueError(f"cổng không hợp lệ: {gate!r} (chỉ nhận 'in' hoặc 'out')") from None
     return f"{prefix}:{lcd_text(line1)}|{lcd_text(line2)}\n"
+
+
+SERVO_PREFIX = {"in": "SERVOIN", "out": "SERVOOUT"}   # mã cổng -> tiền tố lệnh servo
+SERVO_ACTIONS = ("OPEN", "CLOSE")
+
+
+def format_servo_command(gate, action="OPEN", hold_seconds=None):
+    """Một dòng lệnh servo gửi Arduino, VD 'SERVOOUT:OPEN:3000\\n'.
+
+    hold_seconds: giữ mở bao lâu (giây) rồi Arduino tự đóng; None = dùng thời gian mặc định trong firmware.
+    Chỉ có ý nghĩa với OPEN."""
+    try:
+        prefix = SERVO_PREFIX[gate]
+    except KeyError:
+        raise ValueError(f"cổng không hợp lệ: {gate!r} (chỉ nhận 'in' hoặc 'out')") from None
+    action = (action or "").upper()
+    if action not in SERVO_ACTIONS:
+        raise ValueError(f"lệnh servo không hợp lệ: {action!r} (chỉ nhận {SERVO_ACTIONS})")
+    if action == "OPEN" and hold_seconds is not None:
+        if hold_seconds <= 0:
+            raise ValueError("hold_seconds phải > 0")
+        return f"{prefix}:OPEN:{int(round(hold_seconds * 1000))}\n"
+    return f"{prefix}:{action}\n"
 
 
 # ---------------------------------------------------------------- phân tích một dòng (hàm thuần)
@@ -158,7 +187,16 @@ class ArduinoRfidReader(threading.Thread):
         Trả về True nếu đã ghi ra cổng COM; False nếu đang mất kết nối hoặc ghi lỗi (không ném ngoại lệ:
         LCD chỉ là phần phụ, không được làm hỏng việc xử lý thẻ. Nếu cổng COM hỏng thật thì vòng đọc
         sẽ tự báo MẤT KẾT NỐI và kết nối lại)."""
-        data = format_lcd_command(line1, line2, gate).encode("ascii")     # gate sai là lỗi lập trình: ném ra
+        return self._write_line(format_lcd_command(line1, line2, gate))   # gate sai là lỗi lập trình: ném ra
+
+    def send_servo(self, gate, action="OPEN", hold_seconds=None):
+        """Mở / đóng servo (thanh chắn) của cổng `gate` ('in' / 'out'). Gọi được từ luồng bất kỳ.
+
+        Trả về True nếu đã ghi ra cổng COM; False nếu đang mất kết nối hoặc ghi lỗi (không ném ngoại lệ)."""
+        return self._write_line(format_servo_command(gate, action, hold_seconds))
+
+    def _write_line(self, line):
+        data = line.encode("ascii")
         ser = self._ser
         if ser is None:
             return False

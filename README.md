@@ -5,6 +5,7 @@ Hệ thống có **2 cổng trên cùng một máy**: **cổng vào** và **cổ
 Cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau: CỔNG VÀO | CỔNG RA, lịch sử dùng chung ở dưới). Ngay trên cùng cửa sổ có **thanh tình trạng thiết bị**: thiết bị nào mất kết nối (Arduino, từng đầu đọc, từng camera, SQL Server) sẽ hiện dải cảnh báo đỏ nêu đúng tên thiết bị.
 Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này (xem mục *Giao thức với Arduino*).
 Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một ở cổng ra) để báo cho tài xế (VD "XE LECH VI TRI" khi không đọc đủ 5 số, "XE RA OK - TIEN 5.000 D") — xem mục *Hai màn LCD 1602 I2C*.
+Tùy chọn: gắn **hai servo thanh chắn** (một ở cổng vào, một ở cổng ra): quẹt thẻ thành công thì servo của cổng đó tự mở rồi tự đóng lại — xem mục *Hai servo thanh chắn*.
 
 ## Cài đặt
 1. Python 3.10+, SQL Server, **ODBC Driver 17/18 for SQL Server**.
@@ -68,6 +69,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `SCAN_FRAMES`, `SCAN_INTERVAL`, `VOTE_MIN` | `5`, `0.25`, `2` | Số ảnh quét, giây giữa hai ảnh, số phiếu tối thiểu (`1..SCAN_FRAMES`) |
 | `LCD_IDLE_SECONDS` | `5` | Số giây sau đó LCD tự về "MOI QUET THE" khi đã xong việc (xe vào/ra OK, thẻ bị từ chối). `0` = giữ thông báo đến lần quẹt sau. Thông báo cần nhân viên xử lý không tự biến mất |
 | `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
+| `SERVO_ENABLED` | `1` | `1` = quẹt thẻ thành công thì mở servo thanh chắn; `0` = chưa gắn servo thì tắt đi (không gửi lệnh nào) |
+| `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
 | `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
 
 ## Xử lý sự cố
@@ -100,6 +103,9 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `LCDIN:dòng 1\|dòng 2` | **Chiều ngược lại (máy tính -> Arduino)**: hiển thị lên LCD **cổng vào**. Mỗi dòng tối đa 16 ký tự ASCII không dấu. Arduino không có LCD đó hoặc còn firmware cũ thì bỏ qua |
 | `LCDOUT:dòng 1\|dòng 2` | Như trên nhưng cho LCD **cổng ra** |
 | `LCD:dòng 1\|dòng 2` | Lệnh cũ, Arduino coi như `LCDIN:` (giữ lại cho tương thích) |
+| `SERVOIN:OPEN` / `SERVOOUT:OPEN` | Mở servo **cổng vào** / **cổng ra**, giữ thời gian mặc định (3 giây) rồi Arduino **tự đóng** |
+| `SERVOIN:OPEN:3000` | Như trên nhưng giữ 3000 ms (Arduino kẹp trong khoảng 500..30000 ms). Python gửi dạng này theo `SERVO_OPEN_SECONDS` |
+| `SERVOIN:CLOSE` / `SERVOOUT:CLOSE` | Đóng ngay (dự phòng) |
 
 Hướng đi do **tiền tố** (`IN:` / `OUT:`) quyết định. Dòng UID trần không có tiền tố (firmware cũ) bị coi là sai định dạng và báo lỗi trên thanh tình trạng, chương trình không đoán cổng.
 
@@ -149,6 +155,22 @@ Vì hai LCD nằm trên hai bus tách biệt nên **được trùng địa chỉ
 Số tiền hiện đủ trong 16 cột; nếu quá dài thì LCD báo `XEM TREN MAY` thay vì cắt cụt thành số sai. Cổng vào còn có dải đỏ "BIỂN SỐ LỆCH VỊ TRÍ" trên cửa sổ chương trình, hiện cùng lúc với dòng `XE LECH VI TRI` trên LCD. Nội dung LCD sửa ở các thuộc tính `LCD_*` đầu lớp `EntryApp` (`ui/entry_app.py`) và `ExitApp` (`ui/exit_app.py`); phần dùng chung ở đầu `ui/base_gate_app.py`.
 
 **LCD không lên chữ:** mở Serial Monitor (9600), sẽ thấy `# LCD VAO: dia chi 0x27` và `# LCD RA: dia chi 0x27` nếu tìm thấy; `# LCD ...: khong tim thay` thì kiểm tra dây SDA/SCL (VÀO: A0/A1, RA: A2/A3), VCC 5V, GND. Có đèn nền mà không thấy chữ: vặn biến trở xanh ở mặt sau module I2C để chỉnh độ tương phản. Dây SDA/SCL nên ngắn (dưới ~30 cm); module I2C đã có điện trở kéo lên sẵn nên không cần thêm.
+
+## Hai servo thanh chắn (tùy chọn: một ở cổng vào, một ở cổng ra)
+Mỗi cổng một servo (SG90 / MG90S...) gắn vào chính Arduino đó. **Khi nào mở:** chỉ khi xe được chấp nhận, tức là cổng vào lưu xe thành công (tự động hoặc nhân viên bấm *Lưu xe vào*), cổng ra đóng lượt thành công (biển khớp, hoặc nhân viên bấm *Cho xe ra*). **Không mở** khi thẻ chưa đăng ký, thẻ đã ở trong bãi / chưa vào bãi, đang chờ nhân viên, biển không khớp, nhân viên từ chối hoặc có lỗi hệ thống.
+
+**Đấu dây:**
+
+| Servo | Dây tín hiệu (cam/vàng) | Dây đỏ | Dây nâu/đen |
+|---|---|---|---|
+| **Cổng VÀO** | **D5** | 5V | GND |
+| **Cổng RA** | **D6** | 5V | GND |
+
+Hai chân D5/D6 không trùng SPI (D8..D13), LCD (A0..A3) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
+
+**Chỉnh cho khớp thanh chắn thật** (đầu `dual_rfid.ino`): `SERVO_CLOSED_ANGLE` (mặc định 0°) và `SERVO_OPEN_ANGLE` (mặc định 90°; đảo hai giá trị nếu servo quay ngược), `SERVO_HOLD_MS` (thời gian mở mặc định). Thời gian giữ mở thực tế do `SERVO_OPEN_SECONDS` trong `.env` quyết định.
+
+**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D5, ra=D6)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
 
 ## Quy tắc nghiệp vụ
 
@@ -204,7 +226,7 @@ core/                        plate_utils.py     xử lý ảnh + chuỗi biển
                              plate_voting.py    bỏ phiếu giữa nhiều lần đọc
                              scanner.py         quét nhiều khung + bỏ phiếu
                              plate_match.py     so khớp 5 số vào / ra
-hardware/                    rfid.py (Serial: một Arduino, hai đầu đọc, báo tình trạng), camera.py (đọc camera ở luồng nền, báo mất hình)
+hardware/                    rfid.py (Serial: một Arduino, hai đầu đọc, báo tình trạng, gửi lệnh LCD + servo), camera.py (đọc camera ở luồng nền, báo mất hình)
 storage/                     database.py (SQL Server), schema.sql, models.py, errors.py
 services/                    gate_service.py    phần chung (quét, lưu ảnh)
                              entry_service.py   nghiệp vụ cổng vào

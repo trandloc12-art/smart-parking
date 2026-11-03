@@ -122,9 +122,14 @@ class LcdSpy:
 
     def __init__(self):
         self.sent = []
+        self.servos = []        # (cổng, lệnh, giây giữ mở)
 
     def send_lcd(self, line1, line2="", gate="in"):
         self.sent.append((gate, line1, line2))
+        return True
+
+    def send_servo(self, gate, action="OPEN", hold_seconds=None):
+        self.servos.append((gate, action, hold_seconds))
         return True
 
     def stop(self):
@@ -568,8 +573,8 @@ class LiveSerialW(LiveSerial):
         self.sent.append(data)
 
 
-def test_real_reader_sends_lcd_commands_to_the_right_screen(root, tmp_path, monkeypatch):
-    """Đường đi thật: quẹt thẻ -> giao diện -> ArduinoRfidReader.send_lcd -> byte gửi xuống cổng COM."""
+def test_real_reader_sends_lcd_and_servo_commands_to_the_right_gate(root, tmp_path, monkeypatch):
+    """Đường đi thật: quẹt thẻ -> giao diện -> ArduinoRfidReader.send_lcd / send_servo -> byte gửi xuống cổng COM."""
     import main
     app, db, _ = make_dual(root, tmp_path, monkeypatch)
     ser = LiveSerialW(["STATUS:IN=1,OUT=1\n", "IN:CARD1\n"])
@@ -578,11 +583,16 @@ def test_real_reader_sends_lcd_commands_to_the_right_screen(root, tmp_path, monk
     app.set_rfid(reader)
     assert pump(root, lambda: "XE VÀO" in app.entry.status_lbl.cget("text"))
     assert pump(root, lambda: b"LCDIN:XE VAO OK|BIEN SO 25888\n" in ser.sent)
+    assert pump(root, lambda: b"SERVOIN:OPEN:3000\n" in ser.sent)       # xe vào -> mở servo CỔNG VÀO
+    assert b"SERVOOUT:OPEN:3000\n" not in ser.sent                       # servo cổng ra chưa động đậy
 
     ser.lines.append(b"OUT:CARD1\n")                               # cùng thẻ quẹt ở cổng ra
     assert pump(root, lambda: "XE RA" in app.exit.status_lbl.cget("text"))
     assert pump(root, lambda: b"LCDOUT:XE RA OK|TIEN 5.000 D\n" in ser.sent)
-    assert all(m.startswith((b"LCDIN:", b"LCDOUT:")) and m.endswith(b"\n") for m in ser.sent)
+    assert pump(root, lambda: b"SERVOOUT:OPEN:3000\n" in ser.sent)      # xe ra -> mở servo CỔNG RA
+    assert ser.sent.count(b"SERVOIN:OPEN:3000\n") == 1                  # servo cổng vào không bị mở lại
+    assert all(m.startswith((b"LCDIN:", b"LCDOUT:", b"SERVOIN:", b"SERVOOUT:")) and m.endswith(b"\n")
+               for m in ser.sent)
     app.on_close()
 
 
@@ -671,3 +681,97 @@ def test_swipe_that_cannot_run_is_shown_on_the_lcd(root, tmp_path, monkeypatch):
     app.service.recognizer.ready = False
     app.on_card("CARD1")
     assert lcd.sent[-1] == ("out", "DANG KHOI DONG", "VUI LONG CHO")
+
+
+# ---------------------------------------------------------------- servo thanh chắn: chỉ mở khi quẹt thẻ THÀNH CÔNG
+def test_entry_servo_opens_only_when_entry_is_accepted(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, [""])
+
+    swipe(app, "NOPE")                                       # thẻ chưa đăng ký
+    assert rfid.servos == []
+
+    swipe(app, "CARD1")                                      # không đọc được số nào -> chờ nhân viên, CHƯA mở
+    assert app.pending is not None and rfid.servos == []
+    app.cancel_pending()
+    assert rfid.servos == []
+
+    rec.set_script(["2588"])
+    swipe(app, "CARD1")
+    app.plate_var.set("25881")
+    app.save_entry()                                         # nhân viên xác nhận -> mở
+    assert pump(root, lambda: app.pending is None and not app.busy)
+    assert rfid.servos == [("in", "OPEN", 3.0)]
+
+    rec.set_script(["25888"])
+    swipe(app, "CARD1")                                      # thẻ đang trong bãi -> không mở thêm
+    assert rfid.servos == [("in", "OPEN", 3.0)]
+
+    swipe(app, "CARD2")                                      # đọc đủ, tự lưu -> mở
+    assert rfid.servos == [("in", "OPEN", 3.0)] * 2
+
+
+def test_exit_servo_opens_only_when_exit_is_accepted(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_exit(root, tmp_path, monkeypatch, ["25888"])
+
+    swipe(app, "NOPE")                                       # thẻ chưa đăng ký
+    assert rfid.servos == []
+
+    swipe(app, "CARD1")                                      # biển khớp -> ra luôn, mở
+    assert rfid.servos == [("out", "OPEN", 3.0)]
+
+    swipe(app, "CARD1")                                      # chưa có lượt vào -> không mở
+    assert rfid.servos == [("out", "OPEN", 3.0)]
+
+    rec.set_script(["11111"])                                # biển không khớp -> giữ xe, không mở
+    swipe(app, "CARD2")
+    assert app.pending is not None and len(rfid.servos) == 1
+    app.cancel_pending()                                     # nhân viên từ chối -> vẫn không mở
+    assert len(rfid.servos) == 1
+
+    rec.set_script(["25889"])                                # lệch 1 số, nhân viên duyệt -> mở
+    swipe(app, "CARD2")
+    assert len(rfid.servos) == 1
+    app.note_var.set("Chu xe co giay to")
+    app.confirm_exit()
+    assert pump(root, lambda: app.pending is None and not app.busy)
+    assert rfid.servos == [("out", "OPEN", 3.0)] * 2
+    assert {g for g, _, _ in rfid.servos} == {"out"}         # cổng ra chỉ điều khiển servo cổng ra
+
+
+def test_dual_each_gate_drives_its_own_servo(root, tmp_path, monkeypatch):
+    app, db, rec = make_dual(root, tmp_path, monkeypatch)
+    rfid = app.entry.rfid = app.exit.rfid = LcdSpy()          # MỘT Arduino dùng chung, hai servo
+    swipe(app.entry, "CARD1")
+    assert rfid.servos == [("in", "OPEN", 3.0)]
+    swipe(app.exit, "CARD1")
+    assert rfid.servos == [("in", "OPEN", 3.0), ("out", "OPEN", 3.0)]
+
+
+def test_servo_uses_configured_hold_time_and_can_be_disabled(root, tmp_path, monkeypatch):
+    monkeypatch.setenv("SERVO_OPEN_SECONDS", "6")
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    swipe(app, "CARD1")
+    assert rfid.servos == [("in", "OPEN", 6.0)]
+
+    monkeypatch.setenv("SERVO_ENABLED", "0")                  # chưa gắn servo -> không gửi lệnh nào
+    app2, db2, rec2, rfid2 = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    swipe(app2, "CARD1")
+    assert len(db2.rows) == 1 and rfid2.servos == []
+
+
+def test_open_barrier_never_breaks_card_handling(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+
+    app.rfid = None                                           # chưa có Arduino
+    assert app.open_barrier() is False
+
+    app.rfid = object()                                       # firmware/bộ đọc cũ không có send_servo
+    assert app.open_barrier() is False
+
+    class Broken:
+        def send_servo(self, *a, **k):
+            raise RuntimeError("cổng COM hỏng")
+
+    app.rfid = Broken()
+    swipe(app, "CARD1")                                       # servo lỗi nhưng xe vẫn được ghi nhận
+    assert len(db.rows) == 1 and "XE VÀO" in app.status_lbl.cget("text")

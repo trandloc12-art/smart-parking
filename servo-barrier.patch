@@ -1,0 +1,680 @@
+From 6de2329b0a5fe3b6f3c359fa16b347b273179542 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 3 Nov 2026 10:34:45 +0000
+Subject: [PATCH] Add servo barrier control for entry/exit gates
+
+- Firmware: 2 servos (D5 entry, D6 exit), SERVOIN:/SERVOOUT: OPEN[:ms]/CLOSE commands,
+  non-blocking auto-close timer
+- hardware/rfid.py: format_servo_command + send_servo
+- config: SERVO_ENABLED, SERVO_OPEN_SECONDS
+- UI: open barrier only when a car is accepted (entry saved / exit closed)
+- Tests + README
+---
+ .env.example                    |   4 ++
+ README.md                       |  24 ++++++-
+ arduino/dual_rfid/dual_rfid.ino |  92 +++++++++++++++++++++++++-
+ config.py                       |   6 ++
+ hardware/rfid.py                |  40 +++++++++++-
+ tests/test_config.py            |  33 ++++++++++
+ tests/test_rfid.py              |  57 ++++++++++++++++-
+ tests/test_ui_smoke.py          | 110 +++++++++++++++++++++++++++++++-
+ ui/base_gate_app.py             |  15 +++++
+ ui/entry_app.py                 |   2 +
+ ui/exit_app.py                  |   2 +
+ 11 files changed, 377 insertions(+), 8 deletions(-)
+
+diff --git a/.env.example b/.env.example
+index da1b506..978e969 100644
+--- a/.env.example
++++ b/.env.example
+@@ -25,6 +25,10 @@ VOTE_MIN=2                     # số phiếu tối thiểu để tự chấp nh
+ # LCD: sau khi xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE" sau số giây này (0 = giữ đến lần quẹt sau)
+ LCD_IDLE_SECONDS=5
+ 
++# Servo thanh chắn (mỗi cổng một servo, gắn vào cùng Arduino): quẹt thẻ thành công -> mở, tự đóng lại sau số giây này
++SERVO_ENABLED=1                # 0 = chưa gắn servo thì tắt đi
++SERVO_OPEN_SECONDS=3           # giây giữ thanh chắn mở (0.5..30)
++
+ # Kích thước khung camera (mỗi cổng ~900px rộng; hai cổng cạnh nhau vừa màn hình 1920, màn nhỏ hơn sẽ tự thu nhỏ)
+ VIEW_W=420
+ VIEW_H=315
+diff --git a/README.md b/README.md
+index e933ae1..416c213 100644
+--- a/README.md
++++ b/README.md
+@@ -5,6 +5,7 @@ Hệ thống có **2 cổng trên cùng một máy**: **cổng vào** và **cổ
+ Cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau: CỔNG VÀO | CỔNG RA, lịch sử dùng chung ở dưới). Ngay trên cùng cửa sổ có **thanh tình trạng thiết bị**: thiết bị nào mất kết nối (Arduino, từng đầu đọc, từng camera, SQL Server) sẽ hiện dải cảnh báo đỏ nêu đúng tên thiết bị.
+ Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này (xem mục *Giao thức với Arduino*).
+ Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một ở cổng ra) để báo cho tài xế (VD "XE LECH VI TRI" khi không đọc đủ 5 số, "XE RA OK - TIEN 5.000 D") — xem mục *Hai màn LCD 1602 I2C*.
++Tùy chọn: gắn **hai servo thanh chắn** (một ở cổng vào, một ở cổng ra): quẹt thẻ thành công thì servo của cổng đó tự mở rồi tự đóng lại — xem mục *Hai servo thanh chắn*.
+ 
+ ## Cài đặt
+ 1. Python 3.10+, SQL Server, **ODBC Driver 17/18 for SQL Server**.
+@@ -68,6 +69,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | `SCAN_FRAMES`, `SCAN_INTERVAL`, `VOTE_MIN` | `5`, `0.25`, `2` | Số ảnh quét, giây giữa hai ảnh, số phiếu tối thiểu (`1..SCAN_FRAMES`) |
+ | `LCD_IDLE_SECONDS` | `5` | Số giây sau đó LCD tự về "MOI QUET THE" khi đã xong việc (xe vào/ra OK, thẻ bị từ chối). `0` = giữ thông báo đến lần quẹt sau. Thông báo cần nhân viên xử lý không tự biến mất |
+ | `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
++| `SERVO_ENABLED` | `1` | `1` = quẹt thẻ thành công thì mở servo thanh chắn; `0` = chưa gắn servo thì tắt đi (không gửi lệnh nào) |
++| `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
+ | `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
+ 
+ ## Xử lý sự cố
+@@ -100,6 +103,9 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | `LCDIN:dòng 1\|dòng 2` | **Chiều ngược lại (máy tính -> Arduino)**: hiển thị lên LCD **cổng vào**. Mỗi dòng tối đa 16 ký tự ASCII không dấu. Arduino không có LCD đó hoặc còn firmware cũ thì bỏ qua |
+ | `LCDOUT:dòng 1\|dòng 2` | Như trên nhưng cho LCD **cổng ra** |
+ | `LCD:dòng 1\|dòng 2` | Lệnh cũ, Arduino coi như `LCDIN:` (giữ lại cho tương thích) |
++| `SERVOIN:OPEN` / `SERVOOUT:OPEN` | Mở servo **cổng vào** / **cổng ra**, giữ thời gian mặc định (3 giây) rồi Arduino **tự đóng** |
++| `SERVOIN:OPEN:3000` | Như trên nhưng giữ 3000 ms (Arduino kẹp trong khoảng 500..30000 ms). Python gửi dạng này theo `SERVO_OPEN_SECONDS` |
++| `SERVOIN:CLOSE` / `SERVOOUT:CLOSE` | Đóng ngay (dự phòng) |
+ 
+ Hướng đi do **tiền tố** (`IN:` / `OUT:`) quyết định. Dòng UID trần không có tiền tố (firmware cũ) bị coi là sai định dạng và báo lỗi trên thanh tình trạng, chương trình không đoán cổng.
+ 
+@@ -150,6 +156,22 @@ Số tiền hiện đủ trong 16 cột; nếu quá dài thì LCD báo `XEM TREN
+ 
+ **LCD không lên chữ:** mở Serial Monitor (9600), sẽ thấy `# LCD VAO: dia chi 0x27` và `# LCD RA: dia chi 0x27` nếu tìm thấy; `# LCD ...: khong tim thay` thì kiểm tra dây SDA/SCL (VÀO: A0/A1, RA: A2/A3), VCC 5V, GND. Có đèn nền mà không thấy chữ: vặn biến trở xanh ở mặt sau module I2C để chỉnh độ tương phản. Dây SDA/SCL nên ngắn (dưới ~30 cm); module I2C đã có điện trở kéo lên sẵn nên không cần thêm.
+ 
++## Hai servo thanh chắn (tùy chọn: một ở cổng vào, một ở cổng ra)
++Mỗi cổng một servo (SG90 / MG90S...) gắn vào chính Arduino đó. **Khi nào mở:** chỉ khi xe được chấp nhận, tức là cổng vào lưu xe thành công (tự động hoặc nhân viên bấm *Lưu xe vào*), cổng ra đóng lượt thành công (biển khớp, hoặc nhân viên bấm *Cho xe ra*). **Không mở** khi thẻ chưa đăng ký, thẻ đã ở trong bãi / chưa vào bãi, đang chờ nhân viên, biển không khớp, nhân viên từ chối hoặc có lỗi hệ thống.
++
++**Đấu dây:**
++
++| Servo | Dây tín hiệu (cam/vàng) | Dây đỏ | Dây nâu/đen |
++|---|---|---|---|
++| **Cổng VÀO** | **D5** | 5V | GND |
++| **Cổng RA** | **D6** | 5V | GND |
++
++Hai chân D5/D6 không trùng SPI (D8..D13), LCD (A0..A3) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
++
++**Chỉnh cho khớp thanh chắn thật** (đầu `dual_rfid.ino`): `SERVO_CLOSED_ANGLE` (mặc định 0°) và `SERVO_OPEN_ANGLE` (mặc định 90°; đảo hai giá trị nếu servo quay ngược), `SERVO_HOLD_MS` (thời gian mở mặc định). Thời gian giữ mở thực tế do `SERVO_OPEN_SECONDS` trong `.env` quyết định.
++
++**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D5, ra=D6)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
++
+ ## Quy tắc nghiệp vụ
+ 
+ **Hướng đi do CỔNG quyết định**, trạng thái thẻ chỉ để kiểm tra hợp lệ:
+@@ -204,7 +226,7 @@ core/                        plate_utils.py     xử lý ảnh + chuỗi biển
+                              plate_voting.py    bỏ phiếu giữa nhiều lần đọc
+                              scanner.py         quét nhiều khung + bỏ phiếu
+                              plate_match.py     so khớp 5 số vào / ra
+-hardware/                    rfid.py (Serial: một Arduino, hai đầu đọc, báo tình trạng), camera.py (đọc camera ở luồng nền, báo mất hình)
++hardware/                    rfid.py (Serial: một Arduino, hai đầu đọc, báo tình trạng, gửi lệnh LCD + servo), camera.py (đọc camera ở luồng nền, báo mất hình)
+ storage/                     database.py (SQL Server), schema.sql, models.py, errors.py
+ services/                    gate_service.py    phần chung (quét, lưu ảnh)
+                              entry_service.py   nghiệp vụ cổng vào
+diff --git a/arduino/dual_rfid/dual_rfid.ino b/arduino/dual_rfid/dual_rfid.ino
+index 7eb6618..e7b9290 100644
+--- a/arduino/dual_rfid/dual_rfid.ino
++++ b/arduino/dual_rfid/dual_rfid.ino
+@@ -18,6 +18,11 @@
+                             Mỗi dòng tối đa 16 ký tự ASCII không dấu; dòng 2 có thể bỏ trống.
+                             VD  LCDOUT:XE RA OK|TIEN 5.000 D
+                             LCD tương ứng không có thì bỏ qua lệnh đó (LCD còn lại vẫn chạy).
++      SERVOIN:OPEN          mở servo (thanh chắn) CỔNG VÀO, giữ SERVO_HOLD_MS mặc định rồi TỰ đóng lại
++      SERVOIN:OPEN:3000     như trên nhưng giữ 3000 ms (giới hạn SERVO_HOLD_MIN_MS..SERVO_HOLD_MAX_MS)
++      SERVOOUT:OPEN[:ms]    như trên cho servo CỔNG RA
++      SERVOIN:CLOSE         đóng ngay (SERVOOUT:CLOSE cho cổng ra)
++                            Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo cũng không kẹt thanh chắn mở.
+ 
+   Đấu dây RFID (Arduino Uno/Nano; đổi chân trong 3 hằng số bên dưới nếu cần):
+     Dùng chung cho cả hai module:  SCK -> D13,  MOSI -> D11,  MISO -> D12,  RST -> D9,  3.3V,  GND
+@@ -32,11 +37,21 @@
+   (không cần hàn chân A0 trên module). Sketch tự dò địa chỉ 0x27 (chip PCF8574) hoặc 0x3F (PCF8574A).
+   Muốn đổi chân: sửa 4 hằng số PIN_LCD_* bên dưới.
+ 
++  Đấu dây HAI SERVO thanh chắn (SG90 / MG90S...): dây tín hiệu (cam/vàng) vào chân số, đỏ vào 5V, nâu/đen vào GND:
++    SERVO CỔNG VÀO :  tín hiệu -> D5
++    SERVO CỔNG RA  :  tín hiệu -> D6
++  LƯU Ý NGUỒN: servo giật dòng lớn khi chạy (có thể > 500 mA mỗi con) nên NÊN cấp 5V riêng (pin/adapter 5V 2A)
++  cho hai servo và NỐI CHUNG GND với Arduino; cấp thẳng từ chân 5V của Arduino qua cổng USB dễ làm Arduino reset,
++  LCD nháy hoặc RC522 mất tín hiệu. Chân D5/D6 không trùng SPI (D8..D13), LCD (A0..A3) hay Serial (D0/D1).
++  Góc mở/đóng chỉnh ở SERVO_*_ANGLE bên dưới cho khớp thanh chắn thật.
++
+   Thư viện (Arduino IDE: Tools > Manage Libraries):
+     - "MFRC522" của GithubCommunity
++    - "Servo" (có sẵn trong Arduino IDE, không cần cài thêm)
+ */
+ #include <SPI.h>
+ #include <MFRC522.h>
++#include <Servo.h>
+ 
+ const unsigned long BAUD_RATE = 9600;          // phải trùng RFID_BAUD trong .env
+ const uint8_t PIN_RST = 9;
+@@ -53,6 +68,14 @@ const uint8_t PIN_LCD_OUT_SDA = A2;
+ const uint8_t PIN_LCD_OUT_SCL = A3;
+ // Địa chỉ I2C có thể có của module (dò lần lượt, gặp địa chỉ nào trả lời thì dùng).
+ const uint8_t LCD_ADDRS[] = {0x27, 0x3F};
++// Servo thanh chắn: mỗi cổng một servo. Góc 0..180 độ; chỉnh cho khớp cơ cấu thật (đảo hai góc nếu quay ngược).
++const uint8_t PIN_SERVO_IN = 5;
++const uint8_t PIN_SERVO_OUT = 6;
++const uint8_t SERVO_CLOSED_ANGLE = 0;          // thanh chắn hạ (đóng)
++const uint8_t SERVO_OPEN_ANGLE = 90;           // thanh chắn nâng (mở)
++const unsigned long SERVO_HOLD_MS = 3000;      // giữ mở mặc định khi lệnh không nêu thời gian
++const unsigned long SERVO_HOLD_MIN_MS = 500;   // chặn lệnh sai: tối thiểu / tối đa
++const unsigned long SERVO_HOLD_MAX_MS = 30000;
+ const uint8_t RX_MAX = 48;                     // "LCDOUT:" + 16 + "|" + 16 = 40 ký tự, chừa dư
+ 
+ MFRC522 readerIn(PIN_SS_IN, PIN_RST);
+@@ -171,6 +194,47 @@ char rxBuf[RX_MAX + 1];                        // dòng lệnh đang nhận từ
+ uint8_t rxLen = 0;
+ bool rxOverflow = false;                       // dòng quá dài: bỏ cả dòng
+ 
++// ------------------------------------------------------------------ Servo thanh chắn
++// Một thanh chắn: mở theo lệnh rồi TỰ đóng khi hết thời gian giữ (đo bằng millis(), không chặn vòng loop nên
++// việc quét thẻ và nhận lệnh LCD vẫn chạy bình thường trong lúc thanh chắn đang mở).
++class Barrier {
++ public:
++  explicit Barrier(uint8_t pin) : pin_(pin) {}
++
++  void begin() {
++    servo_.attach(pin_);
++    servo_.write(SERVO_CLOSED_ANGLE);          // khởi động luôn ở vị trí đóng
++    open_ = false;
++  }
++
++  // Mở (hoặc gia hạn nếu đang mở: quẹt thẻ liên tiếp thì thanh chắn không đóng giữa chừng).
++  void open(unsigned long holdMs) {
++    holdMs = constrain(holdMs, SERVO_HOLD_MIN_MS, SERVO_HOLD_MAX_MS);
++    if (!open_) servo_.write(SERVO_OPEN_ANGLE);
++    open_ = true;
++    openedAt_ = millis();
++    holdMs_ = holdMs;
++  }
++
++  void close() {
++    if (open_) servo_.write(SERVO_CLOSED_ANGLE);
++    open_ = false;
++  }
++
++  void update() {                              // gọi mỗi vòng loop
++    if (open_ && millis() - openedAt_ >= holdMs_) close();
++  }
++
++ private:
++  uint8_t pin_;
++  Servo servo_;
++  bool open_ = false;
++  unsigned long openedAt_ = 0, holdMs_ = SERVO_HOLD_MS;
++};
++
++Barrier barrierIn(PIN_SERVO_IN);
++Barrier barrierOut(PIN_SERVO_OUT);
++
+ // ------------------------------------------------------------------ RFID
+ // Module có đang nói chuyện được không? Đọc thanh ghi phiên bản: 0x00 hoặc 0xFF = không có tín hiệu.
+ bool checkReader(MFRC522 &reader, bool &wasOk) {
+@@ -259,8 +323,28 @@ char *afterPrefix(char *cmd, const char *prefix) {
+   return strncmp(cmd, prefix, n) == 0 ? cmd + n : nullptr;
+ }
+ 
+-// Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu LCDIN:, LCDOUT: và LCD: (cũ = LCDIN); lệnh khác bỏ qua.
++// Lệnh servo: `args` là phần sau "SERVOIN:" / "SERVOOUT:", dạng "OPEN", "OPEN:3000" hoặc "CLOSE".
++void handleServo(Barrier &barrier, char *args) {
++  if (strncmp(args, "OPEN", 4) == 0) {
++    unsigned long holdMs = SERVO_HOLD_MS;
++    if (args[4] == ':') {
++      unsigned long v = strtoul(args + 5, nullptr, 10);
++      if (v > 0) holdMs = v;                   // số hỏng / bằng 0 -> dùng thời gian mặc định
++    }
++    barrier.open(holdMs);
++  } else if (strncmp(args, "CLOSE", 5) == 0) {
++    barrier.close();
++  }
++}
++
++// Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu SERVOIN:, SERVOOUT:, LCDIN:, LCDOUT: và LCD: (cũ = LCDIN);
++// lệnh khác bỏ qua.
+ void handleCommand(char *cmd) {
++  char *args = afterPrefix(cmd, "SERVOOUT:");
++  if (args != nullptr) { handleServo(barrierOut, args); return; }
++  args = afterPrefix(cmd, "SERVOIN:");
++  if (args != nullptr) { handleServo(barrierIn, args); return; }
++
+   SoftLcd *target = nullptr;
+   char *line1 = afterPrefix(cmd, "LCDOUT:");
+   if (line1 != nullptr) {
+@@ -306,7 +390,9 @@ void setup() {
+   readerIn.PCD_Init();
+   readerOut.PCD_Init();
+   initLcds();
+-  Serial.println(F("# dual_rfid san sang"));
++  barrierIn.begin();
++  barrierOut.begin();
++  Serial.println(F("# dual_rfid san sang (servo: vao=D5, ra=D6)"));
+   sendStatus();
+   lastStatus = millis();
+ }
+@@ -315,6 +401,8 @@ void loop() {
+   readSerialCommands();
+   pollReader(readerIn, inOk, F("IN"));
+   pollReader(readerOut, outOk, F("OUT"));
++  barrierIn.update();
++  barrierOut.update();
+ 
+   if (millis() - lastStatus >= STATUS_INTERVAL_MS) {
+     lastStatus = millis();
+diff --git a/config.py b/config.py
+index 0ce025f..23c2a13 100644
+--- a/config.py
++++ b/config.py
+@@ -122,6 +122,8 @@ class Settings:
+     view_w: int
+     view_h: int
+     window_pos: str            # VD "+0+0" hoặc "+900+0" để xếp hai cửa sổ cạnh nhau; để trống = mặc định
++    servo_enabled: bool = True      # False = không gửi lệnh mở thanh chắn (chưa gắn servo)
++    servo_open_seconds: float = 3.0 # giây giữ thanh chắn mở sau khi quẹt thẻ thành công rồi Arduino tự đóng lại
+     lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE"; 0 = giữ đến lần quẹt sau
+ 
+ 
+@@ -170,6 +172,8 @@ def load_settings(gate, env=None):
+         view_h=_num("VIEW_H", "315"),
+         window_pos=_env("WINDOW_POS", ""),
+         lcd_idle_seconds=_num("LCD_IDLE_SECONDS", "5", float),
++        servo_enabled=_env("SERVO_ENABLED", "1") == "1",
++        servo_open_seconds=_num("SERVO_OPEN_SECONDS", "3", float),
+     )
+     if s.scan_frames < 1:
+         raise ValueError("SCAN_FRAMES phải >= 1")
+@@ -177,6 +181,8 @@ def load_settings(gate, env=None):
+         raise ValueError("VOTE_MIN phải nằm trong khoảng 1..SCAN_FRAMES")
+     if s.lcd_idle_seconds < 0:
+         raise ValueError("LCD_IDLE_SECONDS phải >= 0 (0 = không tự quay về)")
++    if not 0.5 <= s.servo_open_seconds <= 30:
++        raise ValueError("SERVO_OPEN_SECONDS phải nằm trong khoảng 0.5..30 giây")
+     if s.rfid_heartbeat < 0:
+         raise ValueError("RFID_HEARTBEAT_TIMEOUT phải >= 0 (0 = tắt kiểm tra)")
+     if s.block_minutes < 1 or s.price_per_block < 0:
+diff --git a/hardware/rfid.py b/hardware/rfid.py
+index 76d6603..e99cf79 100644
+--- a/hardware/rfid.py
++++ b/hardware/rfid.py
+@@ -15,6 +15,12 @@ Chiều NGƯỢC LẠI (máy tính -> Arduino), chỉ để hiển thị lên ha
+                            Mỗi dòng tối đa 16 ký tự ASCII không dấu (xem lcd_text). Arduino không có LCD
+                            tương ứng hoặc còn firmware cũ thì bỏ qua dòng này, không ảnh hưởng gì.
+ 
++Chiều NGƯỢC LẠI thứ hai: mở thanh chắn (servo) của từng cổng khi quẹt thẻ thành công:
++    SERVOIN:OPEN           mở servo CỔNG VÀO (Arduino tự đóng lại sau thời gian mặc định trong firmware)
++    SERVOOUT:OPEN:3000     mở servo CỔNG RA và giữ 3000 ms rồi Arduino tự đóng lại
++    SERVOIN:CLOSE          đóng servo ngay (dự phòng)
++                           Arduino tự đóng, nên dù máy tính treo thì thanh chắn cũng không kẹt ở trạng thái mở.
++
+ Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
+     on_card(gate, uid)                  có thẻ quẹt ở cổng `gate` ("in" | "out")
+     on_status(connected, message)       tình trạng Arduino: mất cổng COM, không phản hồi, sai định dạng...
+@@ -61,6 +67,29 @@ def format_lcd_command(line1, line2="", gate="in"):
+     return f"{prefix}:{lcd_text(line1)}|{lcd_text(line2)}\n"
+ 
+ 
++SERVO_PREFIX = {"in": "SERVOIN", "out": "SERVOOUT"}   # mã cổng -> tiền tố lệnh servo
++SERVO_ACTIONS = ("OPEN", "CLOSE")
++
++
++def format_servo_command(gate, action="OPEN", hold_seconds=None):
++    """Một dòng lệnh servo gửi Arduino, VD 'SERVOOUT:OPEN:3000\\n'.
++
++    hold_seconds: giữ mở bao lâu (giây) rồi Arduino tự đóng; None = dùng thời gian mặc định trong firmware.
++    Chỉ có ý nghĩa với OPEN."""
++    try:
++        prefix = SERVO_PREFIX[gate]
++    except KeyError:
++        raise ValueError(f"cổng không hợp lệ: {gate!r} (chỉ nhận 'in' hoặc 'out')") from None
++    action = (action or "").upper()
++    if action not in SERVO_ACTIONS:
++        raise ValueError(f"lệnh servo không hợp lệ: {action!r} (chỉ nhận {SERVO_ACTIONS})")
++    if action == "OPEN" and hold_seconds is not None:
++        if hold_seconds <= 0:
++            raise ValueError("hold_seconds phải > 0")
++        return f"{prefix}:OPEN:{int(round(hold_seconds * 1000))}\n"
++    return f"{prefix}:{action}\n"
++
++
+ # ---------------------------------------------------------------- phân tích một dòng (hàm thuần)
+ @dataclass(frozen=True)
+ class CardSwipe:
+@@ -158,7 +187,16 @@ class ArduinoRfidReader(threading.Thread):
+         Trả về True nếu đã ghi ra cổng COM; False nếu đang mất kết nối hoặc ghi lỗi (không ném ngoại lệ:
+         LCD chỉ là phần phụ, không được làm hỏng việc xử lý thẻ. Nếu cổng COM hỏng thật thì vòng đọc
+         sẽ tự báo MẤT KẾT NỐI và kết nối lại)."""
+-        data = format_lcd_command(line1, line2, gate).encode("ascii")     # gate sai là lỗi lập trình: ném ra
++        return self._write_line(format_lcd_command(line1, line2, gate))   # gate sai là lỗi lập trình: ném ra
++
++    def send_servo(self, gate, action="OPEN", hold_seconds=None):
++        """Mở / đóng servo (thanh chắn) của cổng `gate` ('in' / 'out'). Gọi được từ luồng bất kỳ.
++
++        Trả về True nếu đã ghi ra cổng COM; False nếu đang mất kết nối hoặc ghi lỗi (không ném ngoại lệ)."""
++        return self._write_line(format_servo_command(gate, action, hold_seconds))
++
++    def _write_line(self, line):
++        data = line.encode("ascii")
+         ser = self._ser
+         if ser is None:
+             return False
+diff --git a/tests/test_config.py b/tests/test_config.py
+index ec233ee..b7f8005 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -198,3 +198,36 @@ def test_lcd_idle_seconds(monkeypatch):
+     monkeypatch.setenv("LCD_IDLE_SECONDS", "-1")
+     with pytest.raises(ValueError):
+         config.load_settings("in")
++
++
++def test_servo_settings(monkeypatch):
++    monkeypatch.delenv("SERVO_ENABLED", raising=False)
++    monkeypatch.delenv("SERVO_OPEN_SECONDS", raising=False)
++    s = config.load_settings("in")
++    assert s.servo_enabled is True and s.servo_open_seconds == 3.0
++    monkeypatch.setenv("SERVO_ENABLED", "0")
++    monkeypatch.setenv("SERVO_OPEN_SECONDS", "5.5")
++    s = config.load_settings("out")
++    assert s.servo_enabled is False and s.servo_open_seconds == 5.5
++
++
++@pytest.mark.parametrize("value", ["0", "0.1", "31", "-2"])
++def test_servo_open_seconds_out_of_range_is_rejected(monkeypatch, value):
++    monkeypatch.setenv("SERVO_OPEN_SECONDS", value)
++    with pytest.raises(ValueError, match="SERVO_OPEN_SECONDS"):
++        config.load_settings("in")
++
++
++def test_servo_open_seconds_must_be_a_number(monkeypatch):
++    monkeypatch.setenv("SERVO_OPEN_SECONDS", "ba")
++    with pytest.raises(ValueError, match="SERVO_OPEN_SECONDS phải là số"):
++        config.load_settings("in")
++
++
++def test_servo_defaults_are_in_env_example(tmp_path):
++    import os
++    example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
++    (tmp_path / ".env").write_text(example, encoding="utf-8")
++    env, _ = config.gate_env("in", str(tmp_path), environ={})
++    s = config.load_settings("in", env)
++    assert s.servo_enabled is True and s.servo_open_seconds == 3.0
+diff --git a/tests/test_rfid.py b/tests/test_rfid.py
+index d8b7d44..55e1b35 100644
+--- a/tests/test_rfid.py
++++ b/tests/test_rfid.py
+@@ -3,7 +3,8 @@ import pytest
+ import serial
+ 
+ from hardware.rfid import (
+-    ArduinoRfidReader, BadLine, CardSwipe, ReaderStatus, format_lcd_command, lcd_text, parse_line,
++    ArduinoRfidReader, BadLine, CardSwipe, ReaderStatus, format_lcd_command, format_servo_command, lcd_text,
++    parse_line,
+ )
+ 
+ 
+@@ -283,3 +284,57 @@ def test_send_lcd_write_error_is_swallowed():
+     box["reader"] = reader
+     reader.run()
+     assert results == [False] and sent == []                          # không ném ngoại lệ ra làm hỏng việc quẹt thẻ
++
++
++# ---------------------------------------------------------------- servo thanh chắn
++def test_format_servo_command():
++    assert format_servo_command("in") == "SERVOIN:OPEN\n"                      # mặc định: mở, thời gian do firmware quyết
++    assert format_servo_command("out") == "SERVOOUT:OPEN\n"
++    assert format_servo_command("in", "OPEN", 3) == "SERVOIN:OPEN:3000\n"      # giây -> mili giây
++    assert format_servo_command("out", "open", 2.5) == "SERVOOUT:OPEN:2500\n"  # không phân biệt hoa/thường
++    assert format_servo_command("out", "CLOSE") == "SERVOOUT:CLOSE\n"
++    assert format_servo_command("in", "CLOSE", 3) == "SERVOIN:CLOSE\n"         # CLOSE bỏ qua thời gian giữ
++
++
++@pytest.mark.parametrize("args", [("left",), ("in", "TOGGLE"), ("in", ""), ("in", "OPEN", 0), ("in", "OPEN", -1)])
++def test_format_servo_command_rejects_bad_input(args):
++    with pytest.raises(ValueError):
++        format_servo_command(*args)
++
++
++def test_send_servo_writes_one_ascii_line_per_gate_while_connected():
++    sent, results = [], []
++    box = {}
++
++    def on_card(gate, uid):
++        send = box["reader"].send_servo
++        results.append(send("in", "OPEN", 3))
++        results.append(send("out"))
++        results.append(send("out", "CLOSE"))
++
++    box["reader"] = _reader_with_writable_serial([b"STATUS:IN=1,OUT=1\n", b"IN:AAAA1111\n"], sent, on_card=on_card)
++    box["reader"].run()
++    assert results == [True, True, True]
++    assert sent == [b"SERVOIN:OPEN:3000\n", b"SERVOOUT:OPEN\n", b"SERVOOUT:CLOSE\n"]
++
++
++def test_send_servo_unknown_gate_is_a_programming_error():
++    reader = ArduinoRfidReader("COM3", 9600, lambda gate, uid: None, serial_factory=None)
++    with pytest.raises(ValueError):
++        reader.send_servo("middle")
++
++
++def test_send_servo_when_not_connected_returns_false_without_raising():
++    reader = ArduinoRfidReader("COM3", 9600, lambda gate, uid: None, serial_factory=None)
++    assert reader.send_servo("in", "OPEN", 3) is False
++
++
++def test_send_servo_write_error_is_swallowed():
++    sent, results = [], []
++    box = {}
++    reader = _reader_with_writable_serial(
++        [b"IN:AAAA1111\n"], sent, fail_write=True,
++        on_card=lambda gate, uid: results.append(box["reader"].send_servo("in")))
++    box["reader"] = reader
++    reader.run()
++    assert results == [False] and sent == []
+diff --git a/tests/test_ui_smoke.py b/tests/test_ui_smoke.py
+index 164c41e..d685ba2 100644
+--- a/tests/test_ui_smoke.py
++++ b/tests/test_ui_smoke.py
+@@ -122,11 +122,16 @@ class LcdSpy:
+ 
+     def __init__(self):
+         self.sent = []
++        self.servos = []        # (cổng, lệnh, giây giữ mở)
+ 
+     def send_lcd(self, line1, line2="", gate="in"):
+         self.sent.append((gate, line1, line2))
+         return True
+ 
++    def send_servo(self, gate, action="OPEN", hold_seconds=None):
++        self.servos.append((gate, action, hold_seconds))
++        return True
++
+     def stop(self):
+         pass
+ 
+@@ -568,8 +573,8 @@ class LiveSerialW(LiveSerial):
+         self.sent.append(data)
+ 
+ 
+-def test_real_reader_sends_lcd_commands_to_the_right_screen(root, tmp_path, monkeypatch):
+-    """Đường đi thật: quẹt thẻ -> giao diện -> ArduinoRfidReader.send_lcd -> byte gửi xuống cổng COM."""
++def test_real_reader_sends_lcd_and_servo_commands_to_the_right_gate(root, tmp_path, monkeypatch):
++    """Đường đi thật: quẹt thẻ -> giao diện -> ArduinoRfidReader.send_lcd / send_servo -> byte gửi xuống cổng COM."""
+     import main
+     app, db, _ = make_dual(root, tmp_path, monkeypatch)
+     ser = LiveSerialW(["STATUS:IN=1,OUT=1\n", "IN:CARD1\n"])
+@@ -578,11 +583,16 @@ def test_real_reader_sends_lcd_commands_to_the_right_screen(root, tmp_path, monk
+     app.set_rfid(reader)
+     assert pump(root, lambda: "XE VÀO" in app.entry.status_lbl.cget("text"))
+     assert pump(root, lambda: b"LCDIN:XE VAO OK|BIEN SO 25888\n" in ser.sent)
++    assert pump(root, lambda: b"SERVOIN:OPEN:3000\n" in ser.sent)       # xe vào -> mở servo CỔNG VÀO
++    assert b"SERVOOUT:OPEN:3000\n" not in ser.sent                       # servo cổng ra chưa động đậy
+ 
+     ser.lines.append(b"OUT:CARD1\n")                               # cùng thẻ quẹt ở cổng ra
+     assert pump(root, lambda: "XE RA" in app.exit.status_lbl.cget("text"))
+     assert pump(root, lambda: b"LCDOUT:XE RA OK|TIEN 5.000 D\n" in ser.sent)
+-    assert all(m.startswith((b"LCDIN:", b"LCDOUT:")) and m.endswith(b"\n") for m in ser.sent)
++    assert pump(root, lambda: b"SERVOOUT:OPEN:3000\n" in ser.sent)      # xe ra -> mở servo CỔNG RA
++    assert ser.sent.count(b"SERVOIN:OPEN:3000\n") == 1                  # servo cổng vào không bị mở lại
++    assert all(m.startswith((b"LCDIN:", b"LCDOUT:", b"SERVOIN:", b"SERVOOUT:")) and m.endswith(b"\n")
++               for m in ser.sent)
+     app.on_close()
+ 
+ 
+@@ -671,3 +681,97 @@ def test_swipe_that_cannot_run_is_shown_on_the_lcd(root, tmp_path, monkeypatch):
+     app.service.recognizer.ready = False
+     app.on_card("CARD1")
+     assert lcd.sent[-1] == ("out", "DANG KHOI DONG", "VUI LONG CHO")
++
++
++# ---------------------------------------------------------------- servo thanh chắn: chỉ mở khi quẹt thẻ THÀNH CÔNG
++def test_entry_servo_opens_only_when_entry_is_accepted(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, [""])
++
++    swipe(app, "NOPE")                                       # thẻ chưa đăng ký
++    assert rfid.servos == []
++
++    swipe(app, "CARD1")                                      # không đọc được số nào -> chờ nhân viên, CHƯA mở
++    assert app.pending is not None and rfid.servos == []
++    app.cancel_pending()
++    assert rfid.servos == []
++
++    rec.set_script(["2588"])
++    swipe(app, "CARD1")
++    app.plate_var.set("25881")
++    app.save_entry()                                         # nhân viên xác nhận -> mở
++    assert pump(root, lambda: app.pending is None and not app.busy)
++    assert rfid.servos == [("in", "OPEN", 3.0)]
++
++    rec.set_script(["25888"])
++    swipe(app, "CARD1")                                      # thẻ đang trong bãi -> không mở thêm
++    assert rfid.servos == [("in", "OPEN", 3.0)]
++
++    swipe(app, "CARD2")                                      # đọc đủ, tự lưu -> mở
++    assert rfid.servos == [("in", "OPEN", 3.0)] * 2
++
++
++def test_exit_servo_opens_only_when_exit_is_accepted(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_exit(root, tmp_path, monkeypatch, ["25888"])
++
++    swipe(app, "NOPE")                                       # thẻ chưa đăng ký
++    assert rfid.servos == []
++
++    swipe(app, "CARD1")                                      # biển khớp -> ra luôn, mở
++    assert rfid.servos == [("out", "OPEN", 3.0)]
++
++    swipe(app, "CARD1")                                      # chưa có lượt vào -> không mở
++    assert rfid.servos == [("out", "OPEN", 3.0)]
++
++    rec.set_script(["11111"])                                # biển không khớp -> giữ xe, không mở
++    swipe(app, "CARD2")
++    assert app.pending is not None and len(rfid.servos) == 1
++    app.cancel_pending()                                     # nhân viên từ chối -> vẫn không mở
++    assert len(rfid.servos) == 1
++
++    rec.set_script(["25889"])                                # lệch 1 số, nhân viên duyệt -> mở
++    swipe(app, "CARD2")
++    assert len(rfid.servos) == 1
++    app.note_var.set("Chu xe co giay to")
++    app.confirm_exit()
++    assert pump(root, lambda: app.pending is None and not app.busy)
++    assert rfid.servos == [("out", "OPEN", 3.0)] * 2
++    assert {g for g, _, _ in rfid.servos} == {"out"}         # cổng ra chỉ điều khiển servo cổng ra
++
++
++def test_dual_each_gate_drives_its_own_servo(root, tmp_path, monkeypatch):
++    app, db, rec = make_dual(root, tmp_path, monkeypatch)
++    rfid = app.entry.rfid = app.exit.rfid = LcdSpy()          # MỘT Arduino dùng chung, hai servo
++    swipe(app.entry, "CARD1")
++    assert rfid.servos == [("in", "OPEN", 3.0)]
++    swipe(app.exit, "CARD1")
++    assert rfid.servos == [("in", "OPEN", 3.0), ("out", "OPEN", 3.0)]
++
++
++def test_servo_uses_configured_hold_time_and_can_be_disabled(root, tmp_path, monkeypatch):
++    monkeypatch.setenv("SERVO_OPEN_SECONDS", "6")
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    swipe(app, "CARD1")
++    assert rfid.servos == [("in", "OPEN", 6.0)]
++
++    monkeypatch.setenv("SERVO_ENABLED", "0")                  # chưa gắn servo -> không gửi lệnh nào
++    app2, db2, rec2, rfid2 = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    swipe(app2, "CARD1")
++    assert len(db2.rows) == 1 and rfid2.servos == []
++
++
++def test_open_barrier_never_breaks_card_handling(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++
++    app.rfid = None                                           # chưa có Arduino
++    assert app.open_barrier() is False
++
++    app.rfid = object()                                       # firmware/bộ đọc cũ không có send_servo
++    assert app.open_barrier() is False
++
++    class Broken:
++        def send_servo(self, *a, **k):
++            raise RuntimeError("cổng COM hỏng")
++
++    app.rfid = Broken()
++    swipe(app, "CARD1")                                       # servo lỗi nhưng xe vẫn được ghi nhận
++    assert len(db.rows) == 1 and "XE VÀO" in app.status_lbl.cget("text")
+diff --git a/ui/base_gate_app.py b/ui/base_gate_app.py
+index fddda8e..15cd161 100644
+--- a/ui/base_gate_app.py
++++ b/ui/base_gate_app.py
+@@ -189,6 +189,21 @@ class BaseGateApp:
+         if revert:
+             self._schedule_lcd_revert()
+ 
++    def open_barrier(self):
++        """Mở thanh chắn (servo) của CỔNG NÀY khi xe được chấp nhận (quẹt thẻ thành công).
++        Arduino tự đóng lại sau cfg.servo_open_seconds giây. Giống LCD: chưa có Arduino, mất kết nối
++        hoặc tắt bằng SERVO_ENABLED=0 thì bỏ qua, không bao giờ làm hỏng việc xử lý thẻ.
++        Trả về True nếu đã gửi lệnh."""
++        if not getattr(self.cfg, "servo_enabled", True):
++            return False
++        send = getattr(self.rfid, "send_servo", None)
++        if send is None:
++            return False
++        try:
++            return bool(send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds))
++        except Exception:
++            return False
++
+     def _cancel_lcd_revert(self):
+         job, self._lcd_job = self._lcd_job, None
+         if job is not None:
+diff --git a/ui/entry_app.py b/ui/entry_app.py
+index f1f1412..0c22c92 100644
+--- a/ui/entry_app.py
++++ b/ui/entry_app.py
+@@ -69,6 +69,7 @@ class EntryApp(BaseGateApp):
+             self.plate_entry.configure(fg=COLOR_OK)
+             self.upsert_row(e)
+             self.lcd_saved(scan.winner)
++            self.open_barrier()     # tự lưu xong -> mở thanh chắn cổng vào
+             self.set_status(f"XE VÀO | thẻ {uid} | {NUMBER_LEN} số {scan.winner} "
+                             f"({scan.votes}/{scan.scanned} ảnh) | biển {scan.plate_full or '?'} | "
+                             f"{fmt_time(e.time_in)}", COLOR_OK)
+@@ -107,6 +108,7 @@ class EntryApp(BaseGateApp):
+         self.pending = None
+         self.show_offset_warning(False)
+         self.lcd_saved(event.plate_number)
++        self.open_barrier()         # nhân viên đã xác nhận cho xe vào -> mở thanh chắn cổng vào
+         self.upsert_row(event)
+         self.update_action_buttons()
+         self.set_status(f"XE VÀO | thẻ {event.card_uid} | {NUMBER_LEN} số {event.plate_number} | "
+diff --git a/ui/exit_app.py b/ui/exit_app.py
+index b74bfda..e4b81a1 100644
+--- a/ui/exit_app.py
++++ b/ui/exit_app.py
+@@ -152,6 +152,7 @@ class ExitApp(BaseGateApp):
+             self.match_lbl.configure(text=f"KHỚP biển lúc vào ({session.plate_number})", fg=COLOR_OK)
+             self.upsert_row(session)
+             self.lcd(lcd_exit_ok(session.fee), revert=True)
++            self.open_barrier()     # biển khớp, đã đóng lượt -> mở thanh chắn cổng ra
+             self.set_status(self._exit_text("XE RA", session), COLOR_OK)
+             return
+ 
+@@ -195,6 +196,7 @@ class ExitApp(BaseGateApp):
+         self.pending = None
+         self.upsert_row(event)
+         self.lcd(lcd_exit_ok(event.fee), revert=True)
++        self.open_barrier()         # nhân viên đã duyệt cho xe ra -> mở thanh chắn cổng ra
+         self.update_action_buttons()
+         exact = event.match_status == "MATCH"
+         self.match_lbl.configure(
+-- 
+2.43.0
+

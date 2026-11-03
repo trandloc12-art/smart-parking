@@ -122,6 +122,8 @@ class Settings:
     view_w: int
     view_h: int
     window_pos: str            # VD "+0+0" hoặc "+900+0" để xếp hai cửa sổ cạnh nhau; để trống = mặc định
+    servo_enabled: bool = True      # False = không gửi lệnh mở thanh chắn (chưa gắn servo)
+    servo_open_seconds: float = 3.0 # giây giữ thanh chắn mở sau khi quẹt thẻ thành công rồi Arduino tự đóng lại
     lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE"; 0 = giữ đến lần quẹt sau
 
 
@@ -170,6 +172,8 @@ def load_settings(gate, env=None):
         view_h=_num("VIEW_H", "315"),
         window_pos=_env("WINDOW_POS", ""),
         lcd_idle_seconds=_num("LCD_IDLE_SECONDS", "5", float),
+        servo_enabled=_env("SERVO_ENABLED", "1") == "1",
+        servo_open_seconds=_num("SERVO_OPEN_SECONDS", "3", float),
     )
     if s.scan_frames < 1:
         raise ValueError("SCAN_FRAMES phải >= 1")
@@ -177,6 +181,8 @@ def load_settings(gate, env=None):
         raise ValueError("VOTE_MIN phải nằm trong khoảng 1..SCAN_FRAMES")
     if s.lcd_idle_seconds < 0:
         raise ValueError("LCD_IDLE_SECONDS phải >= 0 (0 = không tự quay về)")
+    if not 0.5 <= s.servo_open_seconds <= 30:
+        raise ValueError("SERVO_OPEN_SECONDS phải nằm trong khoảng 0.5..30 giây")
     if s.rfid_heartbeat < 0:
         raise ValueError("RFID_HEARTBEAT_TIMEOUT phải >= 0 (0 = tắt kiểm tra)")
     if s.block_minutes < 1 or s.price_per_block < 0:

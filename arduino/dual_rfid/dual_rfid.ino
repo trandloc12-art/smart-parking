@@ -18,6 +18,11 @@
                             Mỗi dòng tối đa 16 ký tự ASCII không dấu; dòng 2 có thể bỏ trống.
                             VD  LCDOUT:XE RA OK|TIEN 5.000 D
                             LCD tương ứng không có thì bỏ qua lệnh đó (LCD còn lại vẫn chạy).
+      SERVOIN:OPEN          mở servo (thanh chắn) CỔNG VÀO, giữ SERVO_HOLD_MS mặc định rồi TỰ đóng lại
+      SERVOIN:OPEN:3000     như trên nhưng giữ 3000 ms (giới hạn SERVO_HOLD_MIN_MS..SERVO_HOLD_MAX_MS)
+      SERVOOUT:OPEN[:ms]    như trên cho servo CỔNG RA
+      SERVOIN:CLOSE         đóng ngay (SERVOOUT:CLOSE cho cổng ra)
+                            Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo cũng không kẹt thanh chắn mở.
 
   Đấu dây RFID (Arduino Uno/Nano; đổi chân trong 3 hằng số bên dưới nếu cần):
     Dùng chung cho cả hai module:  SCK -> D13,  MOSI -> D11,  MISO -> D12,  RST -> D9,  3.3V,  GND
@@ -32,11 +37,21 @@
   (không cần hàn chân A0 trên module). Sketch tự dò địa chỉ 0x27 (chip PCF8574) hoặc 0x3F (PCF8574A).
   Muốn đổi chân: sửa 4 hằng số PIN_LCD_* bên dưới.
 
+  Đấu dây HAI SERVO thanh chắn (SG90 / MG90S...): dây tín hiệu (cam/vàng) vào chân số, đỏ vào 5V, nâu/đen vào GND:
+    SERVO CỔNG VÀO :  tín hiệu -> D5
+    SERVO CỔNG RA  :  tín hiệu -> D6
+  LƯU Ý NGUỒN: servo giật dòng lớn khi chạy (có thể > 500 mA mỗi con) nên NÊN cấp 5V riêng (pin/adapter 5V 2A)
+  cho hai servo và NỐI CHUNG GND với Arduino; cấp thẳng từ chân 5V của Arduino qua cổng USB dễ làm Arduino reset,
+  LCD nháy hoặc RC522 mất tín hiệu. Chân D5/D6 không trùng SPI (D8..D13), LCD (A0..A3) hay Serial (D0/D1).
+  Góc mở/đóng chỉnh ở SERVO_*_ANGLE bên dưới cho khớp thanh chắn thật.
+
   Thư viện (Arduino IDE: Tools > Manage Libraries):
     - "MFRC522" của GithubCommunity
+    - "Servo" (có sẵn trong Arduino IDE, không cần cài thêm)
 */
 #include <SPI.h>
 #include <MFRC522.h>
+#include <Servo.h>
 
 const unsigned long BAUD_RATE = 9600;          // phải trùng RFID_BAUD trong .env
 const uint8_t PIN_RST = 9;
@@ -53,6 +68,14 @@ const uint8_t PIN_LCD_OUT_SDA = A2;
 const uint8_t PIN_LCD_OUT_SCL = A3;
 // Địa chỉ I2C có thể có của module (dò lần lượt, gặp địa chỉ nào trả lời thì dùng).
 const uint8_t LCD_ADDRS[] = {0x27, 0x3F};
+// Servo thanh chắn: mỗi cổng một servo. Góc 0..180 độ; chỉnh cho khớp cơ cấu thật (đảo hai góc nếu quay ngược).
+const uint8_t PIN_SERVO_IN = 6;
+const uint8_t PIN_SERVO_OUT = 7;
+const uint8_t SERVO_CLOSED_ANGLE = 0;          // thanh chắn hạ (đóng)
+const uint8_t SERVO_OPEN_ANGLE = 90;           // thanh chắn nâng (mở)
+const unsigned long SERVO_HOLD_MS = 3000;      // giữ mở mặc định khi lệnh không nêu thời gian
+const unsigned long SERVO_HOLD_MIN_MS = 500;   // chặn lệnh sai: tối thiểu / tối đa
+const unsigned long SERVO_HOLD_MAX_MS = 30000;
 const uint8_t RX_MAX = 48;                     // "LCDOUT:" + 16 + "|" + 16 = 40 ký tự, chừa dư
 
 MFRC522 readerIn(PIN_SS_IN, PIN_RST);
@@ -171,6 +194,47 @@ char rxBuf[RX_MAX + 1];                        // dòng lệnh đang nhận từ
 uint8_t rxLen = 0;
 bool rxOverflow = false;                       // dòng quá dài: bỏ cả dòng
 
+// ------------------------------------------------------------------ Servo thanh chắn
+// Một thanh chắn: mở theo lệnh rồi TỰ đóng khi hết thời gian giữ (đo bằng millis(), không chặn vòng loop nên
+// việc quét thẻ và nhận lệnh LCD vẫn chạy bình thường trong lúc thanh chắn đang mở).
+class Barrier {
+ public:
+  explicit Barrier(uint8_t pin) : pin_(pin) {}
+
+  void begin() {
+    servo_.attach(pin_);
+    servo_.write(SERVO_CLOSED_ANGLE);          // khởi động luôn ở vị trí đóng
+    open_ = false;
+  }
+
+  // Mở (hoặc gia hạn nếu đang mở: quẹt thẻ liên tiếp thì thanh chắn không đóng giữa chừng).
+  void open(unsigned long holdMs) {
+    holdMs = constrain(holdMs, SERVO_HOLD_MIN_MS, SERVO_HOLD_MAX_MS);
+    if (!open_) servo_.write(SERVO_OPEN_ANGLE);
+    open_ = true;
+    openedAt_ = millis();
+    holdMs_ = holdMs;
+  }
+
+  void close() {
+    if (open_) servo_.write(SERVO_CLOSED_ANGLE);
+    open_ = false;
+  }
+
+  void update() {                              // gọi mỗi vòng loop
+    if (open_ && millis() - openedAt_ >= holdMs_) close();
+  }
+
+ private:
+  uint8_t pin_;
+  Servo servo_;
+  bool open_ = false;
+  unsigned long openedAt_ = 0, holdMs_ = SERVO_HOLD_MS;
+};
+
+Barrier barrierIn(PIN_SERVO_IN);
+Barrier barrierOut(PIN_SERVO_OUT);
+
 // ------------------------------------------------------------------ RFID
 // Module có đang nói chuyện được không? Đọc thanh ghi phiên bản: 0x00 hoặc 0xFF = không có tín hiệu.
 bool checkReader(MFRC522 &reader, bool &wasOk) {
@@ -259,8 +323,28 @@ char *afterPrefix(char *cmd, const char *prefix) {
   return strncmp(cmd, prefix, n) == 0 ? cmd + n : nullptr;
 }
 
-// Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu LCDIN:, LCDOUT: và LCD: (cũ = LCDIN); lệnh khác bỏ qua.
+// Lệnh servo: `args` là phần sau "SERVOIN:" / "SERVOOUT:", dạng "OPEN", "OPEN:3000" hoặc "CLOSE".
+void handleServo(Barrier &barrier, char *args) {
+  if (strncmp(args, "OPEN", 4) == 0) {
+    unsigned long holdMs = SERVO_HOLD_MS;
+    if (args[4] == ':') {
+      unsigned long v = strtoul(args + 5, nullptr, 10);
+      if (v > 0) holdMs = v;                   // số hỏng / bằng 0 -> dùng thời gian mặc định
+    }
+    barrier.open(holdMs);
+  } else if (strncmp(args, "CLOSE", 5) == 0) {
+    barrier.close();
+  }
+}
+
+// Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu SERVOIN:, SERVOOUT:, LCDIN:, LCDOUT: và LCD: (cũ = LCDIN);
+// lệnh khác bỏ qua.
 void handleCommand(char *cmd) {
+  char *args = afterPrefix(cmd, "SERVOOUT:");
+  if (args != nullptr) { handleServo(barrierOut, args); return; }
+  args = afterPrefix(cmd, "SERVOIN:");
+  if (args != nullptr) { handleServo(barrierIn, args); return; }
+
   SoftLcd *target = nullptr;
   char *line1 = afterPrefix(cmd, "LCDOUT:");
   if (line1 != nullptr) {
@@ -306,7 +390,9 @@ void setup() {
   readerIn.PCD_Init();
   readerOut.PCD_Init();
   initLcds();
-  Serial.println(F("# dual_rfid san sang"));
+  barrierIn.begin();
+  barrierOut.begin();
+  Serial.println(F("# dual_rfid san sang (servo: vao=D5, ra=D6)"));
   sendStatus();
   lastStatus = millis();
 }
@@ -315,6 +401,8 @@ void loop() {
   readSerialCommands();
   pollReader(readerIn, inOk, F("IN"));
   pollReader(readerOut, outOk, F("OUT"));
+  barrierIn.update();
+  barrierOut.update();
 
   if (millis() - lastStatus >= STATUS_INTERVAL_MS) {
     lastStatus = millis();

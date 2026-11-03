@@ -69,6 +69,7 @@ class EntryApp(BaseGateApp):
             self.plate_entry.configure(fg=COLOR_OK)
             self.upsert_row(e)
             self.lcd_saved(scan.winner)
+            self.open_barrier()     # tự lưu xong -> mở thanh chắn cổng vào
             self.set_status(f"XE VÀO | thẻ {uid} | {NUMBER_LEN} số {scan.winner} "
                             f"({scan.votes}/{scan.scanned} ảnh) | biển {scan.plate_full or '?'} | "
                             f"{fmt_time(e.time_in)}", COLOR_OK)
@@ -107,6 +108,7 @@ class EntryApp(BaseGateApp):
         self.pending = None
         self.show_offset_warning(False)
         self.lcd_saved(event.plate_number)
+        self.open_barrier()         # nhân viên đã xác nhận cho xe vào -> mở thanh chắn cổng vào
         self.upsert_row(event)
         self.update_action_buttons()
         self.set_status(f"XE VÀO | thẻ {event.card_uid} | {NUMBER_LEN} số {event.plate_number} | "

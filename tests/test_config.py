@@ -198,3 +198,36 @@ def test_lcd_idle_seconds(monkeypatch):
     monkeypatch.setenv("LCD_IDLE_SECONDS", "-1")
     with pytest.raises(ValueError):
         config.load_settings("in")
+
+
+def test_servo_settings(monkeypatch):
+    monkeypatch.delenv("SERVO_ENABLED", raising=False)
+    monkeypatch.delenv("SERVO_OPEN_SECONDS", raising=False)
+    s = config.load_settings("in")
+    assert s.servo_enabled is True and s.servo_open_seconds == 3.0
+    monkeypatch.setenv("SERVO_ENABLED", "0")
+    monkeypatch.setenv("SERVO_OPEN_SECONDS", "5.5")
+    s = config.load_settings("out")
+    assert s.servo_enabled is False and s.servo_open_seconds == 5.5
+
+
+@pytest.mark.parametrize("value", ["0", "0.1", "31", "-2"])
+def test_servo_open_seconds_out_of_range_is_rejected(monkeypatch, value):
+    monkeypatch.setenv("SERVO_OPEN_SECONDS", value)
+    with pytest.raises(ValueError, match="SERVO_OPEN_SECONDS"):
+        config.load_settings("in")
+
+
+def test_servo_open_seconds_must_be_a_number(monkeypatch):
+    monkeypatch.setenv("SERVO_OPEN_SECONDS", "ba")
+    with pytest.raises(ValueError, match="SERVO_OPEN_SECONDS phải là số"):
+        config.load_settings("in")
+
+
+def test_servo_defaults_are_in_env_example(tmp_path):
+    import os
+    example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
+    (tmp_path / ".env").write_text(example, encoding="utf-8")
+    env, _ = config.gate_env("in", str(tmp_path), environ={})
+    s = config.load_settings("in", env)
+    assert s.servo_enabled is True and s.servo_open_seconds == 3.0

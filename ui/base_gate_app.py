@@ -189,6 +189,21 @@ class BaseGateApp:
         if revert:
             self._schedule_lcd_revert()
 
+    def open_barrier(self):
+        """Mở thanh chắn (servo) của CỔNG NÀY khi xe được chấp nhận (quẹt thẻ thành công).
+        Arduino tự đóng lại sau cfg.servo_open_seconds giây. Giống LCD: chưa có Arduino, mất kết nối
+        hoặc tắt bằng SERVO_ENABLED=0 thì bỏ qua, không bao giờ làm hỏng việc xử lý thẻ.
+        Trả về True nếu đã gửi lệnh."""
+        if not getattr(self.cfg, "servo_enabled", True):
+            return False
+        send = getattr(self.rfid, "send_servo", None)
+        if send is None:
+            return False
+        try:
+            return bool(send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds))
+        except Exception:
+            return False
+
     def _cancel_lcd_revert(self):
         job, self._lcd_job = self._lcd_job, None
         if job is not None:

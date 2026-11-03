@@ -3,7 +3,8 @@ import pytest
 import serial
 
 from hardware.rfid import (
-    ArduinoRfidReader, BadLine, CardSwipe, ReaderStatus, format_lcd_command, lcd_text, parse_line,
+    ArduinoRfidReader, BadLine, CardSwipe, ReaderStatus, format_lcd_command, format_servo_command, lcd_text,
+    parse_line,
 )
 
 
@@ -283,3 +284,57 @@ def test_send_lcd_write_error_is_swallowed():
     box["reader"] = reader
     reader.run()
     assert results == [False] and sent == []                          # không ném ngoại lệ ra làm hỏng việc quẹt thẻ
+
+
+# ---------------------------------------------------------------- servo thanh chắn
+def test_format_servo_command():
+    assert format_servo_command("in") == "SERVOIN:OPEN\n"                      # mặc định: mở, thời gian do firmware quyết
+    assert format_servo_command("out") == "SERVOOUT:OPEN\n"
+    assert format_servo_command("in", "OPEN", 3) == "SERVOIN:OPEN:3000\n"      # giây -> mili giây
+    assert format_servo_command("out", "open", 2.5) == "SERVOOUT:OPEN:2500\n"  # không phân biệt hoa/thường
+    assert format_servo_command("out", "CLOSE") == "SERVOOUT:CLOSE\n"
+    assert format_servo_command("in", "CLOSE", 3) == "SERVOIN:CLOSE\n"         # CLOSE bỏ qua thời gian giữ
+
+
+@pytest.mark.parametrize("args", [("left",), ("in", "TOGGLE"), ("in", ""), ("in", "OPEN", 0), ("in", "OPEN", -1)])
+def test_format_servo_command_rejects_bad_input(args):
+    with pytest.raises(ValueError):
+        format_servo_command(*args)
+
+
+def test_send_servo_writes_one_ascii_line_per_gate_while_connected():
+    sent, results = [], []
+    box = {}
+
+    def on_card(gate, uid):
+        send = box["reader"].send_servo
+        results.append(send("in", "OPEN", 3))
+        results.append(send("out"))
+        results.append(send("out", "CLOSE"))
+
+    box["reader"] = _reader_with_writable_serial([b"STATUS:IN=1,OUT=1\n", b"IN:AAAA1111\n"], sent, on_card=on_card)
+    box["reader"].run()
+    assert results == [True, True, True]
+    assert sent == [b"SERVOIN:OPEN:3000\n", b"SERVOOUT:OPEN\n", b"SERVOOUT:CLOSE\n"]
+
+
+def test_send_servo_unknown_gate_is_a_programming_error():
+    reader = ArduinoRfidReader("COM3", 9600, lambda gate, uid: None, serial_factory=None)
+    with pytest.raises(ValueError):
+        reader.send_servo("middle")
+
+
+def test_send_servo_when_not_connected_returns_false_without_raising():
+    reader = ArduinoRfidReader("COM3", 9600, lambda gate, uid: None, serial_factory=None)
+    assert reader.send_servo("in", "OPEN", 3) is False
+
+
+def test_send_servo_write_error_is_swallowed():
+    sent, results = [], []
+    box = {}
+    reader = _reader_with_writable_serial(
+        [b"IN:AAAA1111\n"], sent, fail_write=True,
+        on_card=lambda gate, uid: results.append(box["reader"].send_servo("in")))
+    box["reader"] = reader
+    reader.run()
+    assert results == [False] and sent == []
