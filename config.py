@@ -122,6 +122,7 @@ class Settings:
     view_w: int
     view_h: int
     window_pos: str            # VD "+0+0" hoặc "+900+0" để xếp hai cửa sổ cạnh nhau; để trống = mặc định
+    lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE"; 0 = giữ đến lần quẹt sau
 
 
 def load_settings(gate, env=None):
@@ -168,11 +169,14 @@ def load_settings(gate, env=None):
         view_w=_num("VIEW_W", "420"),
         view_h=_num("VIEW_H", "315"),
         window_pos=_env("WINDOW_POS", ""),
+        lcd_idle_seconds=_num("LCD_IDLE_SECONDS", "5", float),
     )
     if s.scan_frames < 1:
         raise ValueError("SCAN_FRAMES phải >= 1")
     if not 1 <= s.vote_min <= s.scan_frames:
         raise ValueError("VOTE_MIN phải nằm trong khoảng 1..SCAN_FRAMES")
+    if s.lcd_idle_seconds < 0:
+        raise ValueError("LCD_IDLE_SECONDS phải >= 0 (0 = không tự quay về)")
     if s.rfid_heartbeat < 0:
         raise ValueError("RFID_HEARTBEAT_TIMEOUT phải >= 0 (0 = tắt kiểm tra)")
     if s.block_minutes < 1 or s.price_per_block < 0:

@@ -62,6 +62,8 @@ def plate_position_offset(scan):
 # (hardware.rfid.lcd_text tự bỏ dấu tiếng Việt). Phần riêng từng cổng là thuộc tính LCD_* của EntryApp / ExitApp.
 LCD_CHECKING = ("DANG KIEM TRA", "VUI LONG CHO")
 LCD_ERROR = ("LOI HE THONG", "GOI NHAN VIEN")
+LCD_LOADING = ("DANG KHOI DONG", "VUI LONG CHO")      # quẹt thẻ khi OCR chưa nạp xong
+LCD_NO_CAMERA = ("LOI CAMERA", "GOI NHAN VIEN")        # quẹt thẻ nhưng camera chưa có hình
 
 
 class HistoryTable:
@@ -152,6 +154,7 @@ class BaseGateApp:
         self.camera_index = cfg.camera_index
         self._history_loading = False
         self._closing = False
+        self._lcd_job = None        # hẹn giờ đưa LCD về "MOI QUET THE" (xem lcd)
 
         self.build_ui()
         self.open_camera(cfg.camera_index)
@@ -169,17 +172,48 @@ class BaseGateApp:
         if start:
             reader.start()
 
-    def lcd(self, message):
+    def lcd(self, message, revert=False):
         """Hiển thị (dòng 1, dòng 2) lên màn LCD của CỔNG NÀY (cfg.gate: 'in' / 'out') qua Arduino.
         Chưa có Arduino, Arduino không có LCD hay đang mất kết nối thì bỏ qua: LCD chỉ là phần phụ,
-        không bao giờ được làm hỏng việc xử lý thẻ."""
+        không bao giờ được làm hỏng việc xử lý thẻ.
+
+        revert=True: sau cfg.lcd_idle_seconds giây tự đưa LCD về LCD_IDLE (dùng cho thông báo đã xong việc,
+        VD "XE VAO OK"). Thông báo cần nhân viên xử lý thì KHÔNG revert để tài xế còn đọc được."""
+        self._cancel_lcd_revert()
         send = getattr(self.rfid, "send_lcd", None)
-        if send is None:
+        if send is not None:
+            try:
+                send(message[0], message[1], gate=self.cfg.gate)
+            except Exception:
+                pass
+        if revert:
+            self._schedule_lcd_revert()
+
+    def _cancel_lcd_revert(self):
+        job, self._lcd_job = self._lcd_job, None
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+
+    def _schedule_lcd_revert(self):
+        seconds = self.cfg.lcd_idle_seconds
+        if seconds <= 0 or self._closing:
             return
         try:
-            send(message[0], message[1], gate=self.cfg.gate)
+            self._lcd_job = self.root.after(int(seconds * 1000), self._lcd_back_to_idle)
         except Exception:
-            pass
+            self._lcd_job = None
+
+    def _lcd_back_to_idle(self):
+        self._lcd_job = None
+        if self._closing or self.pending is not None:
+            return                      # đang chờ nhân viên: màn hình phải giữ thông báo hiện tại
+        if self.busy:
+            self._schedule_lcd_revert() # đang xử lý việc khác: thử lại sau
+            return
+        self.lcd(self.LCD_IDLE)
 
     def handle_card(self, uid):
         """Gọi được từ luồng nền: chuyển sang luồng GUI."""
@@ -431,6 +465,7 @@ class BaseGateApp:
 
     def on_card(self, uid):
         if not self.service.ready:
+            self.lcd(LCD_LOADING)
             self.set_status(f"Thẻ {uid}: mô hình OCR chưa sẵn sàng, quẹt lại sau.", COLOR_WARN)
             return
         if self.busy:
@@ -441,6 +476,7 @@ class BaseGateApp:
                             "Hãy xử lý hoặc Hủy trước khi quẹt thẻ mới.", COLOR_WARN)
             return
         if self.last_frame is None:
+            self.lcd(LCD_NO_CAMERA)
             self.set_status(f"Thẻ {uid}: chưa có hình từ camera.", COLOR_ERR)
             return
 
@@ -460,14 +496,14 @@ class BaseGateApp:
     def on_card_outcome(self, outcome):
         uid, event, kind = outcome.card_uid, outcome.event, outcome.kind
         if kind is Outcome.UNREGISTERED:
-            self.lcd(self.LCD_UNREGISTERED)
+            self.lcd(self.LCD_UNREGISTERED, revert=True)
             self.set_status(f"THẺ {uid} CHƯA ĐĂNG KÝ. Không nhận diện, không lưu.", COLOR_ERR)
         elif kind is Outcome.ALREADY_INSIDE:
-            self.lcd(self.LCD_ALREADY_INSIDE)
+            self.lcd(self.LCD_ALREADY_INSIDE, revert=True)
             where = (f" (vào {fmt_time(event.time_in)}, biển {event.plate_number})" if event else "")
             self.set_status(f"THẺ {uid} ĐANG Ở TRONG BÃI{where}. Không cho vào lần nữa.", COLOR_ERR)
         elif kind is Outcome.NOT_INSIDE:
-            self.lcd(self.LCD_NOT_INSIDE)
+            self.lcd(self.LCD_NOT_INSIDE, revert=True)
             self.set_status(f"THẺ {uid} CHƯA CÓ LƯỢT VÀO. Xe chưa vào bãi nên không thể ra.", COLOR_ERR)
         else:
             self.on_gate_outcome(outcome)
@@ -534,6 +570,7 @@ class BaseGateApp:
     def shutdown(self):
         """Dừng RFID + camera của cổng này (không đóng cửa sổ)."""
         self._closing = True
+        self._cancel_lcd_revert()
         if self.rfid is not None:
             self.rfid.stop()
         self.camera.release()

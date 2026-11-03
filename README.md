@@ -66,6 +66,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `AUTO_SAVE` | `1` | Cổng vào: `1` tự lưu khi chốt được 5 số, `0` luôn chờ xác nhận |
 | `PRICE_PER_BLOCK`, `BLOCK_MINUTES` | `5000`, `60` | Giá một khối và độ dài khối |
 | `SCAN_FRAMES`, `SCAN_INTERVAL`, `VOTE_MIN` | `5`, `0.25`, `2` | Số ảnh quét, giây giữa hai ảnh, số phiếu tối thiểu (`1..SCAN_FRAMES`) |
+| `LCD_IDLE_SECONDS` | `5` | Số giây sau đó LCD tự về "MOI QUET THE" khi đã xong việc (xe vào/ra OK, thẻ bị từ chối). `0` = giữ thông báo đến lần quẹt sau. Thông báo cần nhân viên xử lý không tự biến mất |
 | `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
 | `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
 
@@ -105,27 +106,20 @@ Hướng đi do **tiền tố** (`IN:` / `OUT:`) quyết định. Dòng UID tr�
 Sketch mẫu `arduino/dual_rfid/dual_rfid.ino` dùng hai module **RC522** (thư viện MFRC522), đấu dây và chân SS ghi ngay đầu file. Đổi baud thì sửa `RFID_BAUD` trong `.env` và `BAUD_RATE` trong sketch.
 
 ## Hai màn LCD 1602 I2C (tùy chọn: một ở cổng vào, một ở cổng ra)
-Hai màn LCD 1602 có **module I2C** gắn vào chính Arduino đó. Không gắn màn nào thì chương trình vẫn chạy bình thường; gắn một trong hai màn cũng được (màn vắng mặt bị bỏ qua, màn còn lại vẫn chạy).
+Hai màn LCD 1602 có **module I2C** (chip PCF8574) gắn vào chính Arduino đó. Không gắn màn nào thì chương trình vẫn chạy bình thường; gắn một trong hai màn cũng được (màn vắng mặt bị bỏ qua, màn còn lại vẫn chạy).
 
-**Đấu dây (cắm SONG SONG hai màn vào cùng 4 chân, không trùng chân nào của RFID):**
+**Mỗi LCD một bus I2C riêng, dùng I2C phần mềm (bit-bang)** nên cắm vào chân analog tùy ý, không cần thư viện `Wire` hay `LiquidCrystal_I2C`:
 
-| LCD (module I2C) | Arduino Uno/Nano |
-|---|---|
-| GND | GND |
-| VCC | **5V** (LCD cần 5V; **không** nối vào ray 3.3V của hai module RC522) |
-| SDA | A4 |
-| SCL | A5 |
-
-Tất cả GND nối chung. Cài thêm thư viện **LiquidCrystal I2C** (Frank de Brabander) trong Arduino IDE rồi nạp lại `dual_rfid.ino`.
-
-**Quan trọng: hai module I2C phải có ĐỊA CHỈ KHÁC NHAU.** Module I2C bán sẵn đều có địa chỉ mặc định giống nhau (`0x27` nếu chip PCF8574, `0x3F` nếu chip PCF8574A). Cắm hai màn cùng địa chỉ thì xung đột và chỉ một màn chạy. Cách xử lý: **hàn nối chân A0** (cặp chân A0 / A1 / A2 ở mặt sau module, gần con chip) trên module của **LCD cổng ra**. Sketch tự dò:
-
-| Màn | Chip PCF8574 | Chip PCF8574A |
+| LCD (module I2C) | LCD cổng VÀO | LCD cổng RA |
 |---|---|---|
-| LCD cổng **VÀO** (giữ nguyên) | `0x27` | `0x3F` |
-| LCD cổng **RA** (đã hàn nối A0) | `0x26` | `0x3E` |
+| GND | GND | GND |
+| VCC | **5V** | **5V** |
+| SDA | **A0** | **A2** |
+| SCL | **A1** | **A3** |
 
-Nếu hai module khác chip sẵn (một cái `0x27`, một cái `0x3F`) và bạn không muốn hàn, sửa hai mảng `LCD_IN_ADDRS` / `LCD_OUT_ADDRS` ở đầu `dual_rfid.ino` (VD `LCD_IN_ADDRS = {0x27}`, `LCD_OUT_ADDRS = {0x3F}`) rồi nạp lại.
+Tất cả GND nối chung. LCD cần 5V, **không** nối vào ray 3.3V của hai module RC522. Muốn đổi chân thì sửa 4 hằng số `PIN_LCD_*` ở đầu `dual_rfid.ino` rồi nạp lại. Không cần cài thêm thư viện nào cho LCD (chỉ còn **MFRC522** cho RFID).
+
+Vì hai LCD nằm trên hai bus tách biệt nên **được trùng địa chỉ I2C** và **không cần hàn chân A0** trên module. Sketch tự dò địa chỉ `0x27` (chip PCF8574) rồi `0x3F` (chip PCF8574A) trên từng bus; muốn cố định địa chỉ thì sửa mảng `LCD_ADDRS`.
 
 **Nội dung hiển thị** (LCD 1602 không có chữ có dấu nên viết không dấu; `hardware/rfid.py: lcd_text` tự bỏ dấu và cắt còn 16 ký tự):
 
@@ -147,10 +141,14 @@ Nếu hai module khác chip sẵn (một cái `0x27`, một cái `0x3F`) và b�
 | Thẻ chưa có lượt vào (cổng ra) | `THE CHUA VAO BAI` | `KHONG CHO RA` |
 | Lượt gửi xe đã bị đóng trước khi chốt | `LUOT DA DONG` | `GOI NHAN VIEN` |
 | Lỗi hệ thống (VD mất SQL Server) | `LOI HE THONG` | `GOI NHAN VIEN` |
+| Quẹt thẻ nhưng camera chưa có hình (cả hai cổng) | `LOI CAMERA` | `GOI NHAN VIEN` |
+| Quẹt thẻ khi OCR chưa nạp xong (cả hai cổng) | `DANG KHOI DONG` | `VUI LONG CHO` |
+
+**Tự quay về trạng thái sẵn sàng:** sau `LCD_IDLE_SECONDS` giây (mặc định 5), LCD về `CONG VAO` / `CONG RA` + `MOI QUET THE` với các thông báo đã xong việc: `XE VAO OK`, `XE RA OK`, thẻ chưa đăng ký, thẻ đã vào bãi, thẻ chưa vào bãi. Các thông báo cần nhân viên (`XE LECH VI TRI`, `CHO NHAN VIEN`, `BIEN LECH 1 SO`, `BIEN KHONG KHOP`, `XE CHUA DUOC RA`, `LUOT DA DONG`, `LOI HE THONG`, `LOI CAMERA`) được giữ nguyên đến khi nhân viên xử lý hoặc có lần quẹt thẻ kế tiếp. Lần quẹt bị bỏ qua vì đang xử lý hoặc đang chờ nhân viên không làm đổi LCD.
 
 Số tiền hiện đủ trong 16 cột; nếu quá dài thì LCD báo `XEM TREN MAY` thay vì cắt cụt thành số sai. Cổng vào còn có dải đỏ "BIỂN SỐ LỆCH VỊ TRÍ" trên cửa sổ chương trình, hiện cùng lúc với dòng `XE LECH VI TRI` trên LCD. Nội dung LCD sửa ở các thuộc tính `LCD_*` đầu lớp `EntryApp` (`ui/entry_app.py`) và `ExitApp` (`ui/exit_app.py`); phần dùng chung ở đầu `ui/base_gate_app.py`.
 
-**LCD không lên chữ:** mở Serial Monitor (9600), sẽ thấy `# LCD VAO: dia chi 0x27` và `# LCD RA: dia chi 0x26` nếu tìm thấy; `# LCD ...: khong tim thay` thì kiểm tra dây SDA/SCL/VCC/GND và địa chỉ I2C của màn đó. Nếu chỉ thấy `LCD VAO` mà `LCD RA` không tìm thấy dù đã cắm cả hai: nhiều khả năng hai module còn cùng địa chỉ, hãy hàn nối A0 như trên. Có đèn nền mà không thấy chữ: vặn biến trở xanh ở mặt sau module I2C để chỉnh độ tương phản.
+**LCD không lên chữ:** mở Serial Monitor (9600), sẽ thấy `# LCD VAO: dia chi 0x27` và `# LCD RA: dia chi 0x27` nếu tìm thấy; `# LCD ...: khong tim thay` thì kiểm tra dây SDA/SCL (VÀO: A0/A1, RA: A2/A3), VCC 5V, GND. Có đèn nền mà không thấy chữ: vặn biến trở xanh ở mặt sau module I2C để chỉnh độ tương phản. Dây SDA/SCL nên ngắn (dưới ~30 cm); module I2C đã có điện trở kéo lên sẵn nên không cần thêm.
 
 ## Quy tắc nghiệp vụ
 

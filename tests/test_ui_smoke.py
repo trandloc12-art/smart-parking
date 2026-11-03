@@ -596,3 +596,78 @@ def test_arduino_unplugged_is_shown_and_readers_are_not_blamed(root, tmp_path, m
     assert pump(root, lambda: app.devices.problems() == ["Arduino (COM3)"])
     assert "MẤT KẾT NỐI" in app.devices.state[ARDUINO][1]
     assert app.devices.state[reader_key("in")][0] is None and app.devices.state[reader_key("out")][0] is None
+
+
+# ---------------------------------------------------------------- LCD tự quay về "MOI QUET THE"
+def lcd_idle_after(root, lcd, gate, line1, timeout=3.0):
+    return pump(root, lambda: lcd.sent[-1] == (gate, line1, "MOI QUET THE"), timeout)
+
+
+def test_entry_lcd_returns_to_idle_after_done(root, tmp_path, monkeypatch):
+    monkeypatch.setenv("LCD_IDLE_SECONDS", "0.3")
+    app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    swipe(app, "CARD1")
+    assert lcd.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25888")
+    assert lcd_idle_after(root, lcd, "in", "CONG VAO"), "LCD cổng vào không tự quay về"
+
+    swipe(app, "NOPE")                                       # thẻ bị từ chối cũng tự quay về
+    assert lcd.sent[-1] == ("in", "THE CHUA DANG KY", "KHONG CHO VAO")
+    assert lcd_idle_after(root, lcd, "in", "CONG VAO")
+
+
+def test_exit_lcd_returns_to_idle_after_done(root, tmp_path, monkeypatch):
+    monkeypatch.setenv("LCD_IDLE_SECONDS", "0.3")
+    app, db, rec, lcd = make_exit(root, tmp_path, monkeypatch, ["25888"])
+    swipe(app, "CARD1")
+    assert lcd.sent[-1] == ("out", "XE RA OK", "TIEN 5.000 D")
+    assert lcd_idle_after(root, lcd, "out", "CONG RA"), "LCD cổng ra không tự quay về"
+
+
+def test_lcd_keeps_messages_that_need_staff(root, tmp_path, monkeypatch):
+    """Thông báo chờ nhân viên / từ chối KHÔNG được tự biến mất."""
+    monkeypatch.setenv("LCD_IDLE_SECONDS", "0.2")
+    app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, [""])
+    swipe(app, "CARD1")                                      # lệch vị trí, đang chờ nhân viên
+    assert lcd.sent[-1] == ("in", "XE LECH VI TRI", "HAY CHINH XE")
+    pump(root, lambda: False, timeout=0.8)                   # chờ gấp 4 lần thời gian quay về
+    assert lcd.sent[-1] == ("in", "XE LECH VI TRI", "HAY CHINH XE")
+
+    app2, db2, rec2, lcd2 = make_exit(root, tmp_path, monkeypatch, ["25883"])
+    swipe(app2, "CARD1")                                     # lệch 1 số
+    app2.cancel_pending()                                    # nhân viên từ chối
+    assert lcd2.sent[-1] == ("out", "XE CHUA DUOC RA", "GOI NHAN VIEN")
+    pump(root, lambda: False, timeout=0.8)
+    assert lcd2.sent[-1] == ("out", "XE CHUA DUOC RA", "GOI NHAN VIEN")
+
+
+def test_lcd_idle_timer_is_cancelled_by_a_new_swipe(root, tmp_path, monkeypatch):
+    monkeypatch.setenv("LCD_IDLE_SECONDS", "0.5")
+    app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    swipe(app, "CARD1")                                      # hẹn giờ quay về sau 0,5 giây
+    rec.set_script([""])
+    swipe(app, "CARD2")                                      # quẹt thẻ mới -> hủy hẹn giờ cũ, đang chờ nhân viên
+    assert lcd.sent[-1] == ("in", "XE LECH VI TRI", "HAY CHINH XE")
+    pump(root, lambda: False, timeout=1.0)
+    assert ("in", "CONG VAO", "MOI QUET THE") not in lcd.sent[-2:]
+    assert lcd.sent[-1] == ("in", "XE LECH VI TRI", "HAY CHINH XE")
+
+
+def test_lcd_idle_seconds_zero_disables_revert(root, tmp_path, monkeypatch):
+    monkeypatch.setenv("LCD_IDLE_SECONDS", "0")
+    app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    swipe(app, "CARD1")
+    pump(root, lambda: False, timeout=0.6)
+    assert lcd.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25888")
+
+
+def test_swipe_that_cannot_run_is_shown_on_the_lcd(root, tmp_path, monkeypatch):
+    """Quẹt thẻ khi chưa có hình camera / OCR chưa nạp xong: trước đây LCD im lặng, giờ có báo."""
+    app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    app.last_frame = None
+    app.on_card("CARD1")
+    assert lcd.sent[-1] == ("in", "LOI CAMERA", "GOI NHAN VIEN")
+
+    app, db, rec, lcd = make_exit(root, tmp_path, monkeypatch, ["25888"])
+    app.service.recognizer.ready = False
+    app.on_card("CARD1")
+    assert lcd.sent[-1] == ("out", "DANG KHOI DONG", "VUI LONG CHO")

@@ -24,21 +24,19 @@
     Chân SDA (SS) riêng từng module:  CỔNG VÀO -> D10,  CỔNG RA -> D8
     LƯU Ý: RC522 chạy 3.3V (không cấp 5V).
 
-  Đấu dây HAI LCD 1602 có module I2C (4 dây, cắm SONG SONG vào cùng 4 chân; không trùng chân nào của RFID):
-    GND -> GND,  VCC -> 5V (LCD cần 5V, KHÔNG nối vào ray 3.3V của RC522),  SDA -> A4,  SCL -> A5
-  Hai module I2C phải có ĐỊA CHỈ KHÁC NHAU (mặc định cả hai đều 0x27 hoặc 0x3F nên sẽ xung đột):
-    hàn nối chân A0 trên mặt sau module của LCD cổng ra để đổi địa chỉ. Sketch tự dò:
-      LCD cổng VÀO:  0x27 (chip PCF8574)  hoặc 0x3F (chip PCF8574A)   <- giữ nguyên, không hàn
-      LCD cổng RA :  0x26 (chip PCF8574)  hoặc 0x3E (chip PCF8574A)   <- hàn nối A0
+  Đấu dây HAI LCD 1602 có module I2C (PCF8574). MỖI LCD một bus I2C RIÊNG, dùng I2C PHẦN MỀM (bit-bang)
+  nên cắm vào chân analog bất kỳ, không cần thư viện Wire / LiquidCrystal_I2C:
+    LCD CỔNG VÀO :  SDA -> A0,  SCL -> A1,  VCC -> 5V,  GND -> GND
+    LCD CỔNG RA  :  SDA -> A2,  SCL -> A3,  VCC -> 5V,  GND -> GND
+  (LCD cần 5V, KHÔNG nối vào ray 3.3V của RC522.) Vì hai LCD ở hai bus khác nhau nên được TRÙNG địa chỉ
+  (không cần hàn chân A0 trên module). Sketch tự dò địa chỉ 0x27 (chip PCF8574) hoặc 0x3F (PCF8574A).
+  Muốn đổi chân: sửa 4 hằng số PIN_LCD_* bên dưới.
 
   Thư viện (Arduino IDE: Tools > Manage Libraries):
     - "MFRC522" của GithubCommunity
-    - "LiquidCrystal I2C" của Frank de Brabander
 */
 #include <SPI.h>
 #include <MFRC522.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
 
 const unsigned long BAUD_RATE = 9600;          // phải trùng RFID_BAUD trong .env
 const uint8_t PIN_RST = 9;
@@ -48,15 +46,122 @@ const unsigned long STATUS_INTERVAL_MS = 2000;
 
 const uint8_t LCD_COLS = 16;
 const uint8_t LCD_ROWS = 2;
-// Địa chỉ I2C có thể có của từng LCD (dò lần lượt, gặp địa chỉ nào trả lời thì dùng).
-const uint8_t LCD_IN_ADDRS[] = {0x27, 0x3F};
-const uint8_t LCD_OUT_ADDRS[] = {0x26, 0x3E};
+// Chân I2C phần mềm của từng LCD (mỗi LCD một bus riêng nên được trùng địa chỉ).
+const uint8_t PIN_LCD_IN_SDA = A0;
+const uint8_t PIN_LCD_IN_SCL = A1;
+const uint8_t PIN_LCD_OUT_SDA = A2;
+const uint8_t PIN_LCD_OUT_SCL = A3;
+// Địa chỉ I2C có thể có của module (dò lần lượt, gặp địa chỉ nào trả lời thì dùng).
+const uint8_t LCD_ADDRS[] = {0x27, 0x3F};
 const uint8_t RX_MAX = 48;                     // "LCDOUT:" + 16 + "|" + 16 = 40 ký tự, chừa dư
 
 MFRC522 readerIn(PIN_SS_IN, PIN_RST);
 MFRC522 readerOut(PIN_SS_OUT, PIN_RST);
-LiquidCrystal_I2C *lcdIn = nullptr;            // nullptr = không tìm thấy LCD cổng vào
-LiquidCrystal_I2C *lcdOut = nullptr;           // nullptr = không tìm thấy LCD cổng ra
+
+// ------------------------------------------------------------------ LCD 1602 + PCF8574 qua I2C phần mềm
+// Mỗi đối tượng điều khiển MỘT LCD trên cặp chân SDA/SCL riêng. SDA mô phỏng open-drain (thả = INPUT,
+// kéo thấp = OUTPUT LOW; module I2C đã có điện trở kéo lên); SCL đẩy kéo vì PCF8574 không kéo giãn xung.
+// Ánh xạ chân PCF8574 chuẩn: P0=RS, P1=RW, P2=EN, P3=đèn nền, P4..P7=D4..D7.
+class SoftLcd {
+ public:
+  SoftLcd(uint8_t sda, uint8_t scl) : sda_(sda), scl_(scl) {}
+
+  // Dò địa chỉ, khởi tạo LCD. Trả về false nếu không địa chỉ nào trả lời.
+  bool begin(const uint8_t *addrs, uint8_t count) {
+    digitalWrite(sda_, LOW);                   // PORT = 0: chỉ đổi INPUT/OUTPUT là có HIGH-Z / LOW
+    pinMode(scl_, OUTPUT);
+    sclLow();
+    sdaRelease();
+    addr_ = 0;
+    for (uint8_t i = 0; i < count && addr_ == 0; i++) {
+      if (probe(addrs[i])) addr_ = addrs[i];
+    }
+    if (addr_ == 0) return false;
+    initLcd();
+    return true;
+  }
+
+  uint8_t address() const { return addr_; }
+
+  void setCursor(uint8_t col, uint8_t row) {
+    send(0x80 | (uint8_t)(col + (row ? 0x40 : 0x00)), 0);
+  }
+
+  void print(char c) { send((uint8_t)c, RS); }
+
+ private:
+  static const uint8_t RS = 0x01, EN = 0x04, BL = 0x08;
+  uint8_t sda_, scl_, addr_ = 0;
+
+  void bitDelay() { delayMicroseconds(4); }   // ~100 kHz
+  void sdaRelease() { pinMode(sda_, INPUT); }
+  void sdaLow() { pinMode(sda_, OUTPUT); }    // PORT đã = 0
+  void sclHigh() { digitalWrite(scl_, HIGH); }
+  void sclLow() { digitalWrite(scl_, LOW); }
+
+  void i2cStart() { sdaRelease(); sclHigh(); bitDelay(); sdaLow(); bitDelay(); sclLow(); }
+  void i2cStop() { sdaLow(); bitDelay(); sclHigh(); bitDelay(); sdaRelease(); bitDelay(); }
+
+  // Gửi một byte, trả về true nếu bên nhận ACK.
+  bool i2cWrite(uint8_t b) {
+    for (uint8_t i = 0; i < 8; i++) {
+      if (b & 0x80) sdaRelease(); else sdaLow();
+      bitDelay();
+      sclHigh(); bitDelay(); sclLow();
+      b <<= 1;
+    }
+    sdaRelease();
+    bitDelay();
+    sclHigh(); bitDelay();
+    bool ack = (digitalRead(sda_) == LOW);
+    sclLow();
+    return ack;
+  }
+
+  bool probe(uint8_t addr) {
+    i2cStart();
+    bool ack = i2cWrite((uint8_t)(addr << 1));
+    i2cStop();
+    return ack;
+  }
+
+  void expanderWrite(uint8_t data) {
+    i2cStart();
+    if (i2cWrite((uint8_t)(addr_ << 1))) i2cWrite(data | BL);
+    i2cStop();
+  }
+
+  void write4(uint8_t nibbleAndMode) {        // 4 bit cao = dữ liệu, 4 bit thấp = RS/RW/EN
+    expanderWrite(nibbleAndMode);
+    expanderWrite(nibbleAndMode | EN);
+    delayMicroseconds(1);
+    expanderWrite(nibbleAndMode & ~EN);
+    delayMicroseconds(50);
+  }
+
+  void send(uint8_t value, uint8_t mode) {
+    write4((value & 0xF0) | mode);
+    write4(((value << 4) & 0xF0) | mode);
+  }
+
+  void initLcd() {                            // trình tự khởi tạo 4 bit của HD44780
+    delay(50);
+    expanderWrite(0);
+    write4(0x30); delay(5);
+    write4(0x30); delay(5);
+    write4(0x30); delayMicroseconds(150);
+    write4(0x20);                             // chuyển sang chế độ 4 bit
+    send(0x28, 0);                            // 4 bit, 2 dòng, font 5x8
+    send(0x0C, 0);                            // bật hiển thị, tắt con trỏ
+    send(0x06, 0);                            // con trỏ chạy sang phải
+    send(0x01, 0); delay(2);                  // xóa màn hình
+  }
+};
+
+SoftLcd lcdInDev(PIN_LCD_IN_SDA, PIN_LCD_IN_SCL);
+SoftLcd lcdOutDev(PIN_LCD_OUT_SDA, PIN_LCD_OUT_SCL);
+SoftLcd *lcdIn = nullptr;                      // nullptr = không tìm thấy LCD cổng vào
+SoftLcd *lcdOut = nullptr;                     // nullptr = không tìm thấy LCD cổng ra
 
 bool inOk = false;
 bool outOk = false;
@@ -104,13 +209,8 @@ void pollReader(MFRC522 &reader, bool ok, const __FlashStringHelper *tag) {
 }
 
 // ------------------------------------------------------------------ LCD
-bool i2cResponds(uint8_t addr) {
-  Wire.beginTransmission(addr);
-  return Wire.endTransmission() == 0;
-}
-
 // Ghi đè đúng một hàng: ký tự ngoài ASCII in được thành '?', thiếu thì đệm dấu cách (khỏi phải clear() gây nháy).
-void lcdPrintRow(LiquidCrystal_I2C *lcd, uint8_t row, const char *text) {
+void lcdPrintRow(SoftLcd *lcd, uint8_t row, const char *text) {
   lcd->setCursor(0, row);
   uint8_t col = 0;
   for (; col < LCD_COLS && text[col] != '\0'; col++) {
@@ -123,40 +223,34 @@ void lcdPrintRow(LiquidCrystal_I2C *lcd, uint8_t row, const char *text) {
 }
 
 // lcd == nullptr (không có màn này) thì bỏ qua, màn kia không bị ảnh hưởng.
-void lcdShow(LiquidCrystal_I2C *lcd, const char *line1, const char *line2) {
+void lcdShow(SoftLcd *lcd, const char *line1, const char *line2) {
   if (lcd == nullptr) return;
   lcdPrintRow(lcd, 0, line1);
   lcdPrintRow(lcd, 1, line2);
 }
 
-// Dò một LCD trong danh sách địa chỉ có thể có. Trả về nullptr nếu không địa chỉ nào trả lời.
-LiquidCrystal_I2C *findLcd(const uint8_t *addrs, uint8_t count, const __FlashStringHelper *name,
-                           const char *idleLine1) {
-  uint8_t addr = 0;
-  for (uint8_t i = 0; i < count && addr == 0; i++) {
-    if (i2cResponds(addrs[i])) addr = addrs[i];
-  }
-  if (addr == 0) {
+// Dò + khởi tạo một LCD. Trả về con trỏ tới LCD, hoặc nullptr nếu không địa chỉ nào trả lời.
+SoftLcd *findLcd(SoftLcd &dev, const __FlashStringHelper *name, const char *idleLine1,
+                 const __FlashStringHelper *pins) {
+  if (!dev.begin(LCD_ADDRS, sizeof(LCD_ADDRS))) {
     Serial.print(F("# LCD "));
     Serial.print(name);
-    Serial.println(F(": khong tim thay (kiem tra day GND, VCC=5V, SDA=A4, SCL=A5 va dia chi I2C)"));
+    Serial.print(F(": khong tim thay (kiem tra day GND, VCC=5V, "));
+    Serial.print(pins);
+    Serial.println(F(" va dia chi I2C)"));
     return nullptr;
   }
-  LiquidCrystal_I2C *lcd = new LiquidCrystal_I2C(addr, LCD_COLS, LCD_ROWS);
-  lcd->init();
-  lcd->backlight();
-  lcdShow(lcd, idleLine1, "MOI QUET THE");
+  lcdShow(&dev, idleLine1, "MOI QUET THE");
   Serial.print(F("# LCD "));
   Serial.print(name);
   Serial.print(F(": dia chi 0x"));
-  Serial.println(addr, HEX);
-  return lcd;
+  Serial.println(dev.address(), HEX);
+  return &dev;
 }
 
 void initLcds() {
-  Wire.begin();
-  lcdIn = findLcd(LCD_IN_ADDRS, sizeof(LCD_IN_ADDRS), F("VAO"), "CONG VAO");
-  lcdOut = findLcd(LCD_OUT_ADDRS, sizeof(LCD_OUT_ADDRS), F("RA"), "CONG RA");
+  lcdIn = findLcd(lcdInDev, F("VAO"), "CONG VAO", F("SDA=A0, SCL=A1"));
+  lcdOut = findLcd(lcdOutDev, F("RA"), "CONG RA", F("SDA=A2, SCL=A3"));
 }
 
 // Nếu `cmd` bắt đầu bằng `prefix` thì trả về con trỏ tới phần sau tiền tố, ngược lại nullptr.
@@ -167,7 +261,7 @@ char *afterPrefix(char *cmd, const char *prefix) {
 
 // Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu LCDIN:, LCDOUT: và LCD: (cũ = LCDIN); lệnh khác bỏ qua.
 void handleCommand(char *cmd) {
-  LiquidCrystal_I2C *target = nullptr;
+  SoftLcd *target = nullptr;
   char *line1 = afterPrefix(cmd, "LCDOUT:");
   if (line1 != nullptr) {
     target = lcdOut;

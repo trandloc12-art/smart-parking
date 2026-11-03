@@ -37,7 +37,7 @@ class EntryApp(BaseGateApp):
             self.offset_lbl.pack_forget()
 
     def lcd_saved(self, number):
-        self.lcd(("XE VAO OK", f"BIEN SO {number}"))
+        self.lcd(("XE VAO OK", f"BIEN SO {number}"), revert=True)
 
     def reset_view(self):
         self.show_offset_warning(False)
@@ -125,7 +125,7 @@ class EntryApp(BaseGateApp):
         if isinstance(exc, AlreadyInside):
             self.pending = None
             self.show_offset_warning(False)
-            self.lcd(self.LCD_ALREADY_INSIDE)
+            self.lcd(self.LCD_ALREADY_INSIDE, revert=True)
             self.update_action_buttons()
             self.set_status("Thẻ này vừa có lượt vào khác (xe đã ở trong bãi). Không lưu thêm.",
                             COLOR_ERR)

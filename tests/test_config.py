@@ -186,3 +186,15 @@ def test_bad_number_error_names_the_variable():
         config.load_settings("in", {"RFID_DEBOUNCE": "2.0 # giây"})
     with pytest.raises(ValueError, match="SCAN_FRAMES phải là số"):
         config.load_settings("in", {"SCAN_FRAMES": "năm"})
+
+
+def test_lcd_idle_seconds(monkeypatch):
+    monkeypatch.delenv("LCD_IDLE_SECONDS", raising=False)
+    assert config.load_settings("in").lcd_idle_seconds == 5.0
+    monkeypatch.setenv("LCD_IDLE_SECONDS", "2.5")
+    assert config.load_settings("out").lcd_idle_seconds == 2.5
+    monkeypatch.setenv("LCD_IDLE_SECONDS", "0")
+    assert config.load_settings("in").lcd_idle_seconds == 0
+    monkeypatch.setenv("LCD_IDLE_SECONDS", "-1")
+    with pytest.raises(ValueError):
+        config.load_settings("in")
