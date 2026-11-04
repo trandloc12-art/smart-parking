@@ -38,12 +38,18 @@
   Muốn đổi chân: sửa 4 hằng số PIN_LCD_* bên dưới.
 
   Đấu dây HAI SERVO thanh chắn (SG90 / MG90S...): dây tín hiệu (cam/vàng) vào chân số, đỏ vào 5V, nâu/đen vào GND:
-    SERVO CỔNG VÀO :  tín hiệu -> D5
-    SERVO CỔNG RA  :  tín hiệu -> D6
+    SERVO CỔNG VÀO :  tín hiệu -> D6
+    SERVO CỔNG RA  :  tín hiệu -> D7
   LƯU Ý NGUỒN: servo giật dòng lớn khi chạy (có thể > 500 mA mỗi con) nên NÊN cấp 5V riêng (pin/adapter 5V 2A)
   cho hai servo và NỐI CHUNG GND với Arduino; cấp thẳng từ chân 5V của Arduino qua cổng USB dễ làm Arduino reset,
-  LCD nháy hoặc RC522 mất tín hiệu. Chân D5/D6 không trùng SPI (D8..D13), LCD (A0..A3) hay Serial (D0/D1).
+  LCD nháy hoặc RC522 mất tín hiệu. Chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), còi (D4) hay Serial (D0/D1).
   Góc mở/đóng chỉnh ở SERVO_*_ANGLE bên dưới cho khớp thanh chắn thật.
+
+  Đấu dây CÒI BÍP (MỘT còi dùng chung cho cả hai cổng): chân (+) -> D4,  chân (-) -> GND.
+  Mỗi lần quẹt thẻ ở BẤT KỲ cổng nào còi kêu một tiếng bíp ngắn (do Arduino tự làm ngay khi đọc được thẻ,
+  không chờ máy tính). Dùng tone() nên chạy được cả còi active lẫn passive; còi nhỏ (< 20 mA) nối thẳng
+  chân D4, còi công suất lớn thì qua transistor. Muốn đổi chân / tần số / độ dài: sửa PIN_BUZZER,
+  BUZZER_FREQ_HZ, BUZZER_BEEP_MS bên dưới.
 
   Thư viện (Arduino IDE: Tools > Manage Libraries):
     - "MFRC522" của GithubCommunity
@@ -76,6 +82,10 @@ const uint8_t SERVO_OPEN_ANGLE = 90;           // thanh chắn nâng (mở)
 const unsigned long SERVO_HOLD_MS = 3000;      // giữ mở mặc định khi lệnh không nêu thời gian
 const unsigned long SERVO_HOLD_MIN_MS = 500;   // chặn lệnh sai: tối thiểu / tối đa
 const unsigned long SERVO_HOLD_MAX_MS = 30000;
+// Còi bíp: một còi chung, kêu mỗi lần quẹt thẻ (cổng vào hoặc cổng ra).
+const uint8_t PIN_BUZZER = A5;
+const unsigned int BUZZER_FREQ_HZ = 2000;      // passive: đây là cao độ; active: vẫn kêu bình thường
+const unsigned int BUZZER_BEEP_MS = 120;       // độ dài một tiếng bíp
 const uint8_t RX_MAX = 48;                     // "LCDOUT:" + 16 + "|" + 16 = 40 ký tự, chừa dư
 
 MFRC522 readerIn(PIN_SS_IN, PIN_RST);
@@ -256,10 +266,16 @@ void sendStatus() {
   Serial.println(b ? 1 : 0);
 }
 
+// Một tiếng bíp ngắn. tone() có thời lượng KHÔNG chặn vòng loop (tự tắt bằng ngắt timer).
+void beep() {
+  tone(PIN_BUZZER, BUZZER_FREQ_HZ, BUZZER_BEEP_MS);
+}
+
 void pollReader(MFRC522 &reader, bool ok, const __FlashStringHelper *tag) {
   if (!ok) return;
   if (!reader.PICC_IsNewCardPresent() || !reader.PICC_ReadCardSerial()) return;
 
+  beep();                                    // báo cho người quẹt biết thẻ đã được đọc
   Serial.print(tag);
   Serial.print(':');
   for (byte i = 0; i < reader.uid.size; i++) {
@@ -390,9 +406,10 @@ void setup() {
   readerIn.PCD_Init();
   readerOut.PCD_Init();
   initLcds();
+  pinMode(PIN_BUZZER, OUTPUT);
   barrierIn.begin();
   barrierOut.begin();
-  Serial.println(F("# dual_rfid san sang (servo: vao=D5, ra=D6)"));
+  Serial.println(F("# dual_rfid san sang (servo: vao=D6, ra=D7, coi=D4)"));
   sendStatus();
   lastStatus = millis();
 }

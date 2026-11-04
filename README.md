@@ -5,6 +5,7 @@ Hệ thống có **2 cổng trên cùng một máy**: **cổng vào** và **cổ
 Cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau: CỔNG VÀO | CỔNG RA, lịch sử dùng chung ở dưới). Ngay trên cùng cửa sổ có **thanh tình trạng thiết bị**: thiết bị nào mất kết nối (Arduino, từng đầu đọc, từng camera, SQL Server) sẽ hiện dải cảnh báo đỏ nêu đúng tên thiết bị.
 Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này (xem mục *Giao thức với Arduino*).
 Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một ở cổng ra) để báo cho tài xế (VD "XE LECH VI TRI" khi không đọc đủ 5 số, "XE RA OK - TIEN 5.000 D") — xem mục *Hai màn LCD 1602 I2C*.
+Tùy chọn: gắn **một còi bíp** dùng chung, mỗi lần quẹt thẻ (cổng vào hoặc cổng ra) còi kêu một tiếng — xem mục *Còi bíp*.
 Tùy chọn: gắn **hai servo thanh chắn** (một ở cổng vào, một ở cổng ra): quẹt thẻ thành công thì servo của cổng đó tự mở rồi tự đóng lại — xem mục *Hai servo thanh chắn*.
 
 ## Cài đặt
@@ -163,14 +164,26 @@ Mỗi cổng một servo (SG90 / MG90S...) gắn vào chính Arduino đó. **Khi
 
 | Servo | Dây tín hiệu (cam/vàng) | Dây đỏ | Dây nâu/đen |
 |---|---|---|---|
-| **Cổng VÀO** | **D5** | 5V | GND |
-| **Cổng RA** | **D6** | 5V | GND |
+| **Cổng VÀO** | **D6** | 5V | GND |
+| **Cổng RA** | **D7** | 5V | GND |
 
-Hai chân D5/D6 không trùng SPI (D8..D13), LCD (A0..A3) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
+Hai chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), còi (D4) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
 
 **Chỉnh cho khớp thanh chắn thật** (đầu `dual_rfid.ino`): `SERVO_CLOSED_ANGLE` (mặc định 0°) và `SERVO_OPEN_ANGLE` (mặc định 90°; đảo hai giá trị nếu servo quay ngược), `SERVO_HOLD_MS` (thời gian mở mặc định). Thời gian giữ mở thực tế do `SERVO_OPEN_SECONDS` trong `.env` quyết định.
 
-**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D5, ra=D6)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
+**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=D4)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
+
+## Còi bíp (tùy chọn: MỘT còi dùng chung cho cả hai cổng)
+Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi kêu **một tiếng bíp ngắn** (mặc định 2000 Hz, 120 ms) để người quẹt biết thẻ đã được đọc. Còi do **Arduino tự điều khiển** ngay khi đọc được thẻ, không cần chờ máy tính, nên vẫn kêu khi chương trình Python chưa chạy; bíp kêu cho mọi thẻ đọc được, kể cả thẻ chưa đăng ký. Không có lệnh nào từ máy tính để điều khiển còi, và không có biến cấu hình trong `.env`.
+
+**Đấu dây:**
+
+| Còi | Chân Arduino |
+|---|---|
+| Chân dương (+) | **A5** |
+| Chân âm (-) | GND |
+
+D4 không trùng SPI (D8..D13), servo (D6/D7), LCD (A0..A3) hay Serial. Sketch dùng `tone()` nên chạy được **cả còi active lẫn passive** (không cần biết loại còi). Còi nhỏ (dưới khoảng 20 mA) nối thẳng chân D4; còi công suất lớn thì qua transistor. Đổi chân / tần số / độ dài tiếng bíp ở `PIN_BUZZER`, `BUZZER_FREQ_HZ`, `BUZZER_BEEP_MS` đầu `dual_rfid.ino`, rồi nạp lại. Nếu dùng còi active mà tiếng nghe rè, thử đổi `tone(...)` trong hàm `beep()` thành `digitalWrite(PIN_BUZZER, HIGH)` rồi `LOW` sau một khoảng ngắn.
 
 ## Quy tắc nghiệp vụ
 
