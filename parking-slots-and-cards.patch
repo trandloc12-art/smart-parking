@@ -1,0 +1,1005 @@
+diff --git a/.env.example b/.env.example
+index 4927378..a7f70c4 100644
+--- a/.env.example
++++ b/.env.example
+@@ -13,6 +13,7 @@ RFID_BAUD=9600
+ RFID_HEARTBEAT_TIMEOUT=8       # giây không nhận được gì từ Arduino thì báo "không phản hồi" (0 = không kiểm tra)
+ RFID_DEBOUNCE=2.0              # giây, bỏ qua quẹt trùng cùng một thẻ
+ 
++PARKING_CAPACITY=3             # số slot (chỗ đỗ xe) của bãi. LCD hiển thị số slot còn trống; đủ slot thì cổng vào không nhận quẹt thẻ
+ AUTO_SAVE=1                    # cổng vào: 1 = chốt được 5 số thì tự lưu, 0 = luôn chờ nhân viên xác nhận
+ PRICE_PER_BLOCK=5000
+ BLOCK_MINUTES=60
+diff --git a/README.md b/README.md
+index 6fa469e..e1e1fd6 100644
+--- a/README.md
++++ b/README.md
+@@ -6,6 +6,7 @@ Cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau:
+ Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này (xem mục *Giao thức với Arduino*).
+ Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một ở cổng ra) để báo cho tài xế (VD "XE LECH VI TRI" khi không đọc đủ 5 số, "XE RA OK - TIEN 5.000 D") — xem mục *Hai màn LCD 1602 I2C*.
+ Tùy chọn: gắn **một còi bíp** dùng chung, mỗi lần quẹt thẻ (cổng vào hoặc cổng ra) còi kêu một tiếng — xem mục *Còi bíp*.
++Bãi có số chỗ (slot) giới hạn (`PARKING_CAPACITY`, mặc định **3**): LCD hiện số chỗ còn trống, **đủ chỗ thì cổng vào không nhận quẹt thẻ** — xem mục *Số chỗ đỗ xe*.
+ Tùy chọn: gắn **hai servo thanh chắn** (một ở cổng vào, một ở cổng ra): quẹt thẻ thành công thì servo của cổng đó tự mở rồi tự đóng lại — xem mục *Hai servo thanh chắn*.
+ Tùy chọn: gắn **bốn cảm biến hồng ngoại** (mỗi cổng hai cái, trước và sau thanh chắn) để biết xe đã đi qua thanh chắn chưa: qua rồi thì hạ thanh chắn ngay, kết quả ghi vào SQL Server — xem mục *Cảm biến hồng ngoại*.
+ 
+@@ -66,10 +67,11 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | `DB_DRIVER` | `ODBC Driver 17 for SQL Server` | Tên driver ODBC đã cài |
+ | `RFID_BAUD`, `RFID_DEBOUNCE` | `9600`, `2.0` | Tốc độ serial; số giây bỏ qua quẹt trùng (tính riêng từng cổng) |
+ | `RFID_HEARTBEAT_TIMEOUT` | `8` | Số giây không nhận được gì từ Arduino thì báo "không phản hồi" (`0` = không kiểm tra) |
++| `PARKING_CAPACITY` | `3` | Số chỗ (slot) của bãi. LCD hiện số chỗ còn trống; đủ chỗ thì cổng vào không nhận quẹt thẻ |
+ | `AUTO_SAVE` | `1` | Cổng vào: `1` tự lưu khi chốt được 5 số, `0` luôn chờ xác nhận |
+ | `PRICE_PER_BLOCK`, `BLOCK_MINUTES` | `5000`, `60` | Giá một khối và độ dài khối |
+ | `SCAN_FRAMES`, `SCAN_INTERVAL`, `VOTE_MIN` | `5`, `0.25`, `2` | Số ảnh quét, giây giữa hai ảnh, số phiếu tối thiểu (`1..SCAN_FRAMES`) |
+-| `LCD_IDLE_SECONDS` | `5` | Số giây sau đó LCD tự về "MOI QUET THE" khi đã xong việc (xe vào/ra OK, thẻ bị từ chối). `0` = giữ thông báo đến lần quẹt sau. Thông báo cần nhân viên xử lý không tự biến mất |
++| `LCD_IDLE_SECONDS` | `5` | Số giây sau đó LCD tự về màn hình chờ (`CON TRONG: 2/3`) khi đã xong việc (xe vào/ra OK, thẻ bị từ chối). `0` = giữ thông báo đến lần quẹt sau. Thông báo cần nhân viên xử lý không tự biến mất |
+ | `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
+ | `SERVO_ENABLED` | `1` | `1` = quẹt thẻ thành công thì mở servo thanh chắn; `0` = chưa gắn servo thì tắt đi (không gửi lệnh nào) |
+ | `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
+@@ -93,6 +95,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | "Không mở được camera" | Đổi số trong ô "Camera số" rồi bấm Mở camera; đóng ứng dụng khác đang dùng camera |
+ | Bấm "Test servo" thanh chắn không nhúc nhích / quay sai góc | Xem dòng trạng thái: `KHÔNG gửi được lệnh` = Arduino chưa kết nối; `SERVO_ENABLED=0` = servo đang bị tắt. Nếu lệnh đã gửi mà servo không động: kiểm tra dây tín hiệu (D6 cổng vào, D7 cổng ra) và nguồn 5V riêng + nối chung GND. Quay sai chiều hoặc không khớp thanh chắn: chỉnh `SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` (đảo hai giá trị nếu ngược) rồi chạy lại chương trình |
+ | Quẹt thẻ chậm | OCR chạy bằng CPU, mỗi ảnh có thể mất vài giây. Giảm `SCAN_FRAMES` nếu cần |
++| Cổng vào luôn báo "BÃI ĐÃ ĐẦY" dù bãi trống | Còn lượt cũ chưa đóng (xe đã đi mà thẻ chưa quẹt ra) chiếm chỗ: đóng bằng câu SQL ở dưới, hoặc tăng `PARKING_CAPACITY` |
+ | Thẻ báo "đang ở trong bãi" dù xe đã đi | Lượt cũ chưa đóng: đóng bằng câu SQL ở trên |
+ | Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
+ | Luôn hiện cảnh báo "hết giờ mở thanh chắn mà xe chưa đi qua" | Cảm biến hồng ngoại chưa gắn / sai dây / sai mức tín hiệu (`IR_ACTIVE_LOW`), hoặc xe không chắn đủ hai cảm biến theo thứ tự trước -> sau. Chưa gắn cảm biến thì đặt `IR_ENABLED=0` |
+@@ -141,14 +144,15 @@ Vì hai LCD nằm trên hai bus tách biệt nên **được trùng địa chỉ
+ 
+ | Tình huống | Dòng 1 | Dòng 2 |
+ |---|---|---|
+-| **Cổng vào** — sẵn sàng / nhân viên bấm Hủy | `CONG VAO` | `MOI QUET THE` |
++| **Cổng vào** — màn hình chờ, còn chỗ / nhân viên bấm Hủy | `CONG VAO` | `CON TRONG: 2/3` |
++| **Cổng vào** — bãi đã đủ chỗ, không nhận quẹt thẻ | `BAI DA DAY` | `HET CHO` |
+ | Vừa quẹt thẻ, đang quét ảnh (cả hai cổng) | `DANG KIEM TRA` | `VUI LONG CHO` |
+ | **Không đọc đủ 5 số (xe lệch vị trí)** (cả hai cổng) | `XE LECH VI TRI` | `HAY CHINH XE` |
+ | Hòa phiếu, chờ nhân viên — vào | `CHO NHAN VIEN` | `XAC NHAN BIEN SO` |
+ | Lưu xe vào thành công | `XE VAO OK` | `BIEN SO 25888` |
+ | Thẻ chưa đăng ký — vào / ra | `THE CHUA DANG KY` | `KHONG CHO VAO` / `KHONG CHO RA` |
+ | Thẻ đang ở trong bãi (cổng vào) | `THE DA VAO BAI` | `KHONG CHO VAO` |
+-| **Cổng ra** — sẵn sàng | `CONG RA` | `MOI QUET THE` |
++| **Cổng ra** — màn hình chờ | `CONG RA` | `CON TRONG: 2/3` |
+ | Biển khớp, cho ra (hoặc nhân viên duyệt) | `XE RA OK` | `TIEN 5.000 D` |
+ | Hòa phiếu, chờ nhân viên — ra | `CHO NHAN VIEN` | `KIEM TRA BIEN SO` |
+ | Lệch 1 số | `BIEN LECH 1 SO` | `CHO NHAN VIEN` |
+@@ -160,7 +164,7 @@ Vì hai LCD nằm trên hai bus tách biệt nên **được trùng địa chỉ
+ | Quẹt thẻ nhưng camera chưa có hình (cả hai cổng) | `LOI CAMERA` | `GOI NHAN VIEN` |
+ | Quẹt thẻ khi OCR chưa nạp xong (cả hai cổng) | `DANG KHOI DONG` | `VUI LONG CHO` |
+ 
+-**Tự quay về trạng thái sẵn sàng:** sau `LCD_IDLE_SECONDS` giây (mặc định 5), LCD về `CONG VAO` / `CONG RA` + `MOI QUET THE` với các thông báo đã xong việc: `XE VAO OK`, `XE RA OK`, thẻ chưa đăng ký, thẻ đã vào bãi, thẻ chưa vào bãi. Các thông báo cần nhân viên (`XE LECH VI TRI`, `CHO NHAN VIEN`, `BIEN LECH 1 SO`, `BIEN KHONG KHOP`, `XE CHUA DUOC RA`, `LUOT DA DONG`, `LOI HE THONG`, `LOI CAMERA`) được giữ nguyên đến khi nhân viên xử lý hoặc có lần quẹt thẻ kế tiếp. Lần quẹt bị bỏ qua vì đang xử lý hoặc đang chờ nhân viên không làm đổi LCD.
++**Tự quay về trạng thái sẵn sàng:** sau `LCD_IDLE_SECONDS` giây (mặc định 5), LCD về màn hình chờ (`CONG VAO` / `CONG RA` + `CON TRONG: x/y`, hoặc `BAI DA DAY` / `HET CHO` ở cổng vào khi hết chỗ; chưa biết số chỗ thì tạm hiện `MOI QUET THE`) với các thông báo đã xong việc: `XE VAO OK`, `XE RA OK`, thẻ chưa đăng ký, thẻ đã vào bãi, thẻ chưa vào bãi. Các thông báo cần nhân viên (`XE LECH VI TRI`, `CHO NHAN VIEN`, `BIEN LECH 1 SO`, `BIEN KHONG KHOP`, `XE CHUA DUOC RA`, `LUOT DA DONG`, `LOI HE THONG`, `LOI CAMERA`) được giữ nguyên đến khi nhân viên xử lý hoặc có lần quẹt thẻ kế tiếp. Lần quẹt bị bỏ qua vì đang xử lý hoặc đang chờ nhân viên không làm đổi LCD.
+ 
+ Số tiền hiện đủ trong 16 cột; nếu quá dài thì LCD báo `XEM TREN MAY` thay vì cắt cụt thành số sai. Cổng vào còn có dải đỏ "BIỂN SỐ LỆCH VỊ TRÍ" trên cửa sổ chương trình, hiện cùng lúc với dòng `XE LECH VI TRI` trên LCD. Nội dung LCD sửa ở các thuộc tính `LCD_*` đầu lớp `EntryApp` (`ui/entry_app.py`) và `ExitApp` (`ui/exit_app.py`); phần dùng chung ở đầu `ui/base_gate_app.py`.
+ 
+@@ -225,6 +229,15 @@ Quẹt thẻ liên tiếp khi thanh chắn còn đang mở chỉ gia hạn thờ
+ 
+ **Kiểm tra:** mở Serial Monitor (9600), quẹt thẻ cho thanh chắn mở rồi đưa vật qua lần lượt cảm biến trước -> sau: thấy thanh chắn hạ và dòng `PASS:IN` (hoặc `PASS:OUT`); không đưa gì qua thì sau `SERVO_OPEN_SECONDS` giây thấy `NOPASS:...`.
+ 
++## Số chỗ đỗ xe (slot)
++Bãi có `PARKING_CAPACITY` chỗ (mặc định **3**). Số chỗ trống = `PARKING_CAPACITY` trừ số xe đang ở trong bãi (đếm từ SQL Server: các lượt chưa có giờ ra).
++
++- **LCD** của cả hai cổng ở màn hình chờ hiện số chỗ còn trống (`CON TRONG: 2/3`) và tự cập nhật ngay khi có xe vào hoặc ra ở cổng nào cũng được.
++- **Đủ chỗ:** cổng vào **không nhận quẹt thẻ**: không quét ảnh, không lưu, không mở thanh chắn; LCD cổng vào hiện `BAI DA DAY` / `HET CHO`, thanh trạng thái báo đỏ "BÃI ĐÃ ĐẦY". Thẻ chưa đăng ký hoặc thẻ đã ở trong bãi quẹt ở cổng vào lúc đầy cũng chỉ thấy báo đầy.
++- **Cổng ra vẫn hoạt động bình thường** khi bãi đầy. Xe ra thì trả lại một chỗ và LCD cổng vào tự đổi về `CON TRONG: 1/3`.
++- Nhân viên bấm *Lưu xe vào* sau khi bãi đã đầy (VD trong lúc chờ xác nhận có xe khác vào) cũng bị từ chối.
++- Giao diện cộng trừ số chỗ ngay khi có xe vào / ra và đối chiếu lại với SQL Server mỗi 5 giây (nếu ai đó sửa SQL bằng tay). Số chỗ luôn tính theo SQL Server nên đúng cả khi khởi động lại chương trình.
++
+ ## Quy tắc nghiệp vụ
+ 
+ **Hướng đi do CỔNG quyết định**, trạng thái thẻ chỉ để kiểm tra hợp lệ:
+@@ -234,6 +247,7 @@ Quẹt thẻ liên tiếp khi thanh chắn còn đang mở chỉ gia hạn thờ
+ | Thẻ không có trong bảng `cards` (hoặc `is_active = 0`) | Từ chối ở cả hai cổng, không nhận diện, không lưu |
+ | Cổng vào, thẻ đang ở trong bãi | Từ chối (không cho vào lần nữa) |
+ | Cổng ra, thẻ chưa có lượt vào | Từ chối (xe chưa vào bãi) |
++| Cổng vào, bãi đã đủ chỗ | Không nhận quẹt thẻ: không quét ảnh, không mở thanh chắn (xem *Số chỗ đỗ xe*) |
+ | Cổng vào, thẻ hợp lệ | Quét ảnh, bỏ phiếu 5 số, lưu `time_in` |
+ | Cổng ra, thẻ hợp lệ | Quét ảnh, bỏ phiếu 5 số, **đối chiếu với 5 số lúc vào**, lưu `time_out` + `fee` |
+ 
+@@ -254,7 +268,7 @@ Biển cũ chỉ có 4 số: nhập thêm số `0` ở đầu (VD `1234` -> `012
+ 
+ **Tiền:** làm tròn LÊN theo khối (`BLOCK_MINUTES`, mặc định 60 phút), tối thiểu 1 khối, mỗi khối `PRICE_PER_BLOCK` (mặc định 5.000 đ).
+ 
+-3 thẻ nạp sẵn (tự thêm khi chạy lần đầu): `AB1992CA`, `DB2B11CA`, `1B12E1CB`.
++5 thẻ nạp sẵn (tự thêm khi chạy, thẻ nào đã có thì bỏ qua): `AB1992CA`, `DB2B11CA`, `1B12E1CB`, `1BAE10CB`, `8B066ECA` (UID đọc trên thẻ `AB 19 92 CA` thì viết liền thành `AB1992CA`).
+ Nút "Thử nhận diện" chỉ để thử (1 ảnh), **không lưu** vì không có thẻ.
+ 
+ Thêm / khóa thẻ bằng SQL (mã thẻ viết HOA, không dấu cách):
+@@ -291,6 +305,7 @@ ui/                          base_gate_app.py   giao diện chung
+                              exit_app.py        cổng ra (ảnh vào cạnh ảnh ra, đối chiếu)
+                              dual_app.py        một cửa sổ chứa cả hai cổng + lịch sử dùng chung
+                              device_status.py   thanh tình trạng thiết bị (cảnh báo đỏ khi mất kết nối)
++                             slots.py           bộ đếm chỗ trống của bãi (dùng chung hai cổng)
+ tests/                       pytest
+ ```
+ 
+diff --git a/config.py b/config.py
+index 952adcb..19c28c3 100644
+--- a/config.py
++++ b/config.py
+@@ -18,6 +18,7 @@ GATES = {
+     "out": {"label": "CỔNG RA",  "camera_index": 1},
+ }
+ DEFAULT_RFID_PORT = "COM3"      # MỘT Arduino chung cho cả hai cổng (ghi đè bằng RFID_PORT trong .env)
++DEFAULT_PARKING_CAPACITY = 3    # số slot (chỗ đỗ) của bãi (ghi đè bằng PARKING_CAPACITY trong .env)
+ 
+ 
+ def _parse_value(raw):
+@@ -127,7 +128,8 @@ class Settings:
+     servo_closed_angle: int = 0     # độ: vị trí ban đầu / thanh chắn hạ (gửi cho Arduino mỗi lần nó khởi động)
+     servo_open_angle: int = 90      # độ: thanh chắn nâng (mở)
+     ir_enabled: bool = True         # False = chưa gắn cảm biến hồng ngoại: bỏ qua PASS / NOPASS từ Arduino
+-    lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE"; 0 = giữ đến lần quẹt sau
++    lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về màn hình chờ; 0 = giữ đến lần quẹt sau
++    parking_capacity: int = DEFAULT_PARKING_CAPACITY   # số chỗ (slot) của bãi: đủ rồi thì cổng vào không nhận quẹt thẻ
+ 
+ 
+ def load_settings(gate, env=None):
+@@ -175,6 +177,7 @@ def load_settings(gate, env=None):
+         view_h=_num("VIEW_H", "315"),
+         window_pos=_env("WINDOW_POS", ""),
+         lcd_idle_seconds=_num("LCD_IDLE_SECONDS", "5", float),
++        parking_capacity=_num("PARKING_CAPACITY", str(DEFAULT_PARKING_CAPACITY)),
+         servo_enabled=_env("SERVO_ENABLED", "1") == "1",
+         servo_open_seconds=_num("SERVO_OPEN_SECONDS", "3", float),
+         servo_closed_angle=_num("SERVO_CLOSED_ANGLE", "0"),
+@@ -185,6 +188,8 @@ def load_settings(gate, env=None):
+         raise ValueError("SCAN_FRAMES phải >= 1")
+     if not 1 <= s.vote_min <= s.scan_frames:
+         raise ValueError("VOTE_MIN phải nằm trong khoảng 1..SCAN_FRAMES")
++    if s.parking_capacity < 1:
++        raise ValueError("PARKING_CAPACITY phải >= 1 (số chỗ đỗ xe của bãi)")
+     if s.lcd_idle_seconds < 0:
+         raise ValueError("LCD_IDLE_SECONDS phải >= 0 (0 = không tự quay về)")
+     if not 0.5 <= s.servo_open_seconds <= 30:
+diff --git a/main.py b/main.py
+index 688d556..642a8ab 100644
+--- a/main.py
++++ b/main.py
+@@ -31,7 +31,8 @@ def main(argv=None):
+ 
+ 
+ def _service_args(cfg):
+-    return dict(scan_frames=cfg.scan_frames, scan_interval=cfg.scan_interval, vote_min=cfg.vote_min)
++    return dict(scan_frames=cfg.scan_frames, scan_interval=cfg.scan_interval, vote_min=cfg.vote_min,
++                capacity=cfg.parking_capacity)
+ 
+ 
+ def _make_db(cfg):
+diff --git a/services/entry_service.py b/services/entry_service.py
+index bbb937e..8773861 100644
+--- a/services/entry_service.py
++++ b/services/entry_service.py
+@@ -3,6 +3,7 @@
+ Quẹt thẻ:
+   - Thẻ chưa đăng ký          -> từ chối.
+   - Thẻ đang ở trong bãi      -> từ chối (không cho vào lần nữa).
++  - Bãi đã đủ số chỗ          -> từ chối, KHÔNG quét ảnh (không nhận quẹt thẻ cho đến khi có xe ra).
+   - Còn lại                   -> quét nhiều khung, bỏ phiếu 5 số.
+         chốt được + AUTO_SAVE -> lưu luôn.
+         chưa chốt được        -> chờ nhân viên nhập/xác nhận ĐÚNG 5 số rồi mới lưu.
+@@ -11,7 +12,7 @@ from core.plate_voting import NUMBER_LEN
+ from services.gate_service import (
+     CardOutcome, GateService, Outcome, is_valid_number, now, votes_note,
+ )
+-from storage.errors import AlreadyInside
++from storage.errors import AlreadyInside, ParkingFull
+ 
+ 
+ class CardNotRegistered(Exception):
+@@ -34,6 +35,9 @@ class EntryService(GateService):
+         if session is not None:
+             return CardOutcome(Outcome.ALREADY_INSIDE, card_uid, event=session)
+ 
++        if self.is_full():
++            return CardOutcome(Outcome.LOT_FULL, card_uid)
++
+         scan = self.scan(get_frame, on_progress)
+         if self.auto_save and scan.decided:
+             try:
+@@ -50,6 +54,8 @@ class EntryService(GateService):
+             raise ValueError(f"Biển số phải đủ {NUMBER_LEN} chữ số (đang là '{number}')")
+         if not self.db.is_card_registered(card_uid):
+             raise CardNotRegistered(f"Thẻ {card_uid} chưa đăng ký")
++        if self.is_full():      # nhân viên bấm Lưu sau khi bãi đã đầy (VD xe khác vừa vào trong lúc chờ xác nhận)
++            raise ParkingFull(f"Bãi đã đủ {self.capacity} chỗ, không nhận thêm xe")
+ 
+         image_name = self.save_image(scan.image if scan else None, card_uid)
+         plate_full = scan.plate_full if scan and number == scan.number else ""
+diff --git a/services/gate_service.py b/services/gate_service.py
+index 99bf431..140bfcd 100644
+--- a/services/gate_service.py
++++ b/services/gate_service.py
+@@ -20,6 +20,7 @@ PASS_TIMEOUT = "TIMEOUT"    # hết giờ mở thanh chắn mà xe chưa qua
+ class Outcome(Enum):
+     UNREGISTERED = "unregistered"     # thẻ chưa đăng ký / bị khóa
+     ALREADY_INSIDE = "already_inside" # cổng vào: thẻ đang ở trong bãi
++    LOT_FULL = "lot_full"             # cổng vào: bãi đã đủ số chỗ, không nhận thêm xe
+     NOT_INSIDE = "not_inside"         # cổng ra: thẻ chưa có lượt vào
+     ENTRY_SAVED = "entry_saved"       # xe vào, đã lưu
+     ENTRY_PENDING = "entry_pending"   # xe vào, chờ nhân viên xác nhận 5 số
+@@ -61,8 +62,9 @@ class GateService:
+     gate_code = ""
+ 
+     def __init__(self, recognizer, db, image_dir, scan_frames=5, scan_interval=0.25,
+-                 vote_min=2, sleep=time.sleep):
++                 vote_min=2, sleep=time.sleep, capacity=None):
+         self.recognizer = recognizer
++        self.capacity = capacity        # số chỗ của bãi; None = không giới hạn (không theo dõi slot)
+         self.db = db
+         self.image_dir = image_dir
+         self.scan_frames = scan_frames
+@@ -90,6 +92,15 @@ class GateService:
+     def recent_events(self, limit=100):
+         return self.db.recent(limit)
+ 
++    def free_slots(self):
++        """Số chỗ còn trống (đếm từ SQL Server nên đúng cả khi hai cổng cùng ghi). None nếu không giới hạn chỗ."""
++        if self.capacity is None:
++            return None
++        return max(0, self.capacity - self.db.count_open_sessions())
++
++    def is_full(self):
++        return self.capacity is not None and self.db.count_open_sessions() >= self.capacity
++
+     def record_pass(self, session_id, passed, at=None):
+         """Ghi vào lượt `session_id` việc xe đã qua thanh chắn (passed=True) hay hết giờ mà chưa qua."""
+         return self.db.record_pass(session_id, self.gate_code,
+diff --git a/storage/database.py b/storage/database.py
+index 391b58b..52c7207 100644
+--- a/storage/database.py
++++ b/storage/database.py
+@@ -96,6 +96,11 @@ class Database:
+                 "WHERE card_uid = ? AND time_out IS NULL ORDER BY id DESC", card_uid).fetchone()
+         return _to_event(row) if row else None
+ 
++    def count_open_sessions(self):
++        """Số xe đang ở trong bãi (số lượt chưa có giờ ra)."""
++        with self._connect() as conn:
++            return conn.execute("SELECT COUNT(*) FROM dbo.access_log WHERE time_out IS NULL").fetchone()[0]
++
+     def add_entry(self, card_uid, plate_number, plate_full, image_in, time_in, votes="", gate=""):
+         """Ghi lượt VÀO. Ném AlreadyInside nếu thẻ đã có lượt đang mở."""
+         try:
+diff --git a/storage/errors.py b/storage/errors.py
+index 095c558..06eabb1 100644
+--- a/storage/errors.py
++++ b/storage/errors.py
+@@ -5,5 +5,9 @@ class AlreadyInside(Exception):
+     """Thẻ này đã có một lượt vào chưa đóng (xe còn trong bãi)."""
+ 
+ 
++class ParkingFull(Exception):
++    """Bãi đã đủ số chỗ (PARKING_CAPACITY): không nhận thêm xe vào."""
++
++
+ class SessionAlreadyClosed(Exception):
+     """Lượt gửi xe không còn mở (đã được đóng, hoặc không tồn tại)."""
+diff --git a/storage/schema.sql b/storage/schema.sql
+index aab5ffa..5c268a4 100644
+--- a/storage/schema.sql
++++ b/storage/schema.sql
+@@ -12,10 +12,10 @@ BEGIN
+ END
+ GO
+ 
+--- 2) Nạp sẵn 3 thẻ (bỏ qua thẻ đã có)
++-- 2) Nạp sẵn 5 thẻ (bỏ qua thẻ đã có). UID viết HEX hoa, không dấu cách: AB 19 92 CA -> AB1992CA
+ INSERT INTO dbo.cards (card_uid)
+ SELECT v.uid
+-FROM (VALUES (N'AB1992CA'), (N'DB2B11CA'), (N'1B12E1CB')) AS v(uid)
++FROM (VALUES (N'AB1992CA'), (N'DB2B11CA'), (N'1B12E1CB'), (N'1BAE10CB'), (N'8B066ECA')) AS v(uid)
+ WHERE NOT EXISTS (SELECT 1 FROM dbo.cards c WHERE c.card_uid = v.uid);
+ GO
+ 
+diff --git a/tests/helpers.py b/tests/helpers.py
+index 2ad5f04..3a8aa0d 100644
+--- a/tests/helpers.py
++++ b/tests/helpers.py
+@@ -27,6 +27,9 @@ class FakeDb:
+                 return e
+         return None
+ 
++    def count_open_sessions(self):
++        return sum(1 for e in self.rows if e.time_out is None)
++
+     def add_entry(self, card_uid, plate_number, plate_full, image_in, time_in, votes="", gate=""):
+         if self.find_open_session(card_uid):
+             raise AlreadyInside(card_uid)
+diff --git a/tests/test_cards_seed.py b/tests/test_cards_seed.py
+new file mode 100644
+index 0000000..a9ff741
+--- /dev/null
++++ b/tests/test_cards_seed.py
+@@ -0,0 +1,24 @@
++"""Danh sách thẻ nạp sẵn trong schema.sql: đúng 5 thẻ của bãi (UID viết HEX hoa, không dấu cách)."""
++import re
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++SCHEMA = (ROOT / "storage" / "schema.sql").read_text(encoding="utf-8")
++README = (ROOT / "README.md").read_text(encoding="utf-8")
++
++# AB 19 92 CA / DB 2B 11 CA / 1B 12 E1 CB / 1B AE 10 CB / 8B 06 6E CA
++EXPECTED = {"AB1992CA", "DB2B11CA", "1B12E1CB", "1BAE10CB", "8B066ECA"}
++
++
++def seeded_uids():
++    block = SCHEMA.split("INSERT INTO dbo.cards", 1)[1].split("AS v(uid)", 1)[0]
++    return set(re.findall(r"N'([0-9A-F]+)'", block))
++
++
++def test_schema_seeds_exactly_the_five_cards():
++    assert seeded_uids() == EXPECTED
++
++
++def test_readme_lists_the_same_cards():
++    line = next(l for l in README.splitlines() if "thẻ nạp sẵn" in l)
++    assert set(re.findall(r"`([0-9A-F]{8})`", line)) == EXPECTED
+diff --git a/tests/test_config.py b/tests/test_config.py
+index de3e87a..4f3603e 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -287,3 +287,32 @@ def test_servo_angles_must_differ_and_be_integers(monkeypatch):
+     monkeypatch.setenv("SERVO_OPEN_ANGLE", "chín mươi")
+     with pytest.raises(ValueError, match="SERVO_OPEN_ANGLE phải là số"):
+         config.load_settings("in")
++
++
++def test_parking_capacity(monkeypatch):
++    monkeypatch.delenv("PARKING_CAPACITY", raising=False)
++    assert config.load_settings("in").parking_capacity == 3          # mặc định: 3 slot
++    monkeypatch.setenv("PARKING_CAPACITY", "5")
++    assert config.load_settings("out").parking_capacity == 5
++
++
++@pytest.mark.parametrize("value", ["0", "-1"])
++def test_parking_capacity_must_be_positive(monkeypatch, value):
++    monkeypatch.setenv("PARKING_CAPACITY", value)
++    with pytest.raises(ValueError, match="PARKING_CAPACITY"):
++        config.load_settings("in")
++
++
++def test_parking_capacity_must_be_a_number(monkeypatch):
++    monkeypatch.setenv("PARKING_CAPACITY", "ba")
++    with pytest.raises(ValueError, match="PARKING_CAPACITY phải là số"):
++        config.load_settings("in")
++
++
++def test_parking_capacity_default_is_in_env_example(tmp_path):
++    import os
++    example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
++    (tmp_path / ".env").write_text(example, encoding="utf-8")
++    env, _ = config.gate_env("in", str(tmp_path), environ={})
++    assert env["PARKING_CAPACITY"] == "3"
++    assert config.load_settings("in", env).parking_capacity == 3
+diff --git a/tests/test_parking_capacity.py b/tests/test_parking_capacity.py
+new file mode 100644
+index 0000000..db6d506
+--- /dev/null
++++ b/tests/test_parking_capacity.py
+@@ -0,0 +1,85 @@
++"""Giới hạn số chỗ (slot) của bãi: đủ chỗ thì cổng vào không nhận quẹt thẻ, xe ra thì trả lại chỗ."""
++import pytest
++
++from helpers import FakeDb, ScriptedRecognizer, make_frame
++from services.entry_service import EntryService
++from services.exit_service import ExitService
++from services.gate_service import Outcome
++from storage.errors import ParkingFull
++
++CARDS = ("C1", "C2", "C3", "C4")
++
++
++def frame():
++    return make_frame(7)
++
++
++def make(tmp_path, capacity=3, script=("25888",)):
++    db, rec = FakeDb(cards=CARDS), ScriptedRecognizer(script)
++    entry = EntryService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
++    exit_ = ExitService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
++    return entry, exit_, db, rec
++
++
++def fill(entry, uids=("C1", "C2", "C3")):
++    for uid in uids:
++        assert entry.handle_card(uid, frame).kind is Outcome.ENTRY_SAVED
++
++
++def test_free_slots_counts_cars_inside(tmp_path):
++    entry, _, _, _ = make(tmp_path)
++    assert entry.free_slots() == 3
++    fill(entry, ("C1",))
++    assert entry.free_slots() == 2
++    fill(entry, ("C2", "C3"))
++    assert entry.free_slots() == 0
++
++
++def test_full_lot_rejects_swipe_without_scanning_or_saving(tmp_path):
++    entry, _, db, rec = make(tmp_path)
++    fill(entry)
++    rec.calls = 0
++    o = entry.handle_card("C4", frame)
++    assert o.kind is Outcome.LOT_FULL and o.card_uid == "C4"
++    assert rec.calls == 0 and len(db.rows) == 3
++
++
++def test_exit_gives_a_slot_back(tmp_path):
++    entry, exit_, db, _ = make(tmp_path)
++    fill(entry)
++    assert entry.handle_card("C4", frame).kind is Outcome.LOT_FULL
++    assert exit_.handle_card("C1", frame).kind is Outcome.EXIT_DONE      # xe ra: biển khớp
++    assert entry.free_slots() == 1
++    assert entry.handle_card("C4", frame).kind is Outcome.ENTRY_SAVED
++    assert entry.free_slots() == 0
++
++
++def test_exit_gate_still_works_when_lot_is_full(tmp_path):
++    entry, exit_, _, _ = make(tmp_path)
++    fill(entry)
++    assert exit_.handle_card("C2", frame).kind is Outcome.EXIT_DONE
++
++
++def test_unregistered_and_already_inside_are_reported_before_full(tmp_path):
++    entry, _, _, _ = make(tmp_path)
++    fill(entry)
++    assert entry.handle_card("LA", frame).kind is Outcome.UNREGISTERED
++    assert entry.handle_card("C1", frame).kind is Outcome.ALREADY_INSIDE
++
++
++def test_staff_save_is_refused_when_lot_filled_up_meanwhile(tmp_path):
++    entry, _, db, rec = make(tmp_path, capacity=1, script=("2588",) * 5)
++    pending = entry.handle_card("C1", frame)                    # đọc thiếu số: chờ nhân viên
++    assert pending.kind is Outcome.ENTRY_PENDING
++    rec.set_script(["25888"])
++    assert entry.handle_card("C2", frame).kind is Outcome.ENTRY_SAVED   # trong lúc chờ, xe khác vào, hết chỗ
++    with pytest.raises(ParkingFull):
++        entry.save_entry("C1", "25881", pending.scan)
++    assert [e.card_uid for e in db.rows] == ["C2"]
++
++
++def test_no_capacity_means_no_limit(tmp_path):
++    entry, _, db, _ = make(tmp_path, capacity=None)
++    assert entry.free_slots() is None
++    fill(entry, CARDS)
++    assert len(db.rows) == 4
+diff --git a/tests/test_slots.py b/tests/test_slots.py
+new file mode 100644
+index 0000000..d411fbf
+--- /dev/null
++++ b/tests/test_slots.py
+@@ -0,0 +1,80 @@
++"""Bộ đếm chỗ trống của bãi (ui/slots.py): thuần Python, không cần Tkinter."""
++from ui.slots import SlotCounter
++
++
++def make(capacity=3, free=3):
++    c = SlotCounter(capacity)
++    c.update(free, c.version)
++    calls = []
++    c.subscribe(lambda: calls.append(c.free))
++    return c, calls
++
++
++def test_starts_unknown_and_not_full():
++    c = SlotCounter(3)
++    assert c.free is None and not c.full and c.tracking
++
++
++def test_no_capacity_means_not_tracking():
++    c = SlotCounter(None)
++    assert not c.tracking
++    c.adjust(-1)
++    c.force(0)
++    assert c.update(2, c.version) is False and c.free is None and not c.full
++
++
++def test_vehicle_in_and_out_adjust_and_notify():
++    c, calls = make()
++    c.adjust(-1)
++    c.adjust(-1)
++    c.adjust(-1)
++    assert c.free == 0 and c.full
++    c.adjust(+1)
++    assert c.free == 1 and not c.full
++    assert calls == [2, 1, 0, 1]
++
++
++def test_adjust_is_clamped_to_capacity():
++    c, _ = make()
++    c.adjust(+1)                    # không thể trống nhiều hơn số chỗ
++    assert c.free == 3
++    c.force(0)
++    c.adjust(-1)
++    assert c.free == 0
++
++
++def test_listener_is_not_called_when_nothing_changes():
++    c, calls = make()
++    c.update(3, c.version)
++    c.force(3)
++    assert calls == []
++
++
++def test_stale_database_answer_is_ignored_after_a_local_change():
++    c, _ = make()
++    asked_at = c.version            # hỏi SQL Server lúc còn 3 chỗ...
++    c.adjust(-1)                    # ...trong lúc đó có xe vào
++    assert c.update(3, asked_at) is False and c.free == 2
++    assert c.update(2, c.version) is True and c.free == 2
++
++
++def test_database_answer_corrects_a_drifted_counter():
++    c, calls = make()
++    c.adjust(-1)
++    assert c.update(0, c.version) is True and c.full
++    assert calls == [2, 0]
++
++
++def test_adjust_before_first_answer_only_invalidates_it():
++    c = SlotCounter(3)
++    asked_at = c.version
++    c.adjust(-1)                    # chưa biết số chỗ: chưa cộng trừ được
++    assert c.free is None
++    assert c.update(3, asked_at) is False
++    assert c.update(2, c.version) is True and c.free == 2
++
++
++def test_force_overrides_and_notifies():
++    c, calls = make()
++    c.force(0)
++    assert c.full and calls == [0]
+diff --git a/tests/test_ui_smoke.py b/tests/test_ui_smoke.py
+index 1323779..6caed12 100644
+--- a/tests/test_ui_smoke.py
++++ b/tests/test_ui_smoke.py
+@@ -378,14 +378,14 @@ class BrokenCamera(FakeCamera):
+ 
+ 
+ def make_dual(root, tmp_path, monkeypatch, entry_script=("25888",), exit_script=("25888",),
+-              exit_camera=None, wait=True):
++              exit_camera=None, wait=True, capacity=None):
+     monkeypatch.setenv("IMG_DIR", str(tmp_path))
+     db = FakeDb()
+     cfg_in, cfg_out = config.load_settings("in", {"IMG_DIR": str(tmp_path)}), \
+         config.load_settings("out", {"IMG_DIR": str(tmp_path)})
+     rec = ScriptedRecognizer(entry_script)            # MỘT bộ nhận diện dùng chung cho cả hai cổng
+-    entry_svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None)
+-    exit_svc = ExitService(rec, db, str(tmp_path), sleep=lambda s: None)
++    entry_svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
++    exit_svc = ExitService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
+     app = DualGateApp(root, entry_svc, exit_svc, SpyCamera(), exit_camera or SpyCamera(), cfg_in, cfg_out)
+     if wait:
+         assert pump(root, lambda: idle(app.entry) and idle(app.exit)
+@@ -981,3 +981,66 @@ def test_real_reader_routes_pass_lines_to_the_right_gate_and_records_them(root,
+     assert "CẢNH BÁO" in app.exit.status_lbl.cget("text")
+     assert "CẢNH BÁO" not in app.entry.status_lbl.cget("text")  # chỉ cổng ra bị cảnh báo
+     app.on_close()
++
++
++# ---------------------------------------------------------------- số chỗ (slot) còn trống trên LCD, đầy thì không nhận quẹt thẻ
++def make_entry_slots(root, tmp_path, monkeypatch, script, capacity=3):
++    monkeypatch.setenv("LCD_IDLE_SECONDS", "0.3")
++    db, rec = FakeDb(cards=("CARD1", "CARD2", "CARD3", "CARD4")), ScriptedRecognizer(script)
++    svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
++    app = EntryApp(root, svc, FakeCamera(), settings("in", tmp_path, monkeypatch))
++    lcd = app.rfid = LcdSpy()
++    assert pump(root, lambda: idle(app) and app.last_frame is not None and app.slots.free is not None)
++    return app, db, rec, lcd
++
++
++def test_entry_lcd_shows_free_slots_and_blocks_swipes_when_full(root, tmp_path, monkeypatch):
++    app, db, rec, lcd = make_entry_slots(root, tmp_path, monkeypatch, ["25888"])
++    app.show_idle()
++    assert lcd.sent[-1] == ("in", "CONG VAO", "CON TRONG: 3/3")
++
++    swipe(app, "CARD1")                                      # xe thứ nhất vào: còn 2 chỗ
++    assert lcd.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25888")
++    assert lcd_text_after(root, lcd, ("in", "CONG VAO", "CON TRONG: 2/3")), "LCD không về màn hình chờ mới"
++
++    swipe(app, "CARD2")
++    swipe(app, "CARD3")                                      # đủ 3 xe: hết chỗ
++    assert app.slots.free == 0
++    assert lcd_text_after(root, lcd, ("in", "BAI DA DAY", "HET CHO")), "LCD không báo bãi đầy"
++
++    opened, scans = len(lcd.servos), rec.calls
++    app.on_card("CARD4")                                     # bãi đầy: KHÔNG nhận quẹt thẻ
++    assert lcd.sent[-1] == ("in", "BAI DA DAY", "HET CHO")
++    assert "BÃI ĐÃ ĐẦY" in app.status_lbl.cget("text")
++    assert not app.busy and rec.calls == scans and len(lcd.servos) == opened and len(db.rows) == 3
++
++
++def test_entry_full_lot_reported_by_service_even_if_counter_is_stale(root, tmp_path, monkeypatch):
++    """Số đếm trên giao diện chưa biết bãi đầy (VD xe vào bằng đường khác) nhưng SQL Server thì biết."""
++    app, db, rec, lcd = make_entry_slots(root, tmp_path, monkeypatch, ["25888"], capacity=1)
++    app.service.handle_card("CARD2", lambda: FakeCamera().read())   # một xe đã vào mà giao diện không hay
++    app.slots.force(1)                                       # giao diện vẫn tưởng còn chỗ
++    swipe(app, "CARD1")
++    assert app.slots.free == 0 and len(db.rows) == 1
++    assert lcd.sent[-1] == ("in", "BAI DA DAY", "HET CHO")
++    assert lcd.servos == []                                  # không mở thanh chắn
++
++
++def test_dual_exit_frees_a_slot_and_entry_lcd_updates(root, tmp_path, monkeypatch):
++    app, db, rec = make_dual(root, tmp_path, monkeypatch, capacity=2)
++    lcd = app.entry.rfid = app.exit.rfid = LcdSpy()
++    assert pump(root, lambda: app.slots.free == 2)
++    swipe(app.entry, "CARD1")
++    swipe(app.entry, "CARD2")
++    assert app.slots.free == 0
++    app.entry.show_idle()
++    assert lcd.sent[-1] == ("in", "BAI DA DAY", "HET CHO")
++
++    swipe(app.exit, "CARD1")                                 # một xe ra -> trả lại một chỗ, LCD cổng vào đổi ngay
++    assert app.slots.free == 1
++    assert pump(root, lambda: ("in", "CONG VAO", "CON TRONG: 1/2") in lcd.sent)
++    app.on_close()
++
++
++def lcd_text_after(root, lcd, expected, timeout=3.0):
++    return pump(root, lambda: lcd.sent[-1] == expected, timeout)
+diff --git a/ui/base_gate_app.py b/ui/base_gate_app.py
+index 0620b71..c70c7bd 100644
+--- a/ui/base_gate_app.py
++++ b/ui/base_gate_app.py
+@@ -5,8 +5,8 @@ Phần riêng của mỗi cổng nằm ở entry_app.py / exit_app.py (override
+ 
+ Hai cách dùng:
+   - Cửa sổ riêng: BaseGateApp(root, service, camera, cfg) tự dựng cửa sổ + bảng lịch sử + thanh tình trạng thiết bị.
+-  - Nhúng vào cửa sổ chung (ui/dual_app.py): truyền thêm container=<Frame>, history=<HistoryTable>
+-    và devices=<DeviceStatusBar> (dùng chung cho cả hai cổng).
++  - Nhúng vào cửa sổ chung (ui/dual_app.py): truyền thêm container=<Frame>, history=<HistoryTable>,
++    devices=<DeviceStatusBar> và slots=<SlotCounter> (dùng chung cho cả hai cổng).
+ """
+ import queue
+ import threading
+@@ -22,6 +22,7 @@ from hardware import camera as cam_state
+ from services.gate_service import Outcome
+ from services.gate_service import now as current_time
+ from ui.device_status import ARDUINO, DB, DeviceStatusBar, camera_key, reader_key
++from ui.slots import SlotCounter
+ 
+ COLOR_OK = "#1a7f37"
+ COLOR_WARN = "#b35900"
+@@ -65,6 +66,7 @@ LCD_CHECKING = ("DANG KIEM TRA", "VUI LONG CHO")
+ LCD_ERROR = ("LOI HE THONG", "GOI NHAN VIEN")
+ LCD_LOADING = ("DANG KHOI DONG", "VUI LONG CHO")      # quẹt thẻ khi OCR chưa nạp xong
+ LCD_NO_CAMERA = ("LOI CAMERA", "GOI NHAN VIEN")        # quẹt thẻ nhưng camera chưa có hình
++LCD_FULL = ("BAI DA DAY", "HET CHO")                   # cổng vào: bãi đã đủ số chỗ, không nhận quẹt thẻ
+ 
+ 
+ class HistoryTable:
+@@ -126,11 +128,12 @@ class BaseGateApp:
+     LCD_OFFSET = ("XE LECH VI TRI", "HAY CHINH XE")        # không đọc được số nào: xe lệch vị trí so với camera
+     LCD_NEED_STAFF = ("CHO NHAN VIEN", "KIEM TRA BIEN SO")  # có ứng viên đủ 5 số nhưng chưa chốt được
+ 
+-    def __init__(self, root, service, camera, cfg, container=None, history=None, devices=None):
++    def __init__(self, root, service, camera, cfg, container=None, history=None, devices=None, slots=None):
+         """root: cửa sổ Tk (dùng cho after/bind). container: khung để dựng giao diện vào
+         (None = dựng thẳng vào root và tự lo tiêu đề/đóng cửa sổ). history: bảng lịch sử dùng chung
+         (None = tự tạo bảng riêng ở cuối giao diện). devices: thanh tình trạng thiết bị dùng chung
+-        (None = tự tạo thanh riêng cho cổng này)."""
++        (None = tự tạo thanh riêng cho cổng này). slots: bộ đếm chỗ trống dùng chung của bãi
++        (None = tự tạo theo service.capacity)."""
+         self.root = root
+         self.embedded = container is not None
+         self.container = container if self.embedded else root
+@@ -158,6 +161,10 @@ class BaseGateApp:
+         self._lcd_job = None        # hẹn giờ đưa LCD về "MOI QUET THE" (xem lcd)
+         self._barrier_session = None    # id lượt gửi xe vừa được mở thanh chắn, chờ cảm biến báo xe đã qua chưa
+         self._servo_btn_state = "normal"    # trạng thái hiện tại của nút Test servo (xem sync_servo_button)
++        self.slots = slots if slots is not None else SlotCounter(getattr(service, "capacity", None))
++        self.slots.subscribe(self.on_slots_changed)
++        self._idle_shown = False        # LCD đang hiện màn hình chờ (để cập nhật số chỗ trống khi nó đổi)
++        self._slots_loading = False
+ 
+         self.build_ui()
+         self.open_camera(cfg.camera_index)
+@@ -183,6 +190,7 @@ class BaseGateApp:
+         revert=True: sau cfg.lcd_idle_seconds giây tự đưa LCD về LCD_IDLE (dùng cho thông báo đã xong việc,
+         VD "XE VAO OK"). Thông báo cần nhân viên xử lý thì KHÔNG revert để tài xế còn đọc được."""
+         self._cancel_lcd_revert()
++        self._idle_shown = False
+         send = getattr(self.rfid, "send_lcd", None)
+         if send is not None:
+             try:
+@@ -192,6 +200,50 @@ class BaseGateApp:
+         if revert:
+             self._schedule_lcd_revert()
+ 
++    # ---------- Số chỗ (slot) còn trống ----------
++    def idle_message(self):
++        """Màn hình chờ của LCD. Có theo dõi số chỗ thì kèm số chỗ trống; chưa biết số chỗ thì như lúc chưa có tính năng này."""
++        free, capacity = self.slots.free, self.slots.capacity
++        if free is None or capacity is None:
++            return self.LCD_IDLE
++        return self.lcd_idle_with_slots(free, capacity)
++
++    def lcd_idle_with_slots(self, free, capacity):
++        """Màn hình chờ khi biết số chỗ: dòng 1 tên cổng, dòng 2 'CON TRONG: 2/3'. Cổng vào ghi đè khi bãi đầy."""
++        return (self.LCD_IDLE[0], f"CON TRONG: {free}/{capacity}")
++
++    def show_idle(self):
++        """Đưa LCD về màn hình chờ (có số chỗ trống). Nhớ là đang ở màn hình chờ để tự cập nhật khi số chỗ đổi."""
++        self.lcd(self.idle_message())
++        self._idle_shown = True
++
++    def on_slots_changed(self):
++        """Số chỗ trống vừa đổi (xe vào / ra ở cổng nào cũng được). Chỉ đổi LCD khi nó đang ở màn hình chờ;
++        thông báo khác (xe vào OK, chờ nhân viên...) giữ nguyên, lần về màn hình chờ sau sẽ dùng số mới."""
++        if self._idle_shown and not self._closing and not self.busy and self.pending is None:
++            self.show_idle()
++
++    def refresh_slots(self):
++        """Đối chiếu số chỗ trống với SQL Server ở luồng nền (số do hai cổng cộng trừ có thể lệch, VD nhân viên sửa SQL)."""
++        if self._closing or self._slots_loading or not self.slots.tracking:
++            return
++        self._slots_loading = True
++        version = self.slots.version
++        self._bg(self.service.free_slots, lambda free: self._slots_loaded(free, version),
++                 busy=False, on_error=self._slots_failed)
++
++    def _slots_loaded(self, free, version):
++        self._slots_loading = False
++        self.slots.update(free, version)
++
++    def _slots_failed(self, exc):
++        self._slots_loading = False     # lỗi SQL Server đã được báo ở thanh tình trạng (refresh_history)
++
++    def reject_swipe(self, uid):
++        """Hook: True nếu cổng này không nhận lần quẹt thẻ này (và đã tự báo). Mặc định nhận hết; cổng vào ghi đè
++        để chặn khi bãi đầy."""
++        return False
++
+     def open_barrier(self, session_id=None):
+         """Mở thanh chắn (servo) của CỔNG NÀY khi xe được chấp nhận (quẹt thẻ thành công).
+         Arduino tự đóng lại sau cfg.servo_open_seconds giây (hoặc ngay khi cảm biến thấy xe đã qua). Giống LCD:
+@@ -285,7 +337,7 @@ class BaseGateApp:
+         if self.busy:
+             self._schedule_lcd_revert() # đang xử lý việc khác: thử lại sau
+             return
+-        self.lcd(self.LCD_IDLE)
++        self.show_idle()
+ 
+     def handle_card(self, uid):
+         """Gọi được từ luồng nền: chuyển sang luồng GUI."""
+@@ -542,7 +594,7 @@ class BaseGateApp:
+     # ---------- Quẹt thẻ ----------
+     def on_model_ready(self, _):
+         self.set_status("Sẵn sàng. Quẹt thẻ.", COLOR_OK)
+-        self.lcd(self.LCD_IDLE)
++        self.show_idle()
+ 
+     def get_frame(self):
+         """Khung hình mới nhất. Được gọi từ luồng nền: chỉ đọc tham chiếu, không đụng camera."""
+@@ -564,6 +616,8 @@ class BaseGateApp:
+             self.lcd(LCD_NO_CAMERA)
+             self.set_status(f"Thẻ {uid}: chưa có hình từ camera.", COLOR_ERR)
+             return
++        if self.reject_swipe(uid):
++            return
+ 
+         self.reset_view()
+         self.lcd(LCD_CHECKING)
+@@ -641,6 +695,7 @@ class BaseGateApp:
+             self._history_loading = True
+             self._bg(lambda: self.service.recent_events(100), self.apply_history,
+                      busy=False, on_error=self.on_history_error)
++        self.refresh_slots()
+         self.root.after(HISTORY_REFRESH_MS, self.refresh_history)
+ 
+     def apply_history(self, events):
+diff --git a/ui/dual_app.py b/ui/dual_app.py
+index 2016cae..665db46 100644
+--- a/ui/dual_app.py
++++ b/ui/dual_app.py
+@@ -6,7 +6,8 @@ dựng vào một khung con thay vì một cửa sổ riêng. Hai cổng dùng c
+   - một Database,
+   - một bảng lịch sử,
+   - MỘT Arduino (một cổng COM, hai đầu đọc): xem set_rfid,
+-  - một thanh tình trạng thiết bị ở trên cùng: thiết bị nào mất kết nối thì hiện cảnh báo đỏ ở đó.
++  - một thanh tình trạng thiết bị ở trên cùng: thiết bị nào mất kết nối thì hiện cảnh báo đỏ ở đó,
++  - một bộ đếm chỗ trống của bãi (xe vào ở cổng vào, xe ra ở cổng ra: cả hai LCD cùng thấy số mới ngay).
+ """
+ import tkinter as tk
+ from tkinter import ttk
+@@ -15,6 +16,7 @@ from ui.base_gate_app import HistoryTable
+ from ui.device_status import DeviceStatusBar
+ from ui.entry_app import EntryApp
+ from ui.exit_app import ExitApp
++from ui.slots import SlotCounter
+ 
+ TITLE = "Bãi đỗ xe RFID + nhận diện biển số — CỔNG VÀO | CỔNG RA"
+ 
+@@ -44,10 +46,11 @@ class DualGateApp:
+         self.history.frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8, pady=6)
+         root.rowconfigure(2, weight=1)
+ 
++        self.slots = SlotCounter(entry_service.capacity)
+         self.entry = EntryApp(root, entry_service, entry_camera, cfg_in,
+-                              container=left, history=self.history, devices=self.devices)
++                              container=left, history=self.history, devices=self.devices, slots=self.slots)
+         self.exit = ExitApp(root, exit_service, exit_camera, cfg_out,
+-                            container=right, history=self.history, devices=self.devices)
++                            container=right, history=self.history, devices=self.devices, slots=self.slots)
+ 
+     @property
+     def gates(self):
+diff --git a/ui/entry_app.py b/ui/entry_app.py
+index 2dd7783..83d839a 100644
+--- a/ui/entry_app.py
++++ b/ui/entry_app.py
+@@ -4,9 +4,9 @@ from tkinter import ttk
+ 
+ from core.plate_voting import NUMBER_LEN
+ from services.gate_service import Outcome
+-from storage.errors import AlreadyInside
++from storage.errors import AlreadyInside, ParkingFull
+ from ui.base_gate_app import (   # noqa: F401  (plate_position_offset được import lại để nơi khác dùng qua ui.entry_app)
+-    COLOR_ERR, COLOR_OK, COLOR_WARN, BaseGateApp, fmt_time, plate_position_offset,
++    COLOR_ERR, COLOR_OK, COLOR_WARN, LCD_FULL, BaseGateApp, fmt_time, plate_position_offset,
+ )
+ 
+ 
+@@ -39,6 +39,27 @@ class EntryApp(BaseGateApp):
+     def lcd_saved(self, number):
+         self.lcd(("XE VAO OK", f"BIEN SO {number}"), revert=True)
+ 
++    # ---------- Bãi đầy ----------
++    def lcd_idle_with_slots(self, free, capacity):
++        """Còn chỗ: 'CONG VAO' / 'CON TRONG: 2/3'. Hết chỗ: 'BAI DA DAY' / 'HET CHO'."""
++        if free <= 0:
++            return LCD_FULL
++        return super().lcd_idle_with_slots(free, capacity)
++
++    def reject_swipe(self, uid):
++        """Bãi đã đủ chỗ (theo số đếm đang giữ): không nhận quẹt thẻ, không quét ảnh, không mở thanh chắn."""
++        if not self.slots.full:
++            return False
++        self.show_lot_full(uid)
++        return True
++
++    def show_lot_full(self, uid):
++        capacity = self.slots.capacity
++        self.set_card(uid)
++        self.show_idle()                # khi đầy, màn hình chờ chính là "BAI DA DAY / HET CHO"
++        self.set_status(f"BÃI ĐÃ ĐẦY ({capacity}/{capacity} chỗ). Không nhận thẻ {uid} cho đến khi có xe ra.",
++                        COLOR_ERR)
++
+     def reset_view(self):
+         self.show_offset_warning(False)
+ 
+@@ -58,6 +79,10 @@ class EntryApp(BaseGateApp):
+ 
+     # ---------- Kết quả quẹt thẻ ----------
+     def on_gate_outcome(self, outcome):
++        if outcome.kind is Outcome.LOT_FULL:        # số đếm đang giữ chưa biết bãi đầy, SQL Server thì biết rồi
++            self.slots.force(0)
++            self.show_lot_full(outcome.card_uid)
++            return
+         scan, uid = outcome.scan, outcome.card_uid
+         self.show_image(scan.image if scan.image is not None else self.last_frame)
+ 
+@@ -70,6 +95,7 @@ class EntryApp(BaseGateApp):
+             self.upsert_row(e)
+             self.lcd_saved(scan.winner)
+             self.open_barrier(e.id)     # tự lưu xong -> mở thanh chắn cổng vào
++            self.slots.adjust(-1)       # sau lcd_saved: màn "XE VAO OK" không bị đè, lần về màn hình chờ sau dùng số mới
+             self.set_status(f"XE VÀO | thẻ {uid} | {NUMBER_LEN} số {scan.winner} "
+                             f"({scan.votes}/{scan.scanned} ảnh) | biển {scan.plate_full or '?'} | "
+                             f"{fmt_time(e.time_in)}", COLOR_OK)
+@@ -109,6 +135,7 @@ class EntryApp(BaseGateApp):
+         self.show_offset_warning(False)
+         self.lcd_saved(event.plate_number)
+         self.open_barrier(event.id)     # nhân viên đã xác nhận cho xe vào -> mở thanh chắn cổng vào
++        self.slots.adjust(-1)
+         self.upsert_row(event)
+         self.update_action_buttons()
+         self.set_status(f"XE VÀO | thẻ {event.card_uid} | {NUMBER_LEN} số {event.plate_number} | "
+@@ -117,7 +144,7 @@ class EntryApp(BaseGateApp):
+     def cancel_pending(self):
+         self.pending = None
+         self.show_offset_warning(False)
+-        self.lcd(self.LCD_IDLE)
++        self.show_idle()
+         self.plate_var.set("")
+         self.set_card(None)
+         self.update_action_buttons()
+@@ -131,6 +158,13 @@ class EntryApp(BaseGateApp):
+             self.update_action_buttons()
+             self.set_status("Thẻ này vừa có lượt vào khác (xe đã ở trong bãi). Không lưu thêm.",
+                             COLOR_ERR)
++        elif isinstance(exc, ParkingFull):      # nhân viên bấm Lưu nhưng trong lúc chờ bãi đã đầy
++            uid = self.pending.card_uid if self.pending is not None else ""
++            self.pending = None
++            self.show_offset_warning(False)
++            self.update_action_buttons()
++            self.slots.force(0)
++            self.show_lot_full(uid)
+         elif isinstance(exc, ValueError):
+             self.set_status(str(exc), COLOR_WARN)
+         else:
+diff --git a/ui/exit_app.py b/ui/exit_app.py
+index d2ea3fe..ca7aa12 100644
+--- a/ui/exit_app.py
++++ b/ui/exit_app.py
+@@ -153,6 +153,7 @@ class ExitApp(BaseGateApp):
+             self.upsert_row(session)
+             self.lcd(lcd_exit_ok(session.fee), revert=True)
+             self.open_barrier(session.id)   # biển khớp, đã đóng lượt -> mở thanh chắn cổng ra
++            self.slots.adjust(+1)           # xe ra: trả lại một chỗ (sau lcd: màn "XE RA OK" không bị đè)
+             self.set_status(self._exit_text("XE RA", session), COLOR_OK)
+             return
+ 
+@@ -197,6 +198,7 @@ class ExitApp(BaseGateApp):
+         self.upsert_row(event)
+         self.lcd(lcd_exit_ok(event.fee), revert=True)
+         self.open_barrier(event.id)     # nhân viên đã duyệt cho xe ra -> mở thanh chắn cổng ra
++        self.slots.adjust(+1)
+         self.update_action_buttons()
+         exact = event.match_status == "MATCH"
+         self.match_lbl.configure(
+diff --git a/ui/slots.py b/ui/slots.py
+new file mode 100644
+index 0000000..3353a69
+--- /dev/null
++++ b/ui/slots.py
+@@ -0,0 +1,59 @@
++"""Số chỗ (slot) còn trống của bãi, dùng chung cho các cổng trong cùng một cửa sổ. Không phụ thuộc Tkinter.
++
++Nguồn sự thật là SQL Server (số lượt chưa có giờ ra), nhưng hỏi SQL Server mất thời gian nên giao diện giữ một bản
++sao ở đây: xe vào / ra thì cộng trừ ngay, và cứ vài giây lại đối chiếu lại với SQL Server (xem BaseGateApp.refresh_slots).
++
++Mọi hàm gọi ở luồng GUI. `version` tăng mỗi khi có cộng/trừ cục bộ: kết quả đối chiếu SQL Server hỏi từ TRƯỚC lúc đó
++(version cũ) bị bỏ, tránh ghi đè số mới bằng số cũ.
++"""
++
++
++class SlotCounter:
++    def __init__(self, capacity):
++        self.capacity = capacity        # None = không giới hạn chỗ (không theo dõi slot)
++        self.free = None                # None = chưa biết (chưa đối chiếu SQL Server lần nào)
++        self.version = 0
++        self._listeners = []
++
++    @property
++    def tracking(self):
++        return self.capacity is not None
++
++    @property
++    def full(self):
++        return self.free is not None and self.free <= 0
++
++    def subscribe(self, listener):
++        """listener() được gọi mỗi khi số chỗ trống đổi."""
++        self._listeners.append(listener)
++
++    def _set(self, free):
++        if self.capacity is not None:
++            free = max(0, min(self.capacity, free))
++        changed = free != self.free
++        self.free = free
++        if changed:
++            for listener in list(self._listeners):
++                listener()
++
++    def adjust(self, delta):
++        """Có xe vào (-1) hoặc xe ra (+1). Chưa biết số chỗ thì bỏ qua (lần đối chiếu kế tiếp sẽ cho số đúng)."""
++        if not self.tracking:
++            return
++        self.version += 1
++        if self.free is not None:
++            self._set(self.free + delta)
++
++    def force(self, free):
++        """Đặt đúng số chỗ trống đã biết chắc (VD service báo bãi đã đầy)."""
++        if not self.tracking:
++            return
++        self.version += 1
++        self._set(free)
++
++    def update(self, free, version):
++        """Kết quả đối chiếu SQL Server, hỏi lúc `version`. Trả về True nếu được áp dụng."""
++        if not self.tracking or free is None or version != self.version:
++            return False
++        self._set(free)
++        return True

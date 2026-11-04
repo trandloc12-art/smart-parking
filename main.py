@@ -31,7 +31,8 @@ def main(argv=None):
 
 
 def _service_args(cfg):
-    return dict(scan_frames=cfg.scan_frames, scan_interval=cfg.scan_interval, vote_min=cfg.vote_min)
+    return dict(scan_frames=cfg.scan_frames, scan_interval=cfg.scan_interval, vote_min=cfg.vote_min,
+                capacity=cfg.parking_capacity)
 
 
 def _make_db(cfg):

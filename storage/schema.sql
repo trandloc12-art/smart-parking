@@ -12,10 +12,10 @@ BEGIN
 END
 GO
 
--- 2) Nạp sẵn 3 thẻ (bỏ qua thẻ đã có)
+-- 2) Nạp sẵn 5 thẻ (bỏ qua thẻ đã có). UID viết HEX hoa, không dấu cách: AB 19 92 CA -> AB1992CA
 INSERT INTO dbo.cards (card_uid)
 SELECT v.uid
-FROM (VALUES (N'AB1992CA'), (N'DB2B11CA'), (N'1B12E1CB')) AS v(uid)
+FROM (VALUES (N'AB1992CA'), (N'DB2B11CA'), (N'1B12E1CB'), (N'1BAE10CB'), (N'8B066ECA')) AS v(uid)
 WHERE NOT EXISTS (SELECT 1 FROM dbo.cards c WHERE c.card_uid = v.uid);
 GO
 

@@ -6,6 +6,7 @@ Cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau:
 Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này (xem mục *Giao thức với Arduino*).
 Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một ở cổng ra) để báo cho tài xế (VD "XE LECH VI TRI" khi không đọc đủ 5 số, "XE RA OK - TIEN 5.000 D") — xem mục *Hai màn LCD 1602 I2C*.
 Tùy chọn: gắn **một còi bíp** dùng chung, mỗi lần quẹt thẻ (cổng vào hoặc cổng ra) còi kêu một tiếng — xem mục *Còi bíp*.
+Bãi có số chỗ (slot) giới hạn (`PARKING_CAPACITY`, mặc định **3**): LCD hiện số chỗ còn trống, **đủ chỗ thì cổng vào không nhận quẹt thẻ** — xem mục *Số chỗ đỗ xe*.
 Tùy chọn: gắn **hai servo thanh chắn** (một ở cổng vào, một ở cổng ra): quẹt thẻ thành công thì servo của cổng đó tự mở rồi tự đóng lại — xem mục *Hai servo thanh chắn*.
 Tùy chọn: gắn **bốn cảm biến hồng ngoại** (mỗi cổng hai cái, trước và sau thanh chắn) để biết xe đã đi qua thanh chắn chưa: qua rồi thì hạ thanh chắn ngay, kết quả ghi vào SQL Server — xem mục *Cảm biến hồng ngoại*.
 
@@ -66,10 +67,11 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `DB_DRIVER` | `ODBC Driver 17 for SQL Server` | Tên driver ODBC đã cài |
 | `RFID_BAUD`, `RFID_DEBOUNCE` | `9600`, `2.0` | Tốc độ serial; số giây bỏ qua quẹt trùng (tính riêng từng cổng) |
 | `RFID_HEARTBEAT_TIMEOUT` | `8` | Số giây không nhận được gì từ Arduino thì báo "không phản hồi" (`0` = không kiểm tra) |
+| `PARKING_CAPACITY` | `3` | Số chỗ (slot) của bãi. LCD hiện số chỗ còn trống; đủ chỗ thì cổng vào không nhận quẹt thẻ |
 | `AUTO_SAVE` | `1` | Cổng vào: `1` tự lưu khi chốt được 5 số, `0` luôn chờ xác nhận |
 | `PRICE_PER_BLOCK`, `BLOCK_MINUTES` | `5000`, `60` | Giá một khối và độ dài khối |
 | `SCAN_FRAMES`, `SCAN_INTERVAL`, `VOTE_MIN` | `5`, `0.25`, `2` | Số ảnh quét, giây giữa hai ảnh, số phiếu tối thiểu (`1..SCAN_FRAMES`) |
-| `LCD_IDLE_SECONDS` | `5` | Số giây sau đó LCD tự về "MOI QUET THE" khi đã xong việc (xe vào/ra OK, thẻ bị từ chối). `0` = giữ thông báo đến lần quẹt sau. Thông báo cần nhân viên xử lý không tự biến mất |
+| `LCD_IDLE_SECONDS` | `5` | Số giây sau đó LCD tự về màn hình chờ (`CON TRONG: 2/3`) khi đã xong việc (xe vào/ra OK, thẻ bị từ chối). `0` = giữ thông báo đến lần quẹt sau. Thông báo cần nhân viên xử lý không tự biến mất |
 | `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
 | `SERVO_ENABLED` | `1` | `1` = quẹt thẻ thành công thì mở servo thanh chắn; `0` = chưa gắn servo thì tắt đi (không gửi lệnh nào) |
 | `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
@@ -93,6 +95,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | "Không mở được camera" | Đổi số trong ô "Camera số" rồi bấm Mở camera; đóng ứng dụng khác đang dùng camera |
 | Bấm "Test servo" thanh chắn không nhúc nhích / quay sai góc | Xem dòng trạng thái: `KHÔNG gửi được lệnh` = Arduino chưa kết nối; `SERVO_ENABLED=0` = servo đang bị tắt. Nếu lệnh đã gửi mà servo không động: kiểm tra dây tín hiệu (D6 cổng vào, D7 cổng ra) và nguồn 5V riêng + nối chung GND. Quay sai chiều hoặc không khớp thanh chắn: chỉnh `SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` (đảo hai giá trị nếu ngược) rồi chạy lại chương trình |
 | Quẹt thẻ chậm | OCR chạy bằng CPU, mỗi ảnh có thể mất vài giây. Giảm `SCAN_FRAMES` nếu cần |
+| Cổng vào luôn báo "BÃI ĐÃ ĐẦY" dù bãi trống | Còn lượt cũ chưa đóng (xe đã đi mà thẻ chưa quẹt ra) chiếm chỗ: đóng bằng câu SQL ở dưới, hoặc tăng `PARKING_CAPACITY` |
 | Thẻ báo "đang ở trong bãi" dù xe đã đi | Lượt cũ chưa đóng: đóng bằng câu SQL ở trên |
 | Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
 | Luôn hiện cảnh báo "hết giờ mở thanh chắn mà xe chưa đi qua" | Cảm biến hồng ngoại chưa gắn / sai dây / sai mức tín hiệu (`IR_ACTIVE_LOW`), hoặc xe không chắn đủ hai cảm biến theo thứ tự trước -> sau. Chưa gắn cảm biến thì đặt `IR_ENABLED=0` |
@@ -141,14 +144,15 @@ Vì hai LCD nằm trên hai bus tách biệt nên **được trùng địa chỉ
 
 | Tình huống | Dòng 1 | Dòng 2 |
 |---|---|---|
-| **Cổng vào** — sẵn sàng / nhân viên bấm Hủy | `CONG VAO` | `MOI QUET THE` |
+| **Cổng vào** — màn hình chờ, còn chỗ / nhân viên bấm Hủy | `CONG VAO` | `CON TRONG: 2/3` |
+| **Cổng vào** — bãi đã đủ chỗ, không nhận quẹt thẻ | `BAI DA DAY` | `HET CHO` |
 | Vừa quẹt thẻ, đang quét ảnh (cả hai cổng) | `DANG KIEM TRA` | `VUI LONG CHO` |
 | **Không đọc đủ 5 số (xe lệch vị trí)** (cả hai cổng) | `XE LECH VI TRI` | `HAY CHINH XE` |
 | Hòa phiếu, chờ nhân viên — vào | `CHO NHAN VIEN` | `XAC NHAN BIEN SO` |
 | Lưu xe vào thành công | `XE VAO OK` | `BIEN SO 25888` |
 | Thẻ chưa đăng ký — vào / ra | `THE CHUA DANG KY` | `KHONG CHO VAO` / `KHONG CHO RA` |
 | Thẻ đang ở trong bãi (cổng vào) | `THE DA VAO BAI` | `KHONG CHO VAO` |
-| **Cổng ra** — sẵn sàng | `CONG RA` | `MOI QUET THE` |
+| **Cổng ra** — màn hình chờ | `CONG RA` | `CON TRONG: 2/3` |
 | Biển khớp, cho ra (hoặc nhân viên duyệt) | `XE RA OK` | `TIEN 5.000 D` |
 | Hòa phiếu, chờ nhân viên — ra | `CHO NHAN VIEN` | `KIEM TRA BIEN SO` |
 | Lệch 1 số | `BIEN LECH 1 SO` | `CHO NHAN VIEN` |
@@ -160,7 +164,7 @@ Vì hai LCD nằm trên hai bus tách biệt nên **được trùng địa chỉ
 | Quẹt thẻ nhưng camera chưa có hình (cả hai cổng) | `LOI CAMERA` | `GOI NHAN VIEN` |
 | Quẹt thẻ khi OCR chưa nạp xong (cả hai cổng) | `DANG KHOI DONG` | `VUI LONG CHO` |
 
-**Tự quay về trạng thái sẵn sàng:** sau `LCD_IDLE_SECONDS` giây (mặc định 5), LCD về `CONG VAO` / `CONG RA` + `MOI QUET THE` với các thông báo đã xong việc: `XE VAO OK`, `XE RA OK`, thẻ chưa đăng ký, thẻ đã vào bãi, thẻ chưa vào bãi. Các thông báo cần nhân viên (`XE LECH VI TRI`, `CHO NHAN VIEN`, `BIEN LECH 1 SO`, `BIEN KHONG KHOP`, `XE CHUA DUOC RA`, `LUOT DA DONG`, `LOI HE THONG`, `LOI CAMERA`) được giữ nguyên đến khi nhân viên xử lý hoặc có lần quẹt thẻ kế tiếp. Lần quẹt bị bỏ qua vì đang xử lý hoặc đang chờ nhân viên không làm đổi LCD.
+**Tự quay về trạng thái sẵn sàng:** sau `LCD_IDLE_SECONDS` giây (mặc định 5), LCD về màn hình chờ (`CONG VAO` / `CONG RA` + `CON TRONG: x/y`, hoặc `BAI DA DAY` / `HET CHO` ở cổng vào khi hết chỗ; chưa biết số chỗ thì tạm hiện `MOI QUET THE`) với các thông báo đã xong việc: `XE VAO OK`, `XE RA OK`, thẻ chưa đăng ký, thẻ đã vào bãi, thẻ chưa vào bãi. Các thông báo cần nhân viên (`XE LECH VI TRI`, `CHO NHAN VIEN`, `BIEN LECH 1 SO`, `BIEN KHONG KHOP`, `XE CHUA DUOC RA`, `LUOT DA DONG`, `LOI HE THONG`, `LOI CAMERA`) được giữ nguyên đến khi nhân viên xử lý hoặc có lần quẹt thẻ kế tiếp. Lần quẹt bị bỏ qua vì đang xử lý hoặc đang chờ nhân viên không làm đổi LCD.
 
 Số tiền hiện đủ trong 16 cột; nếu quá dài thì LCD báo `XEM TREN MAY` thay vì cắt cụt thành số sai. Cổng vào còn có dải đỏ "BIỂN SỐ LỆCH VỊ TRÍ" trên cửa sổ chương trình, hiện cùng lúc với dòng `XE LECH VI TRI` trên LCD. Nội dung LCD sửa ở các thuộc tính `LCD_*` đầu lớp `EntryApp` (`ui/entry_app.py`) và `ExitApp` (`ui/exit_app.py`); phần dùng chung ở đầu `ui/base_gate_app.py`.
 
@@ -225,6 +229,15 @@ Quẹt thẻ liên tiếp khi thanh chắn còn đang mở chỉ gia hạn thờ
 
 **Kiểm tra:** mở Serial Monitor (9600), quẹt thẻ cho thanh chắn mở rồi đưa vật qua lần lượt cảm biến trước -> sau: thấy thanh chắn hạ và dòng `PASS:IN` (hoặc `PASS:OUT`); không đưa gì qua thì sau `SERVO_OPEN_SECONDS` giây thấy `NOPASS:...`.
 
+## Số chỗ đỗ xe (slot)
+Bãi có `PARKING_CAPACITY` chỗ (mặc định **3**). Số chỗ trống = `PARKING_CAPACITY` trừ số xe đang ở trong bãi (đếm từ SQL Server: các lượt chưa có giờ ra).
+
+- **LCD** của cả hai cổng ở màn hình chờ hiện số chỗ còn trống (`CON TRONG: 2/3`) và tự cập nhật ngay khi có xe vào hoặc ra ở cổng nào cũng được.
+- **Đủ chỗ:** cổng vào **không nhận quẹt thẻ**: không quét ảnh, không lưu, không mở thanh chắn; LCD cổng vào hiện `BAI DA DAY` / `HET CHO`, thanh trạng thái báo đỏ "BÃI ĐÃ ĐẦY". Thẻ chưa đăng ký hoặc thẻ đã ở trong bãi quẹt ở cổng vào lúc đầy cũng chỉ thấy báo đầy.
+- **Cổng ra vẫn hoạt động bình thường** khi bãi đầy. Xe ra thì trả lại một chỗ và LCD cổng vào tự đổi về `CON TRONG: 1/3`.
+- Nhân viên bấm *Lưu xe vào* sau khi bãi đã đầy (VD trong lúc chờ xác nhận có xe khác vào) cũng bị từ chối.
+- Giao diện cộng trừ số chỗ ngay khi có xe vào / ra và đối chiếu lại với SQL Server mỗi 5 giây (nếu ai đó sửa SQL bằng tay). Số chỗ luôn tính theo SQL Server nên đúng cả khi khởi động lại chương trình.
+
 ## Quy tắc nghiệp vụ
 
 **Hướng đi do CỔNG quyết định**, trạng thái thẻ chỉ để kiểm tra hợp lệ:
@@ -234,6 +247,7 @@ Quẹt thẻ liên tiếp khi thanh chắn còn đang mở chỉ gia hạn thờ
 | Thẻ không có trong bảng `cards` (hoặc `is_active = 0`) | Từ chối ở cả hai cổng, không nhận diện, không lưu |
 | Cổng vào, thẻ đang ở trong bãi | Từ chối (không cho vào lần nữa) |
 | Cổng ra, thẻ chưa có lượt vào | Từ chối (xe chưa vào bãi) |
+| Cổng vào, bãi đã đủ chỗ | Không nhận quẹt thẻ: không quét ảnh, không mở thanh chắn (xem *Số chỗ đỗ xe*) |
 | Cổng vào, thẻ hợp lệ | Quét ảnh, bỏ phiếu 5 số, lưu `time_in` |
 | Cổng ra, thẻ hợp lệ | Quét ảnh, bỏ phiếu 5 số, **đối chiếu với 5 số lúc vào**, lưu `time_out` + `fee` |
 
@@ -254,7 +268,7 @@ Biển cũ chỉ có 4 số: nhập thêm số `0` ở đầu (VD `1234` -> `012
 
 **Tiền:** làm tròn LÊN theo khối (`BLOCK_MINUTES`, mặc định 60 phút), tối thiểu 1 khối, mỗi khối `PRICE_PER_BLOCK` (mặc định 5.000 đ).
 
-3 thẻ nạp sẵn (tự thêm khi chạy lần đầu): `AB1992CA`, `DB2B11CA`, `1B12E1CB`.
+5 thẻ nạp sẵn (tự thêm khi chạy, thẻ nào đã có thì bỏ qua): `AB1992CA`, `DB2B11CA`, `1B12E1CB`, `1BAE10CB`, `8B066ECA` (UID đọc trên thẻ `AB 19 92 CA` thì viết liền thành `AB1992CA`).
 Nút "Thử nhận diện" chỉ để thử (1 ảnh), **không lưu** vì không có thẻ.
 
 Thêm / khóa thẻ bằng SQL (mã thẻ viết HOA, không dấu cách):
@@ -291,6 +305,7 @@ ui/                          base_gate_app.py   giao diện chung
                              exit_app.py        cổng ra (ảnh vào cạnh ảnh ra, đối chiếu)
                              dual_app.py        một cửa sổ chứa cả hai cổng + lịch sử dùng chung
                              device_status.py   thanh tình trạng thiết bị (cảnh báo đỏ khi mất kết nối)
+                             slots.py           bộ đếm chỗ trống của bãi (dùng chung hai cổng)
 tests/                       pytest
 ```
 

@@ -27,6 +27,9 @@ class FakeDb:
                 return e
         return None
 
+    def count_open_sessions(self):
+        return sum(1 for e in self.rows if e.time_out is None)
+
     def add_entry(self, card_uid, plate_number, plate_full, image_in, time_in, votes="", gate=""):
         if self.find_open_session(card_uid):
             raise AlreadyInside(card_uid)

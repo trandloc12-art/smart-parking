@@ -287,3 +287,32 @@ def test_servo_angles_must_differ_and_be_integers(monkeypatch):
     monkeypatch.setenv("SERVO_OPEN_ANGLE", "chín mươi")
     with pytest.raises(ValueError, match="SERVO_OPEN_ANGLE phải là số"):
         config.load_settings("in")
+
+
+def test_parking_capacity(monkeypatch):
+    monkeypatch.delenv("PARKING_CAPACITY", raising=False)
+    assert config.load_settings("in").parking_capacity == 3          # mặc định: 3 slot
+    monkeypatch.setenv("PARKING_CAPACITY", "5")
+    assert config.load_settings("out").parking_capacity == 5
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_parking_capacity_must_be_positive(monkeypatch, value):
+    monkeypatch.setenv("PARKING_CAPACITY", value)
+    with pytest.raises(ValueError, match="PARKING_CAPACITY"):
+        config.load_settings("in")
+
+
+def test_parking_capacity_must_be_a_number(monkeypatch):
+    monkeypatch.setenv("PARKING_CAPACITY", "ba")
+    with pytest.raises(ValueError, match="PARKING_CAPACITY phải là số"):
+        config.load_settings("in")
+
+
+def test_parking_capacity_default_is_in_env_example(tmp_path):
+    import os
+    example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
+    (tmp_path / ".env").write_text(example, encoding="utf-8")
+    env, _ = config.gate_env("in", str(tmp_path), environ={})
+    assert env["PARKING_CAPACITY"] == "3"
+    assert config.load_settings("in", env).parking_capacity == 3

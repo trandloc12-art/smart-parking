@@ -3,6 +3,7 @@
 Quẹt thẻ:
   - Thẻ chưa đăng ký          -> từ chối.
   - Thẻ đang ở trong bãi      -> từ chối (không cho vào lần nữa).
+  - Bãi đã đủ số chỗ          -> từ chối, KHÔNG quét ảnh (không nhận quẹt thẻ cho đến khi có xe ra).
   - Còn lại                   -> quét nhiều khung, bỏ phiếu 5 số.
         chốt được + AUTO_SAVE -> lưu luôn.
         chưa chốt được        -> chờ nhân viên nhập/xác nhận ĐÚNG 5 số rồi mới lưu.
@@ -11,7 +12,7 @@ from core.plate_voting import NUMBER_LEN
 from services.gate_service import (
     CardOutcome, GateService, Outcome, is_valid_number, now, votes_note,
 )
-from storage.errors import AlreadyInside
+from storage.errors import AlreadyInside, ParkingFull
 
 
 class CardNotRegistered(Exception):
@@ -34,6 +35,9 @@ class EntryService(GateService):
         if session is not None:
             return CardOutcome(Outcome.ALREADY_INSIDE, card_uid, event=session)
 
+        if self.is_full():
+            return CardOutcome(Outcome.LOT_FULL, card_uid)
+
         scan = self.scan(get_frame, on_progress)
         if self.auto_save and scan.decided:
             try:
@@ -50,6 +54,8 @@ class EntryService(GateService):
             raise ValueError(f"Biển số phải đủ {NUMBER_LEN} chữ số (đang là '{number}')")
         if not self.db.is_card_registered(card_uid):
             raise CardNotRegistered(f"Thẻ {card_uid} chưa đăng ký")
+        if self.is_full():      # nhân viên bấm Lưu sau khi bãi đã đầy (VD xe khác vừa vào trong lúc chờ xác nhận)
+            raise ParkingFull(f"Bãi đã đủ {self.capacity} chỗ, không nhận thêm xe")
 
         image_name = self.save_image(scan.image if scan else None, card_uid)
         plate_full = scan.plate_full if scan and number == scan.number else ""

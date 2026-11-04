@@ -20,6 +20,7 @@ PASS_TIMEOUT = "TIMEOUT"    # hết giờ mở thanh chắn mà xe chưa qua
 class Outcome(Enum):
     UNREGISTERED = "unregistered"     # thẻ chưa đăng ký / bị khóa
     ALREADY_INSIDE = "already_inside" # cổng vào: thẻ đang ở trong bãi
+    LOT_FULL = "lot_full"             # cổng vào: bãi đã đủ số chỗ, không nhận thêm xe
     NOT_INSIDE = "not_inside"         # cổng ra: thẻ chưa có lượt vào
     ENTRY_SAVED = "entry_saved"       # xe vào, đã lưu
     ENTRY_PENDING = "entry_pending"   # xe vào, chờ nhân viên xác nhận 5 số
@@ -61,8 +62,9 @@ class GateService:
     gate_code = ""
 
     def __init__(self, recognizer, db, image_dir, scan_frames=5, scan_interval=0.25,
-                 vote_min=2, sleep=time.sleep):
+                 vote_min=2, sleep=time.sleep, capacity=None):
         self.recognizer = recognizer
+        self.capacity = capacity        # số chỗ của bãi; None = không giới hạn (không theo dõi slot)
         self.db = db
         self.image_dir = image_dir
         self.scan_frames = scan_frames
@@ -89,6 +91,15 @@ class GateService:
 
     def recent_events(self, limit=100):
         return self.db.recent(limit)
+
+    def free_slots(self):
+        """Số chỗ còn trống (đếm từ SQL Server nên đúng cả khi hai cổng cùng ghi). None nếu không giới hạn chỗ."""
+        if self.capacity is None:
+            return None
+        return max(0, self.capacity - self.db.count_open_sessions())
+
+    def is_full(self):
+        return self.capacity is not None and self.db.count_open_sessions() >= self.capacity
 
     def record_pass(self, session_id, passed, at=None):
         """Ghi vào lượt `session_id` việc xe đã qua thanh chắn (passed=True) hay hết giờ mà chưa qua."""

@@ -4,9 +4,9 @@ from tkinter import ttk
 
 from core.plate_voting import NUMBER_LEN
 from services.gate_service import Outcome
-from storage.errors import AlreadyInside
+from storage.errors import AlreadyInside, ParkingFull
 from ui.base_gate_app import (   # noqa: F401  (plate_position_offset được import lại để nơi khác dùng qua ui.entry_app)
-    COLOR_ERR, COLOR_OK, COLOR_WARN, BaseGateApp, fmt_time, plate_position_offset,
+    COLOR_ERR, COLOR_OK, COLOR_WARN, LCD_FULL, BaseGateApp, fmt_time, plate_position_offset,
 )
 
 
@@ -39,6 +39,27 @@ class EntryApp(BaseGateApp):
     def lcd_saved(self, number):
         self.lcd(("XE VAO OK", f"BIEN SO {number}"), revert=True)
 
+    # ---------- Bãi đầy ----------
+    def lcd_idle_with_slots(self, free, capacity):
+        """Còn chỗ: 'CONG VAO' / 'CON TRONG: 2/3'. Hết chỗ: 'BAI DA DAY' / 'HET CHO'."""
+        if free <= 0:
+            return LCD_FULL
+        return super().lcd_idle_with_slots(free, capacity)
+
+    def reject_swipe(self, uid):
+        """Bãi đã đủ chỗ (theo số đếm đang giữ): không nhận quẹt thẻ, không quét ảnh, không mở thanh chắn."""
+        if not self.slots.full:
+            return False
+        self.show_lot_full(uid)
+        return True
+
+    def show_lot_full(self, uid):
+        capacity = self.slots.capacity
+        self.set_card(uid)
+        self.show_idle()                # khi đầy, màn hình chờ chính là "BAI DA DAY / HET CHO"
+        self.set_status(f"BÃI ĐÃ ĐẦY ({capacity}/{capacity} chỗ). Không nhận thẻ {uid} cho đến khi có xe ra.",
+                        COLOR_ERR)
+
     def reset_view(self):
         self.show_offset_warning(False)
 
@@ -58,6 +79,10 @@ class EntryApp(BaseGateApp):
 
     # ---------- Kết quả quẹt thẻ ----------
     def on_gate_outcome(self, outcome):
+        if outcome.kind is Outcome.LOT_FULL:        # số đếm đang giữ chưa biết bãi đầy, SQL Server thì biết rồi
+            self.slots.force(0)
+            self.show_lot_full(outcome.card_uid)
+            return
         scan, uid = outcome.scan, outcome.card_uid
         self.show_image(scan.image if scan.image is not None else self.last_frame)
 
@@ -70,6 +95,7 @@ class EntryApp(BaseGateApp):
             self.upsert_row(e)
             self.lcd_saved(scan.winner)
             self.open_barrier(e.id)     # tự lưu xong -> mở thanh chắn cổng vào
+            self.slots.adjust(-1)       # sau lcd_saved: màn "XE VAO OK" không bị đè, lần về màn hình chờ sau dùng số mới
             self.set_status(f"XE VÀO | thẻ {uid} | {NUMBER_LEN} số {scan.winner} "
                             f"({scan.votes}/{scan.scanned} ảnh) | biển {scan.plate_full or '?'} | "
                             f"{fmt_time(e.time_in)}", COLOR_OK)
@@ -109,6 +135,7 @@ class EntryApp(BaseGateApp):
         self.show_offset_warning(False)
         self.lcd_saved(event.plate_number)
         self.open_barrier(event.id)     # nhân viên đã xác nhận cho xe vào -> mở thanh chắn cổng vào
+        self.slots.adjust(-1)
         self.upsert_row(event)
         self.update_action_buttons()
         self.set_status(f"XE VÀO | thẻ {event.card_uid} | {NUMBER_LEN} số {event.plate_number} | "
@@ -117,7 +144,7 @@ class EntryApp(BaseGateApp):
     def cancel_pending(self):
         self.pending = None
         self.show_offset_warning(False)
-        self.lcd(self.LCD_IDLE)
+        self.show_idle()
         self.plate_var.set("")
         self.set_card(None)
         self.update_action_buttons()
@@ -131,6 +158,13 @@ class EntryApp(BaseGateApp):
             self.update_action_buttons()
             self.set_status("Thẻ này vừa có lượt vào khác (xe đã ở trong bãi). Không lưu thêm.",
                             COLOR_ERR)
+        elif isinstance(exc, ParkingFull):      # nhân viên bấm Lưu nhưng trong lúc chờ bãi đã đầy
+            uid = self.pending.card_uid if self.pending is not None else ""
+            self.pending = None
+            self.show_offset_warning(False)
+            self.update_action_buttons()
+            self.slots.force(0)
+            self.show_lot_full(uid)
         elif isinstance(exc, ValueError):
             self.set_status(str(exc), COLOR_WARN)
         else:

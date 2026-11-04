@@ -378,14 +378,14 @@ class BrokenCamera(FakeCamera):
 
 
 def make_dual(root, tmp_path, monkeypatch, entry_script=("25888",), exit_script=("25888",),
-              exit_camera=None, wait=True):
+              exit_camera=None, wait=True, capacity=None):
     monkeypatch.setenv("IMG_DIR", str(tmp_path))
     db = FakeDb()
     cfg_in, cfg_out = config.load_settings("in", {"IMG_DIR": str(tmp_path)}), \
         config.load_settings("out", {"IMG_DIR": str(tmp_path)})
     rec = ScriptedRecognizer(entry_script)            # MỘT bộ nhận diện dùng chung cho cả hai cổng
-    entry_svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None)
-    exit_svc = ExitService(rec, db, str(tmp_path), sleep=lambda s: None)
+    entry_svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
+    exit_svc = ExitService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
     app = DualGateApp(root, entry_svc, exit_svc, SpyCamera(), exit_camera or SpyCamera(), cfg_in, cfg_out)
     if wait:
         assert pump(root, lambda: idle(app.entry) and idle(app.exit)
@@ -981,3 +981,66 @@ def test_real_reader_routes_pass_lines_to_the_right_gate_and_records_them(root, 
     assert "CẢNH BÁO" in app.exit.status_lbl.cget("text")
     assert "CẢNH BÁO" not in app.entry.status_lbl.cget("text")  # chỉ cổng ra bị cảnh báo
     app.on_close()
+
+
+# ---------------------------------------------------------------- số chỗ (slot) còn trống trên LCD, đầy thì không nhận quẹt thẻ
+def make_entry_slots(root, tmp_path, monkeypatch, script, capacity=3):
+    monkeypatch.setenv("LCD_IDLE_SECONDS", "0.3")
+    db, rec = FakeDb(cards=("CARD1", "CARD2", "CARD3", "CARD4")), ScriptedRecognizer(script)
+    svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
+    app = EntryApp(root, svc, FakeCamera(), settings("in", tmp_path, monkeypatch))
+    lcd = app.rfid = LcdSpy()
+    assert pump(root, lambda: idle(app) and app.last_frame is not None and app.slots.free is not None)
+    return app, db, rec, lcd
+
+
+def test_entry_lcd_shows_free_slots_and_blocks_swipes_when_full(root, tmp_path, monkeypatch):
+    app, db, rec, lcd = make_entry_slots(root, tmp_path, monkeypatch, ["25888"])
+    app.show_idle()
+    assert lcd.sent[-1] == ("in", "CONG VAO", "CON TRONG: 3/3")
+
+    swipe(app, "CARD1")                                      # xe thứ nhất vào: còn 2 chỗ
+    assert lcd.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25888")
+    assert lcd_text_after(root, lcd, ("in", "CONG VAO", "CON TRONG: 2/3")), "LCD không về màn hình chờ mới"
+
+    swipe(app, "CARD2")
+    swipe(app, "CARD3")                                      # đủ 3 xe: hết chỗ
+    assert app.slots.free == 0
+    assert lcd_text_after(root, lcd, ("in", "BAI DA DAY", "HET CHO")), "LCD không báo bãi đầy"
+
+    opened, scans = len(lcd.servos), rec.calls
+    app.on_card("CARD4")                                     # bãi đầy: KHÔNG nhận quẹt thẻ
+    assert lcd.sent[-1] == ("in", "BAI DA DAY", "HET CHO")
+    assert "BÃI ĐÃ ĐẦY" in app.status_lbl.cget("text")
+    assert not app.busy and rec.calls == scans and len(lcd.servos) == opened and len(db.rows) == 3
+
+
+def test_entry_full_lot_reported_by_service_even_if_counter_is_stale(root, tmp_path, monkeypatch):
+    """Số đếm trên giao diện chưa biết bãi đầy (VD xe vào bằng đường khác) nhưng SQL Server thì biết."""
+    app, db, rec, lcd = make_entry_slots(root, tmp_path, monkeypatch, ["25888"], capacity=1)
+    app.service.handle_card("CARD2", lambda: FakeCamera().read())   # một xe đã vào mà giao diện không hay
+    app.slots.force(1)                                       # giao diện vẫn tưởng còn chỗ
+    swipe(app, "CARD1")
+    assert app.slots.free == 0 and len(db.rows) == 1
+    assert lcd.sent[-1] == ("in", "BAI DA DAY", "HET CHO")
+    assert lcd.servos == []                                  # không mở thanh chắn
+
+
+def test_dual_exit_frees_a_slot_and_entry_lcd_updates(root, tmp_path, monkeypatch):
+    app, db, rec = make_dual(root, tmp_path, monkeypatch, capacity=2)
+    lcd = app.entry.rfid = app.exit.rfid = LcdSpy()
+    assert pump(root, lambda: app.slots.free == 2)
+    swipe(app.entry, "CARD1")
+    swipe(app.entry, "CARD2")
+    assert app.slots.free == 0
+    app.entry.show_idle()
+    assert lcd.sent[-1] == ("in", "BAI DA DAY", "HET CHO")
+
+    swipe(app.exit, "CARD1")                                 # một xe ra -> trả lại một chỗ, LCD cổng vào đổi ngay
+    assert app.slots.free == 1
+    assert pump(root, lambda: ("in", "CONG VAO", "CON TRONG: 1/2") in lcd.sent)
+    app.on_close()
+
+
+def lcd_text_after(root, lcd, expected, timeout=3.0):
+    return pump(root, lambda: lcd.sent[-1] == expected, timeout)

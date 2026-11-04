@@ -18,6 +18,7 @@ GATES = {
     "out": {"label": "CỔNG RA",  "camera_index": 1},
 }
 DEFAULT_RFID_PORT = "COM3"      # MỘT Arduino chung cho cả hai cổng (ghi đè bằng RFID_PORT trong .env)
+DEFAULT_PARKING_CAPACITY = 3    # số slot (chỗ đỗ) của bãi (ghi đè bằng PARKING_CAPACITY trong .env)
 
 
 def _parse_value(raw):
@@ -127,7 +128,8 @@ class Settings:
     servo_closed_angle: int = 0     # độ: vị trí ban đầu / thanh chắn hạ (gửi cho Arduino mỗi lần nó khởi động)
     servo_open_angle: int = 90      # độ: thanh chắn nâng (mở)
     ir_enabled: bool = True         # False = chưa gắn cảm biến hồng ngoại: bỏ qua PASS / NOPASS từ Arduino
-    lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE"; 0 = giữ đến lần quẹt sau
+    lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về màn hình chờ; 0 = giữ đến lần quẹt sau
+    parking_capacity: int = DEFAULT_PARKING_CAPACITY   # số chỗ (slot) của bãi: đủ rồi thì cổng vào không nhận quẹt thẻ
 
 
 def load_settings(gate, env=None):
@@ -175,6 +177,7 @@ def load_settings(gate, env=None):
         view_h=_num("VIEW_H", "315"),
         window_pos=_env("WINDOW_POS", ""),
         lcd_idle_seconds=_num("LCD_IDLE_SECONDS", "5", float),
+        parking_capacity=_num("PARKING_CAPACITY", str(DEFAULT_PARKING_CAPACITY)),
         servo_enabled=_env("SERVO_ENABLED", "1") == "1",
         servo_open_seconds=_num("SERVO_OPEN_SECONDS", "3", float),
         servo_closed_angle=_num("SERVO_CLOSED_ANGLE", "0"),
@@ -185,6 +188,8 @@ def load_settings(gate, env=None):
         raise ValueError("SCAN_FRAMES phải >= 1")
     if not 1 <= s.vote_min <= s.scan_frames:
         raise ValueError("VOTE_MIN phải nằm trong khoảng 1..SCAN_FRAMES")
+    if s.parking_capacity < 1:
+        raise ValueError("PARKING_CAPACITY phải >= 1 (số chỗ đỗ xe của bãi)")
     if s.lcd_idle_seconds < 0:
         raise ValueError("LCD_IDLE_SECONDS phải >= 0 (0 = không tự quay về)")
     if not 0.5 <= s.servo_open_seconds <= 30:

@@ -96,6 +96,11 @@ class Database:
                 "WHERE card_uid = ? AND time_out IS NULL ORDER BY id DESC", card_uid).fetchone()
         return _to_event(row) if row else None
 
+    def count_open_sessions(self):
+        """Số xe đang ở trong bãi (số lượt chưa có giờ ra)."""
+        with self._connect() as conn:
+            return conn.execute("SELECT COUNT(*) FROM dbo.access_log WHERE time_out IS NULL").fetchone()[0]
+
     def add_entry(self, card_uid, plate_number, plate_full, image_in, time_in, votes="", gate=""):
         """Ghi lượt VÀO. Ném AlreadyInside nếu thẻ đã có lượt đang mở."""
         try:

@@ -5,8 +5,8 @@ Phần riêng của mỗi cổng nằm ở entry_app.py / exit_app.py (override 
 
 Hai cách dùng:
   - Cửa sổ riêng: BaseGateApp(root, service, camera, cfg) tự dựng cửa sổ + bảng lịch sử + thanh tình trạng thiết bị.
-  - Nhúng vào cửa sổ chung (ui/dual_app.py): truyền thêm container=<Frame>, history=<HistoryTable>
-    và devices=<DeviceStatusBar> (dùng chung cho cả hai cổng).
+  - Nhúng vào cửa sổ chung (ui/dual_app.py): truyền thêm container=<Frame>, history=<HistoryTable>,
+    devices=<DeviceStatusBar> và slots=<SlotCounter> (dùng chung cho cả hai cổng).
 """
 import queue
 import threading
@@ -22,6 +22,7 @@ from hardware import camera as cam_state
 from services.gate_service import Outcome
 from services.gate_service import now as current_time
 from ui.device_status import ARDUINO, DB, DeviceStatusBar, camera_key, reader_key
+from ui.slots import SlotCounter
 
 COLOR_OK = "#1a7f37"
 COLOR_WARN = "#b35900"
@@ -65,6 +66,7 @@ LCD_CHECKING = ("DANG KIEM TRA", "VUI LONG CHO")
 LCD_ERROR = ("LOI HE THONG", "GOI NHAN VIEN")
 LCD_LOADING = ("DANG KHOI DONG", "VUI LONG CHO")      # quẹt thẻ khi OCR chưa nạp xong
 LCD_NO_CAMERA = ("LOI CAMERA", "GOI NHAN VIEN")        # quẹt thẻ nhưng camera chưa có hình
+LCD_FULL = ("BAI DA DAY", "HET CHO")                   # cổng vào: bãi đã đủ số chỗ, không nhận quẹt thẻ
 
 
 class HistoryTable:
@@ -126,11 +128,12 @@ class BaseGateApp:
     LCD_OFFSET = ("XE LECH VI TRI", "HAY CHINH XE")        # không đọc được số nào: xe lệch vị trí so với camera
     LCD_NEED_STAFF = ("CHO NHAN VIEN", "KIEM TRA BIEN SO")  # có ứng viên đủ 5 số nhưng chưa chốt được
 
-    def __init__(self, root, service, camera, cfg, container=None, history=None, devices=None):
+    def __init__(self, root, service, camera, cfg, container=None, history=None, devices=None, slots=None):
         """root: cửa sổ Tk (dùng cho after/bind). container: khung để dựng giao diện vào
         (None = dựng thẳng vào root và tự lo tiêu đề/đóng cửa sổ). history: bảng lịch sử dùng chung
         (None = tự tạo bảng riêng ở cuối giao diện). devices: thanh tình trạng thiết bị dùng chung
-        (None = tự tạo thanh riêng cho cổng này)."""
+        (None = tự tạo thanh riêng cho cổng này). slots: bộ đếm chỗ trống dùng chung của bãi
+        (None = tự tạo theo service.capacity)."""
         self.root = root
         self.embedded = container is not None
         self.container = container if self.embedded else root
@@ -158,6 +161,10 @@ class BaseGateApp:
         self._lcd_job = None        # hẹn giờ đưa LCD về "MOI QUET THE" (xem lcd)
         self._barrier_session = None    # id lượt gửi xe vừa được mở thanh chắn, chờ cảm biến báo xe đã qua chưa
         self._servo_btn_state = "normal"    # trạng thái hiện tại của nút Test servo (xem sync_servo_button)
+        self.slots = slots if slots is not None else SlotCounter(getattr(service, "capacity", None))
+        self.slots.subscribe(self.on_slots_changed)
+        self._idle_shown = False        # LCD đang hiện màn hình chờ (để cập nhật số chỗ trống khi nó đổi)
+        self._slots_loading = False
 
         self.build_ui()
         self.open_camera(cfg.camera_index)
@@ -183,6 +190,7 @@ class BaseGateApp:
         revert=True: sau cfg.lcd_idle_seconds giây tự đưa LCD về LCD_IDLE (dùng cho thông báo đã xong việc,
         VD "XE VAO OK"). Thông báo cần nhân viên xử lý thì KHÔNG revert để tài xế còn đọc được."""
         self._cancel_lcd_revert()
+        self._idle_shown = False
         send = getattr(self.rfid, "send_lcd", None)
         if send is not None:
             try:
@@ -191,6 +199,50 @@ class BaseGateApp:
                 pass
         if revert:
             self._schedule_lcd_revert()
+
+    # ---------- Số chỗ (slot) còn trống ----------
+    def idle_message(self):
+        """Màn hình chờ của LCD. Có theo dõi số chỗ thì kèm số chỗ trống; chưa biết số chỗ thì như lúc chưa có tính năng này."""
+        free, capacity = self.slots.free, self.slots.capacity
+        if free is None or capacity is None:
+            return self.LCD_IDLE
+        return self.lcd_idle_with_slots(free, capacity)
+
+    def lcd_idle_with_slots(self, free, capacity):
+        """Màn hình chờ khi biết số chỗ: dòng 1 tên cổng, dòng 2 'CON TRONG: 2/3'. Cổng vào ghi đè khi bãi đầy."""
+        return (self.LCD_IDLE[0], f"CON TRONG: {free}/{capacity}")
+
+    def show_idle(self):
+        """Đưa LCD về màn hình chờ (có số chỗ trống). Nhớ là đang ở màn hình chờ để tự cập nhật khi số chỗ đổi."""
+        self.lcd(self.idle_message())
+        self._idle_shown = True
+
+    def on_slots_changed(self):
+        """Số chỗ trống vừa đổi (xe vào / ra ở cổng nào cũng được). Chỉ đổi LCD khi nó đang ở màn hình chờ;
+        thông báo khác (xe vào OK, chờ nhân viên...) giữ nguyên, lần về màn hình chờ sau sẽ dùng số mới."""
+        if self._idle_shown and not self._closing and not self.busy and self.pending is None:
+            self.show_idle()
+
+    def refresh_slots(self):
+        """Đối chiếu số chỗ trống với SQL Server ở luồng nền (số do hai cổng cộng trừ có thể lệch, VD nhân viên sửa SQL)."""
+        if self._closing or self._slots_loading or not self.slots.tracking:
+            return
+        self._slots_loading = True
+        version = self.slots.version
+        self._bg(self.service.free_slots, lambda free: self._slots_loaded(free, version),
+                 busy=False, on_error=self._slots_failed)
+
+    def _slots_loaded(self, free, version):
+        self._slots_loading = False
+        self.slots.update(free, version)
+
+    def _slots_failed(self, exc):
+        self._slots_loading = False     # lỗi SQL Server đã được báo ở thanh tình trạng (refresh_history)
+
+    def reject_swipe(self, uid):
+        """Hook: True nếu cổng này không nhận lần quẹt thẻ này (và đã tự báo). Mặc định nhận hết; cổng vào ghi đè
+        để chặn khi bãi đầy."""
+        return False
 
     def open_barrier(self, session_id=None):
         """Mở thanh chắn (servo) của CỔNG NÀY khi xe được chấp nhận (quẹt thẻ thành công).
@@ -285,7 +337,7 @@ class BaseGateApp:
         if self.busy:
             self._schedule_lcd_revert() # đang xử lý việc khác: thử lại sau
             return
-        self.lcd(self.LCD_IDLE)
+        self.show_idle()
 
     def handle_card(self, uid):
         """Gọi được từ luồng nền: chuyển sang luồng GUI."""
@@ -542,7 +594,7 @@ class BaseGateApp:
     # ---------- Quẹt thẻ ----------
     def on_model_ready(self, _):
         self.set_status("Sẵn sàng. Quẹt thẻ.", COLOR_OK)
-        self.lcd(self.LCD_IDLE)
+        self.show_idle()
 
     def get_frame(self):
         """Khung hình mới nhất. Được gọi từ luồng nền: chỉ đọc tham chiếu, không đụng camera."""
@@ -563,6 +615,8 @@ class BaseGateApp:
         if self.last_frame is None:
             self.lcd(LCD_NO_CAMERA)
             self.set_status(f"Thẻ {uid}: chưa có hình từ camera.", COLOR_ERR)
+            return
+        if self.reject_swipe(uid):
             return
 
         self.reset_view()
@@ -641,6 +695,7 @@ class BaseGateApp:
             self._history_loading = True
             self._bg(lambda: self.service.recent_events(100), self.apply_history,
                      busy=False, on_error=self.on_history_error)
+        self.refresh_slots()
         self.root.after(HISTORY_REFRESH_MS, self.refresh_history)
 
     def apply_history(self, events):
