@@ -83,3 +83,36 @@ def test_barrier_reports_pass_and_nopass_with_the_gate_tag():
     assert 'PIN_IR_IN_AFTER, "IN")' in INO and 'PIN_IR_OUT_AFTER, "OUT")' in INO
     for line in ("PASS:IN", "NOPASS:OUT"):
         assert line in README
+
+
+def test_servo_angle_defaults_agree_between_sketch_env_example_and_readme():
+    """Góc mặc định trong sketch, .env.example và README phải nói cùng một số (0° đóng / 90° mở)."""
+    closed = int(re.search(r"const uint8_t SERVO_CLOSED_ANGLE\s*=\s*(\d+);", INO).group(1))
+    open_ = int(re.search(r"const uint8_t SERVO_OPEN_ANGLE\s*=\s*(\d+);", INO).group(1))
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert re.search(rf"^SERVO_CLOSED_ANGLE={closed}\b", example, re.M)
+    assert re.search(rf"^SERVO_OPEN_ANGLE={open_}\b", example, re.M)
+    assert f"| `SERVO_CLOSED_ANGLE`, `SERVO_OPEN_ANGLE` | `{closed}`, `{open_}` |" in README
+
+
+def test_servo_angle_command_is_documented_and_implemented_on_both_sides():
+    """Lệnh SERVOIN:ANGLE: có trong sketch (xử lý + chú thích đầu file), README, và hardware/rfid.py gửi đúng dạng đó."""
+    assert 'strncmp(args, "ANGLE:", 6)' in INO
+    assert "SERVOIN:ANGLE:" in INO and "SERVOOUT:ANGLE:" in INO
+    assert "`SERVOIN:ANGLE:0:90`" in README
+    from hardware.rfid import format_servo_angle_command
+    assert format_servo_angle_command("in", 0, 90) == "SERVOIN:ANGLE:0:90\n"
+    assert format_servo_angle_command("out", 0, 90) == "SERVOOUT:ANGLE:0:90\n"
+
+
+def test_sketch_boot_banner_matches_what_python_waits_for():
+    """Python cài lại góc servo khi thấy dòng này (Arduino vừa khởi động lại): sketch phải còn in đúng tiền tố đó."""
+    from hardware.rfid import BOOT_BANNER
+    assert f'Serial.println(F("{BOOT_BANNER} san sang' in INO
+
+
+def test_barrier_uses_runtime_angles_not_the_constants_directly():
+    """Chỉ phần khởi tạo giá trị mặc định mới được dùng hằng số góc; còn lại phải dùng biến để lệnh ANGLE có tác dụng."""
+    body = INO[INO.index("class Barrier"):INO.index("Barrier barrierIn(")]
+    assert "servo_.write(SERVO_CLOSED_ANGLE)" not in body and "servo_.write(SERVO_OPEN_ANGLE)" not in body
+    assert "servo_.write(closedAngle_)" in body and "servo_.write(openAngle_)" in body

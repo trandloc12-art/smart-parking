@@ -777,6 +777,111 @@ def test_open_barrier_never_breaks_card_handling(root, tmp_path, monkeypatch):
     assert len(db.rows) == 1 and "XE VÀO" in app.status_lbl.cget("text")
 
 
+# ---------------------------------------------------------------- nút Test servo
+def test_test_servo_button_opens_only_this_gates_barrier(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    assert str(app.servo_btn.cget("state")) == "normal"
+
+    lcd_before = list(rfid.sent)
+    app.servo_btn.invoke()                                    # bấm nút thật
+    assert rfid.servos == [("in", "OPEN", 3.0)]               # đúng cổng, đúng thời gian giữ mở
+    assert "Test servo" in app.status_lbl.cget("text") and "3 giây" in app.status_lbl.cget("text")
+    assert db.rows == [] and rfid.sent == lcd_before          # thử servo không tạo lượt gửi xe, không đụng LCD
+
+
+def test_test_servo_result_is_not_recorded_in_the_database(root, tmp_path, monkeypatch):
+    """PASS / NOPASS của lần thử không gắn với lượt gửi xe nào -> bị bỏ qua, và không cướp lượt đang chờ cảm biến."""
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    swipe(app, "CARD1")                                       # xe thật vào, đang chờ cảm biến báo
+    real_session = app._barrier_session
+    assert real_session is not None
+
+    app.servo_btn.invoke()
+    assert app._barrier_session == real_session               # nút thử không đổi lượt đang chờ
+
+    app.handle_barrier(True)
+    assert drain_barrier(root, db) and db.passes[0][0] == real_session
+
+    app.handle_barrier(False)                                 # kết quả thứ hai (của lần thử): không còn lượt nào để ghi
+    assert not pump(root, lambda: len(db.passes) > 1, timeout=0.3)
+
+
+def test_test_servo_button_is_locked_while_waiting_for_staff(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, [""])
+    swipe(app, "CARD1")                                       # không đọc được số nào -> chờ nhân viên
+    assert app.pending is not None
+    assert pump(root, lambda: str(app.servo_btn.cget("state")) == "disabled")
+    assert app.test_servo() is False and rfid.servos == []    # gọi bằng code cũng không mở thanh chắn
+
+    app.cancel_pending()
+    assert pump(root, lambda: str(app.servo_btn.cget("state")) == "normal")
+    app.servo_btn.invoke()
+    assert rfid.servos == [("in", "OPEN", 3.0)]
+
+
+def test_test_servo_works_before_ocr_model_is_loaded(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    rec.ready = False                                         # OCR chưa nạp xong: các nút "thử nhận diện" bị khóa
+    app.refresh_buttons()
+    assert str(app.capture_btn.cget("state")) == "disabled"
+    assert str(app.servo_btn.cget("state")) == "normal"       # nhưng thử servo thì vẫn được
+
+
+def test_test_servo_when_servo_disabled_or_arduino_missing_explains_why(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    app.rfid = None                                           # chưa có Arduino
+    assert app.test_servo() is False
+    assert "Arduino chưa kết nối" in app.status_lbl.cget("text")
+
+    class Offline:
+        def send_servo(self, *a, **k):
+            return False                                      # cổng COM đang mất kết nối
+
+    app.rfid = Offline()
+    assert app.test_servo() is False and "KHÔNG gửi được" in app.status_lbl.cget("text")
+
+    class Broken:
+        def send_servo(self, *a, **k):
+            raise RuntimeError("cổng COM hỏng")
+
+    app.rfid = Broken()
+    assert app.test_servo() is False                          # không ném ngoại lệ ra giao diện
+
+    monkeypatch.setenv("SERVO_ENABLED", "0")
+    app2, db2, rec2, rfid2 = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    assert app2.test_servo() is False and rfid2.servos == []
+    assert "SERVO_ENABLED=0" in app2.status_lbl.cget("text")
+
+
+def test_dual_each_gate_has_its_own_test_servo_button(root, tmp_path, monkeypatch):
+    app, db, rec = make_dual(root, tmp_path, monkeypatch)
+    rfid = app.entry.rfid = app.exit.rfid = LcdSpy()
+    app.exit.servo_btn.invoke()
+    assert rfid.servos == [("out", "OPEN", 3.0)]              # nút cổng RA chỉ mở servo cổng RA
+    app.entry.servo_btn.invoke()
+    assert rfid.servos == [("out", "OPEN", 3.0), ("in", "OPEN", 3.0)]
+
+
+def test_real_reader_sends_servo_angles_after_arduino_boots_and_test_button_after(root, tmp_path, monkeypatch):
+    """Đường đi thật: main._make_rfid -> luồng đọc -> (STATUS đầu tiên) gửi góc ban đầu của cả hai servo -> bấm Test servo."""
+    import main
+    monkeypatch.setenv("SERVO_CLOSED_ANGLE", "5")
+    monkeypatch.setenv("SERVO_OPEN_ANGLE", "100")
+    app, db, _ = make_dual(root, tmp_path, monkeypatch)
+    app.entry.cfg = config.load_settings("in", {"SERVO_CLOSED_ANGLE": "5", "SERVO_OPEN_ANGLE": "100"})
+    app.exit.cfg = config.load_settings("out", {"SERVO_CLOSED_ANGLE": "12", "SERVO_OPEN_ANGLE": "110"})
+    ser = LiveSerialW(["# dual_rfid san sang\n", "STATUS:IN=1,OUT=1\n"])
+    reader = main._make_rfid(app.entry.cfg, {"in": app.entry, "out": app.exit},
+                             serial_factory=lambda port, baud, timeout: ser)
+    app.set_rfid(reader)
+    assert pump(root, lambda: len(ser.sent) >= 2)
+    assert ser.sent[:2] == [b"SERVOIN:ANGLE:5:100\n", b"SERVOOUT:ANGLE:12:110\n"]
+
+    app.exit.servo_btn.invoke()
+    assert pump(root, lambda: b"SERVOOUT:OPEN:3000\n" in ser.sent)
+    app.on_close()
+
+
 # ---------------------------------------------------------------- cảm biến hồng ngoại: xe đã qua thanh chắn
 def drain_barrier(root, db, count=1):
     return pump(root, lambda: len(db.passes) >= count)

@@ -248,3 +248,42 @@ def test_servo_defaults_are_in_env_example(tmp_path):
     env, _ = config.gate_env("in", str(tmp_path), environ={})
     s = config.load_settings("in", env)
     assert s.servo_enabled is True and s.servo_open_seconds == 3.0
+    assert (s.servo_closed_angle, s.servo_open_angle) == (0, 90)
+
+
+def test_servo_angle_settings(monkeypatch):
+    monkeypatch.delenv("SERVO_CLOSED_ANGLE", raising=False)
+    monkeypatch.delenv("SERVO_OPEN_ANGLE", raising=False)
+    s = config.load_settings("in")
+    assert (s.servo_closed_angle, s.servo_open_angle) == (0, 90)          # mặc định khớp firmware
+    monkeypatch.setenv("SERVO_CLOSED_ANGLE", "10")
+    monkeypatch.setenv("SERVO_OPEN_ANGLE", "120")
+    s = config.load_settings("out")
+    assert (s.servo_closed_angle, s.servo_open_angle) == (10, 120)
+    # servo quay ngược: đảo hai góc là hợp lệ
+    assert config.load_settings("in", {"SERVO_CLOSED_ANGLE": "90", "SERVO_OPEN_ANGLE": "0"}).servo_closed_angle == 90
+
+
+def test_servo_angles_can_differ_per_gate(tmp_path):
+    (tmp_path / ".env").write_text("SERVO_OPEN_ANGLE=90\n", encoding="utf-8")
+    (tmp_path / ".env.out").write_text("SERVO_OPEN_ANGLE=110\n", encoding="utf-8")
+    env_in, _ = config.gate_env("in", str(tmp_path), environ={})
+    env_out, _ = config.gate_env("out", str(tmp_path), environ={})
+    assert config.load_settings("in", env_in).servo_open_angle == 90
+    assert config.load_settings("out", env_out).servo_open_angle == 110
+
+
+@pytest.mark.parametrize("name", ["SERVO_CLOSED_ANGLE", "SERVO_OPEN_ANGLE"])
+@pytest.mark.parametrize("value", ["-1", "181", "360"])
+def test_servo_angle_out_of_range_is_rejected(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=name):
+        config.load_settings("in")
+
+
+def test_servo_angles_must_differ_and_be_integers(monkeypatch):
+    with pytest.raises(ValueError, match="không được bằng nhau"):
+        config.load_settings("in", {"SERVO_CLOSED_ANGLE": "45", "SERVO_OPEN_ANGLE": "45"})
+    monkeypatch.setenv("SERVO_OPEN_ANGLE", "chín mươi")
+    with pytest.raises(ValueError, match="SERVO_OPEN_ANGLE phải là số"):
+        config.load_settings("in")

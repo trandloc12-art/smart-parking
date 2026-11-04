@@ -21,6 +21,8 @@ Chiều NGƯỢC LẠI thứ hai: mở thanh chắn (servo) của từng cổng 
     SERVOIN:OPEN           mở servo CỔNG VÀO (Arduino tự đóng lại sau thời gian mặc định trong firmware)
     SERVOOUT:OPEN:3000     mở servo CỔNG RA và giữ 3000 ms rồi Arduino tự đóng lại
     SERVOIN:CLOSE          đóng servo ngay (dự phòng)
+    SERVOIN:ANGLE:0:90     đặt góc đóng (vị trí ban đầu) và góc mở của servo CỔNG VÀO (SERVOOUT:ANGLE:... cho cổng ra);
+                           gửi mỗi khi Arduino khởi động (xem init_commands)
                            Arduino tự đóng, nên dù máy tính treo thì thanh chắn cũng không kẹt ở trạng thái mở.
 
 Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
@@ -72,6 +74,7 @@ def format_lcd_command(line1, line2="", gate="in"):
     return f"{prefix}:{lcd_text(line1)}|{lcd_text(line2)}\n"
 
 
+BOOT_BANNER = "# dual_rfid"      # dòng chú thích Arduino in ra khi khởi động xong (setup)
 SERVO_PREFIX = {"in": "SERVOIN", "out": "SERVOOUT"}   # mã cổng -> tiền tố lệnh servo
 SERVO_ACTIONS = ("OPEN", "CLOSE")
 
@@ -93,6 +96,28 @@ def format_servo_command(gate, action="OPEN", hold_seconds=None):
             raise ValueError("hold_seconds phải > 0")
         return f"{prefix}:OPEN:{int(round(hold_seconds * 1000))}\n"
     return f"{prefix}:{action}\n"
+
+
+SERVO_MAX_ANGLE = 180
+
+
+def format_servo_angle_command(gate, closed_angle, open_angle):
+    """Lệnh đặt góc servo, VD 'SERVOIN:ANGLE:0:90\\n': góc đóng (vị trí ban đầu) rồi góc mở, mỗi góc 0..180 độ."""
+    try:
+        prefix = SERVO_PREFIX[gate]
+    except KeyError:
+        raise ValueError(f"cổng không hợp lệ: {gate!r} (chỉ nhận 'in' hoặc 'out')") from None
+    for angle in (closed_angle, open_angle):
+        if isinstance(angle, bool) or not isinstance(angle, int) or not 0 <= angle <= SERVO_MAX_ANGLE:
+            raise ValueError(f"góc servo phải là số nguyên 0..{SERVO_MAX_ANGLE}, đang là {angle!r}")
+    return f"{prefix}:ANGLE:{closed_angle}:{open_angle}\n"
+
+
+def servo_init_commands(*cfgs):
+    """Các lệnh đặt góc servo (init_commands của ArduinoRfidReader) cho những cổng có cấu hình `cfgs`.
+    Cổng tắt servo (SERVO_ENABLED=0) thì không gửi gì."""
+    return [format_servo_angle_command(c.gate, c.servo_closed_angle, c.servo_open_angle)
+            for c in cfgs if getattr(c, "servo_enabled", True)]
 
 
 # ---------------------------------------------------------------- phân tích một dòng (hàm thuần)
@@ -151,7 +176,7 @@ class ArduinoRfidReader(threading.Thread):
     BAD_LINES_BEFORE_ALERT = 3      # vài dòng rác lúc Arduino vừa khởi động là bình thường
 
     def __init__(self, port, baudrate, on_card, on_status=None, on_reader_status=None,
-                 debounce=2.0, heartbeat_timeout=8.0, on_barrier=None,
+                 debounce=2.0, heartbeat_timeout=8.0, on_barrier=None, init_commands=(),
                  serial_factory=serial.Serial, clock=time.monotonic, sleep=time.sleep):
         super().__init__(daemon=True)
         self.port, self.baudrate = port, baudrate
@@ -161,6 +186,10 @@ class ArduinoRfidReader(threading.Thread):
         self.on_barrier = on_barrier or (lambda gate, passed: None)
         self.debounce = debounce
         self.heartbeat_timeout = heartbeat_timeout
+        # Các dòng lệnh (đã có \\n) gửi cho Arduino mỗi khi nó khởi động, VD góc servo ban đầu. Arduino Uno tự reset
+        # khi mở cổng COM nên không gửi ngay lúc kết nối được: chờ dòng STATUS đầu tiên (Arduino đã sẵn sàng).
+        self.init_commands = tuple(init_commands)
+        self._init_pending = True
         self._serial_factory, self._clock, self._sleep = serial_factory, clock, sleep
         self._running = True
         self._last_swipe = {}           # (cổng, uid) -> thời điểm quẹt gần nhất, để chống quẹt trùng
@@ -211,6 +240,18 @@ class ArduinoRfidReader(threading.Thread):
         Trả về True nếu đã ghi ra cổng COM; False nếu đang mất kết nối hoặc ghi lỗi (không ném ngoại lệ)."""
         return self._write_line(format_servo_command(gate, action, hold_seconds))
 
+    def send_servo_angles(self, gate, closed_angle, open_angle):
+        """Đặt góc đóng (vị trí ban đầu) và góc mở cho servo của cổng `gate`. Trả về True nếu đã ghi ra cổng COM."""
+        return self._write_line(format_servo_angle_command(gate, closed_angle, open_angle))
+
+    def _send_init_commands(self):
+        """Gửi các lệnh khởi tạo; chưa gửi hết (mất kết nối giữa chừng) thì thử lại ở dòng STATUS kế tiếp (~2 giây)."""
+        try:
+            if all([self._write_line(line) for line in self.init_commands]):
+                self._init_pending = False
+        except Exception:
+            pass        # chạy trong luồng đọc thẻ: servo chỉ là phần phụ, không được làm chết việc đọc RFID
+
     def _write_line(self, line):
         data = line.encode("ascii")
         ser = self._ser
@@ -228,6 +269,7 @@ class ArduinoRfidReader(threading.Thread):
         self._silent = False
         self._bad_streak = 0
         self._format_alert = False
+        self._init_pending = True
 
     def _connected_text(self):
         return f"Arduino: đã kết nối {self.port}"
@@ -239,6 +281,8 @@ class ArduinoRfidReader(threading.Thread):
             self._silent = False
             self.on_status(True, self._connected_text())
 
+        if raw.lstrip().startswith(BOOT_BANNER):
+            self._init_pending = True       # Arduino vừa (khởi động lại): servo về góc mặc định, cần cài lại góc
         msg = parse_line(raw)
         if isinstance(msg, BadLine):
             self._bad_streak += 1
@@ -255,6 +299,8 @@ class ArduinoRfidReader(threading.Thread):
             self.on_status(True, self._connected_text())
 
         if isinstance(msg, ReaderStatus):
+            if self._init_pending:
+                self._send_init_commands()
             for gate, ok in msg.readers.items():
                 self.on_reader_status(gate, ok)
         elif isinstance(msg, BarrierEvent):

@@ -24,6 +24,9 @@
       SERVOIN:OPEN:3000     như trên nhưng giữ 3000 ms (giới hạn SERVO_HOLD_MIN_MS..SERVO_HOLD_MAX_MS)
       SERVOOUT:OPEN[:ms]    như trên cho servo CỔNG RA
       SERVOIN:CLOSE         đóng ngay (SERVOOUT:CLOSE cho cổng ra)
+      SERVOIN:ANGLE:0:90    đặt GÓC ĐÓNG (vị trí ban đầu) và GÓC MỞ của servo CỔNG VÀO, 0..180 độ (SERVOOUT:ANGLE:... cho
+                            cổng ra). Servo chạy tới góc mới ngay. Máy tính gửi lệnh này mỗi khi Arduino khởi động; chưa nhận
+                            được thì servo dùng SERVO_CLOSED_ANGLE / SERVO_OPEN_ANGLE bên dưới.
                             Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo cũng không kẹt thanh chắn mở.
 
   Đấu dây RFID (Arduino Uno/Nano; đổi chân trong 3 hằng số bên dưới nếu cần):
@@ -91,8 +94,8 @@ const uint8_t LCD_ADDRS[] = {0x27, 0x3F};
 // Servo thanh chắn: mỗi cổng một servo. Góc 0..180 độ; chỉnh cho khớp cơ cấu thật (đảo hai góc nếu quay ngược).
 const uint8_t PIN_SERVO_IN = 6;
 const uint8_t PIN_SERVO_OUT = 7;
-const uint8_t SERVO_CLOSED_ANGLE = 0;          // thanh chắn hạ (đóng)
-const uint8_t SERVO_OPEN_ANGLE = 90;           // thanh chắn nâng (mở)
+const uint8_t SERVO_CLOSED_ANGLE = 0;          // thanh chắn hạ (đóng) = vị trí ban đầu; máy tính ghi đè bằng SERVO_CLOSED_ANGLE trong .env
+const uint8_t SERVO_OPEN_ANGLE = 90;           // thanh chắn nâng (mở); máy tính ghi đè bằng SERVO_OPEN_ANGLE trong .env
 const unsigned long SERVO_HOLD_MS = 3000;      // giữ mở mặc định khi lệnh không nêu thời gian
 const unsigned long SERVO_HOLD_MIN_MS = 500;   // chặn lệnh sai: tối thiểu / tối đa
 const unsigned long SERVO_HOLD_MAX_MS = 30000;
@@ -300,7 +303,7 @@ class Barrier {
 
   void begin() {
     servo_.attach(pin_);
-    servo_.write(SERVO_CLOSED_ANGLE);          // khởi động luôn ở vị trí đóng
+    servo_.write(closedAngle_);                // khởi động luôn ở vị trí đóng (góc ban đầu)
     open_ = false;
     before_.begin();
     after_.begin();
@@ -310,7 +313,7 @@ class Barrier {
   void open(unsigned long holdMs) {
     holdMs = constrain(holdMs, SERVO_HOLD_MIN_MS, SERVO_HOLD_MAX_MS);
     if (!open_) {
-      servo_.write(SERVO_OPEN_ANGLE);
+      servo_.write(openAngle_);
       detector_.reset();                       // lần mở mới: theo dõi xe từ đầu
     }
     open_ = true;
@@ -320,8 +323,15 @@ class Barrier {
 
   // Đóng theo lệnh (không báo PASS / NOPASS).
   void close() {
-    if (open_) servo_.write(SERVO_CLOSED_ANGLE);
+    if (open_) servo_.write(closedAngle_);
     open_ = false;
+  }
+
+  // Đặt góc đóng (vị trí ban đầu) / góc mở. Servo chạy tới góc tương ứng với trạng thái hiện tại ngay.
+  void setAngles(uint8_t closedAngle, uint8_t openAngle) {
+    closedAngle_ = closedAngle > 180 ? 180 : closedAngle;
+    openAngle_ = openAngle > 180 ? 180 : openAngle;
+    servo_.write(open_ ? openAngle_ : closedAngle_);
   }
 
   void update() {                              // gọi mỗi vòng loop
@@ -354,6 +364,7 @@ class Barrier {
   PassDetector detector_;
   const char *tag_;                            // "IN" / "OUT" (chuỗi thường: F() không dùng được ở phạm vi toàn cục)
   bool open_ = false;
+  uint8_t closedAngle_ = SERVO_CLOSED_ANGLE, openAngle_ = SERVO_OPEN_ANGLE;   // mặc định; máy tính ghi đè bằng ANGLE
   unsigned long openedAt_ = 0, holdMs_ = SERVO_HOLD_MS;
 };
 
@@ -465,6 +476,15 @@ void handleServo(Barrier &barrier, char *args) {
     barrier.open(holdMs);
   } else if (strncmp(args, "CLOSE", 5) == 0) {
     barrier.close();
+  } else if (strncmp(args, "ANGLE:", 6) == 0) {           // "ANGLE:<góc đóng>:<góc mở>", mỗi góc 0..180
+    char *end = nullptr;
+    long closedAngle = strtol(args + 6, &end, 10);
+    if (end == args + 6 || *end != ':') return;           // sai định dạng: bỏ qua cả lệnh
+    char *start = end + 1;
+    long openAngle = strtol(start, &end, 10);
+    if (end == start) return;
+    if (closedAngle < 0 || closedAngle > 180 || openAngle < 0 || openAngle > 180) return;
+    barrier.setAngles((uint8_t)closedAngle, (uint8_t)openAngle);
   }
 }
 

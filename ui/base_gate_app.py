@@ -157,6 +157,7 @@ class BaseGateApp:
         self._closing = False
         self._lcd_job = None        # hẹn giờ đưa LCD về "MOI QUET THE" (xem lcd)
         self._barrier_session = None    # id lượt gửi xe vừa được mở thanh chắn, chờ cảm biến báo xe đã qua chưa
+        self._servo_btn_state = "normal"    # trạng thái hiện tại của nút Test servo (xem sync_servo_button)
 
         self.build_ui()
         self.open_camera(cfg.camera_index)
@@ -209,6 +210,32 @@ class BaseGateApp:
             return False
         if sent:
             self._barrier_session = session_id
+        return sent
+
+    def test_servo(self):
+        """Nút "Test servo": mở thanh chắn của CỔNG NÀY để kiểm tra servo / góc quay, rồi Arduino tự đóng lại sau
+        cfg.servo_open_seconds giây. Không gắn với lượt gửi xe nào nên kết quả cảm biến (PASS / NOPASS) của lần thử
+        bị bỏ qua, không ghi vào SQL Server. Trả về True nếu đã gửi lệnh."""
+        label = self.cfg.label
+        if self.busy or self.pending is not None:
+            return False                # đang xử lý một lần quẹt thẻ / chờ nhân viên: không mở thanh chắn lúc này
+        if not getattr(self.cfg, "servo_enabled", True):
+            self.set_status(f"Servo {label} đang tắt (SERVO_ENABLED=0 trong .env). Đặt thành 1 rồi chạy lại để thử.",
+                            COLOR_WARN)
+            return False
+        send = getattr(self.rfid, "send_servo", None)
+        sent = False
+        if send is not None:
+            try:
+                sent = bool(send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds))
+            except Exception:
+                sent = False
+        if sent:
+            self.set_status(f"Test servo {label}: đã gửi lệnh mở, thanh chắn tự đóng sau "
+                            f"{self.cfg.servo_open_seconds:g} giây.", COLOR_OK)
+        else:
+            self.set_status(f"Test servo {label}: KHÔNG gửi được lệnh (Arduino chưa kết nối). "
+                            "Xem thanh tình trạng thiết bị phía trên.", COLOR_ERR)
         return sent
 
     def handle_barrier(self, passed):
@@ -340,6 +367,8 @@ class BaseGateApp:
         self.open_btn = ttk.Button(btns, text="📁 Thử với ảnh từ máy",
                                    command=self.open_image, state="disabled")
         self.open_btn.pack(side="left", padx=5)
+        self.servo_btn = ttk.Button(btns, text="🔧 Test servo", command=self.test_servo)
+        self.servo_btn.pack(side="left", padx=5)
 
         # Hàng 3: lịch sử (cửa sổ chung thì dùng bảng do cửa sổ chung tạo)
         if self.history is None:
@@ -417,7 +446,17 @@ class BaseGateApp:
         can_trial = self.service.ready and not self.busy and self.pending is None
         for b in (self.capture_btn, self.open_btn):
             b.configure(state="normal" if can_trial else "disabled")
+        self.sync_servo_button()
         self.update_action_buttons()
+
+    def sync_servo_button(self):
+        """Test servo không cần OCR nạp xong; chỉ khóa khi đang xử lý một lần quẹt thẻ / chờ nhân viên (khỏi mở
+        thanh chắn nhầm giữa chừng và khỏi đè dòng trạng thái đang cần nhân viên đọc). `pending` đổi ở nhiều chỗ
+        trong lớp con nên được gọi cả từ update_loop; chỉ đụng tới nút khi trạng thái thật sự đổi."""
+        state = "normal" if not self.busy and self.pending is None else "disabled"
+        if state != self._servo_btn_state:
+            self._servo_btn_state = state
+            self.servo_btn.configure(state=state)
 
     # ---------- Chạy việc nặng ở luồng nền ----------
     def _bg(self, fn, on_ok, busy=True, on_error=None):
@@ -491,6 +530,7 @@ class BaseGateApp:
             except queue.Empty:
                 break
 
+        self.sync_servo_button()
         frame = self.camera.read()
         if frame is not None:
             self.last_frame = frame

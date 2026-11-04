@@ -73,6 +73,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
 | `SERVO_ENABLED` | `1` | `1` = quẹt thẻ thành công thì mở servo thanh chắn; `0` = chưa gắn servo thì tắt đi (không gửi lệnh nào) |
 | `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
+| `SERVO_CLOSED_ANGLE`, `SERVO_OPEN_ANGLE` | `0`, `90` | **Góc ban đầu** (thanh chắn hạ) và góc thanh chắn nâng của servo, `0`..`180` độ. Gửi cho Arduino mỗi lần nó khởi động. Servo quay ngược thì đảo hai giá trị; hai cổng gắn khác nhau thì đặt riêng trong `.env.in` / `.env.out` |
 | `IR_ENABLED` | `1` | `1` = ghi kết quả cảm biến hồng ngoại (xe đã qua / hết giờ chưa qua) vào SQL Server; `0` = chưa gắn cảm biến thì tắt đi (bỏ qua `PASS` / `NOPASS` từ Arduino) |
 | `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
 
@@ -90,6 +91,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | Một cửa sổ nhưng hai khung camera hiện cùng một hình | Hai cổng đang trùng `CAMERA_INDEX`: sửa lại trong `.env.in` / `.env.out` |
 | Cửa sổ chung quá rộng, tràn màn hình | Giảm `VIEW_W` / `VIEW_H` trong `.env` (hoặc để chương trình tự thu nhỏ theo độ rộng màn hình) |
 | "Không mở được camera" | Đổi số trong ô "Camera số" rồi bấm Mở camera; đóng ứng dụng khác đang dùng camera |
+| Bấm "Test servo" thanh chắn không nhúc nhích / quay sai góc | Xem dòng trạng thái: `KHÔNG gửi được lệnh` = Arduino chưa kết nối; `SERVO_ENABLED=0` = servo đang bị tắt. Nếu lệnh đã gửi mà servo không động: kiểm tra dây tín hiệu (D6 cổng vào, D7 cổng ra) và nguồn 5V riêng + nối chung GND. Quay sai chiều hoặc không khớp thanh chắn: chỉnh `SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` (đảo hai giá trị nếu ngược) rồi chạy lại chương trình |
 | Quẹt thẻ chậm | OCR chạy bằng CPU, mỗi ảnh có thể mất vài giây. Giảm `SCAN_FRAMES` nếu cần |
 | Thẻ báo "đang ở trong bãi" dù xe đã đi | Lượt cũ chưa đóng: đóng bằng câu SQL ở trên |
 | Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
@@ -113,6 +115,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `SERVOIN:OPEN` / `SERVOOUT:OPEN` | Mở servo **cổng vào** / **cổng ra**, giữ thời gian mặc định (3 giây) rồi Arduino **tự đóng** |
 | `SERVOIN:OPEN:3000` | Như trên nhưng giữ 3000 ms (Arduino kẹp trong khoảng 500..30000 ms). Python gửi dạng này theo `SERVO_OPEN_SECONDS` |
 | `SERVOIN:CLOSE` / `SERVOOUT:CLOSE` | Đóng ngay (dự phòng) |
+| `SERVOIN:ANGLE:0:90` | Đặt **góc đóng (vị trí ban đầu)** rồi **góc mở** (`0`..`180` độ) cho servo cổng vào (`SERVOOUT:ANGLE:...` cho cổng ra); servo chạy tới góc mới ngay. Lệnh sai định dạng hoặc ngoài `0`..`180` bị bỏ qua cả lệnh. Python gửi lệnh này theo `SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` mỗi khi Arduino khởi động |
 
 Hướng đi do **tiền tố** (`IN:` / `OUT:`) quyết định. Dòng UID trần không có tiền tố (firmware cũ) bị coi là sai định dạng và báo lỗi trên thanh tình trạng, chương trình không đoán cổng.
 
@@ -175,9 +178,11 @@ Mỗi cổng một servo (SG90 / MG90S...) gắn vào chính Arduino đó. **Khi
 
 Hai chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), cảm biến hồng ngoại (D2..D5), còi (A5) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
 
-**Chỉnh cho khớp thanh chắn thật** (đầu `dual_rfid.ino`): `SERVO_CLOSED_ANGLE` (mặc định 0°) và `SERVO_OPEN_ANGLE` (mặc định 90°; đảo hai giá trị nếu servo quay ngược), `SERVO_HOLD_MS` (thời gian mở mặc định). Thời gian giữ mở thực tế do `SERVO_OPEN_SECONDS` trong `.env` quyết định.
+**Góc ban đầu và góc mở** do `SERVO_CLOSED_ANGLE` (mặc định 0°, vị trí ban đầu = thanh chắn hạ) và `SERVO_OPEN_ANGLE` (mặc định 90°) trong `.env` quyết định (đảo hai giá trị nếu servo quay ngược; hai cổng khác nhau thì đặt riêng trong `.env.in` / `.env.out`). Chương trình gửi hai góc này cho Arduino (`SERVOIN:ANGLE:...`) ngay khi Arduino khởi động xong, và gửi lại nếu Arduino bị reset, nên **đổi góc chỉ cần sửa `.env` rồi chạy lại chương trình, không phải nạp lại sketch**. Lúc mới cấp điện, trước khi chương trình kịp gửi, servo ở góc mặc định trong sketch (`SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` đầu `dual_rfid.ino`, 0° / 90°), nên có thể thấy servo giật nhẹ một lần nếu `.env` đặt góc khác. `SERVO_HOLD_MS` trong sketch là thời gian mở mặc định; thời gian giữ mở thực tế do `SERVO_OPEN_SECONDS` quyết định.
 
-**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
+**Nút "🔧 Test servo"** (mỗi cổng một nút, nằm cạnh nút *Thử với ảnh từ máy*): bấm để mở thanh chắn của cổng đó, rồi Arduino tự đóng sau `SERVO_OPEN_SECONDS` giây. Dùng để kiểm tra dây, nguồn và chỉnh góc mà không cần quẹt thẻ. Lần thử **không tạo lượt gửi xe, không đụng LCD và không ghi gì vào SQL Server** (kết quả cảm biến của lần thử bị bỏ qua). Nút bị khóa khi đang xử lý một lần quẹt thẻ hoặc đang chờ nhân viên xác nhận. Nút báo ngay trên dòng trạng thái nếu không gửi được: `SERVO_ENABLED=0` hoặc Arduino chưa kết nối.
+
+**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo (hoặc `SERVOIN:ANGLE:0:90` để đặt góc).
 
 ## Còi bíp (tùy chọn: MỘT còi dùng chung cho cả hai cổng)
 Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi kêu **một tiếng bíp ngắn** (mặc định 2000 Hz, 120 ms) để người quẹt biết thẻ đã được đọc. Còi do **Arduino tự điều khiển** ngay khi đọc được thẻ, không cần chờ máy tính, nên vẫn kêu khi chương trình Python chưa chạy; bíp kêu cho mọi thẻ đọc được, kể cả thẻ chưa đăng ký. Không có lệnh nào từ máy tính để điều khiển còi, và không có biến cấu hình trong `.env`.

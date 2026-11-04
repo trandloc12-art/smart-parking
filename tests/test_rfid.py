@@ -3,8 +3,8 @@ import pytest
 import serial
 
 from hardware.rfid import (
-    ArduinoRfidReader, BadLine, BarrierEvent, CardSwipe, ReaderStatus, format_lcd_command, format_servo_command,
-    lcd_text, parse_line,
+    ArduinoRfidReader, BadLine, BarrierEvent, CardSwipe, ReaderStatus, format_lcd_command,
+    format_servo_angle_command, format_servo_command, lcd_text, parse_line, servo_init_commands,
 )
 
 
@@ -379,3 +379,86 @@ def test_send_servo_write_error_is_swallowed():
     box["reader"] = reader
     reader.run()
     assert results == [False] and sent == []
+
+
+# ---------------------------------------------------------------- góc servo ban đầu
+def test_format_servo_angle_command():
+    assert format_servo_angle_command("in", 0, 90) == "SERVOIN:ANGLE:0:90\n"
+    assert format_servo_angle_command("out", 10, 120) == "SERVOOUT:ANGLE:10:120\n"
+    assert format_servo_angle_command("in", 90, 0) == "SERVOIN:ANGLE:90:0\n"        # servo quay ngược
+    assert format_servo_angle_command("in", 0, 180).endswith(":0:180\n")             # biên trên
+
+
+@pytest.mark.parametrize("args", [("left", 0, 90), ("in", -1, 90), ("in", 0, 181), ("in", 0.5, 90),
+                                  ("in", "0", 90), ("in", None, 90), ("in", True, 90)])
+def test_format_servo_angle_command_rejects_bad_input(args):
+    with pytest.raises(ValueError):
+        format_servo_angle_command(*args)
+
+
+def test_send_servo_angles_writes_one_line_and_never_raises_when_disconnected():
+    sent, results = [], []
+    box = {}
+    box["reader"] = _reader_with_writable_serial(
+        [b"IN:AAAA1111\n"], sent,
+        on_card=lambda gate, uid: results.append(box["reader"].send_servo_angles("out", 5, 95)))
+    box["reader"].run()
+    assert results == [True] and sent == [b"SERVOOUT:ANGLE:5:95\n"]
+    assert box["reader"].send_servo_angles("in", 0, 90) is False                  # đã đóng cổng COM
+
+
+class _Cfg:
+    def __init__(self, gate, closed=0, open_=90, enabled=True):
+        self.gate, self.servo_closed_angle, self.servo_open_angle, self.servo_enabled = gate, closed, open_, enabled
+
+
+def test_servo_init_commands_per_gate_and_skips_disabled_servo():
+    assert servo_init_commands(_Cfg("in", 0, 90), _Cfg("out", 10, 100)) == \
+        ["SERVOIN:ANGLE:0:90\n", "SERVOOUT:ANGLE:10:100\n"]
+    assert servo_init_commands(_Cfg("out", 5, 95)) == ["SERVOOUT:ANGLE:5:95\n"]          # chạy một cổng
+    assert servo_init_commands(_Cfg("in", enabled=False), _Cfg("out")) == ["SERVOOUT:ANGLE:0:90\n"]
+    assert servo_init_commands() == []
+
+
+def _init_reader(script, sent, init=("SERVOIN:ANGLE:0:90\n", "SERVOOUT:ANGLE:0:90\n"), fail_write=False):
+    clock, box = Clock(), {}
+
+    def factory(port, baud, timeout):
+        return WritableSerial(script, clock, lambda: box["reader"].stop(), sent, fail_write)
+
+    box["reader"] = ArduinoRfidReader("COM3", 9600, lambda g, u: None, serial_factory=factory, clock=clock,
+                                      sleep=lambda s: None, init_commands=init)
+    return box["reader"]
+
+
+def test_init_commands_wait_for_the_first_status_then_are_sent_once():
+    """Arduino Uno tự reset khi mở cổng COM: chưa gửi lúc vừa kết nối, mà chờ dòng STATUS (đã khởi động xong)."""
+    sent = []
+    _init_reader([b"# dual_rfid san sang\n"], sent).run()
+    assert sent == []                                                  # mới có banner, chưa có STATUS -> chưa gửi
+
+    sent.clear()
+    _init_reader([b"# dual_rfid san sang\n", b"STATUS:IN=1,OUT=1\n", b"STATUS:IN=1,OUT=1\n",
+                  b"STATUS:IN=1,OUT=1\n"], sent).run()
+    assert sent == [b"SERVOIN:ANGLE:0:90\n", b"SERVOOUT:ANGLE:0:90\n"]       # đúng một lần dù có nhiều STATUS
+
+
+def test_init_commands_are_resent_when_arduino_reboots():
+    sent = []
+    _init_reader([b"STATUS:IN=1,OUT=1\n", b"# dual_rfid san sang\n", b"STATUS:IN=1,OUT=1\n"], sent,
+                 init=("SERVOIN:ANGLE:0:90\n",)).run()
+    assert sent == [b"SERVOIN:ANGLE:0:90\n"] * 2                       # Arduino reset -> servo về mặc định -> cài lại
+
+
+def test_init_commands_retry_after_a_failed_write_and_never_kill_the_reader():
+    sent, cards = [], []
+    reader = _init_reader([b"STATUS:IN=1,OUT=1\n", b"IN:AAAA1111\n"], sent, fail_write=True)
+    reader.on_card = lambda gate, uid: cards.append(uid)
+    reader.run()
+    assert sent == [] and cards == ["AAAA1111"]                         # ghi lỗi: vẫn đọc thẻ bình thường
+    assert reader._init_pending is True                                 # và sẽ thử lại ở STATUS kế tiếp
+
+
+def test_init_commands_default_to_nothing():
+    reader = ArduinoRfidReader("COM3", 9600, lambda g, u: None, serial_factory=None)
+    assert reader.init_commands == ()

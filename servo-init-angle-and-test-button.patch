@@ -1,0 +1,803 @@
+diff --git a/.env.example b/.env.example
+index 64cf2b7..4927378 100644
+--- a/.env.example
++++ b/.env.example
+@@ -28,6 +28,8 @@ LCD_IDLE_SECONDS=5
+ # Servo thanh chắn (mỗi cổng một servo, gắn vào cùng Arduino): quẹt thẻ thành công -> mở, tự đóng lại sau số giây này
+ SERVO_ENABLED=1                # 0 = chưa gắn servo thì tắt đi
+ SERVO_OPEN_SECONDS=3           # giây giữ thanh chắn mở (0.5..30)
++SERVO_CLOSED_ANGLE=0           # góc ban đầu = thanh chắn hạ (0..180 độ). Gửi cho Arduino mỗi lần nó khởi động
++SERVO_OPEN_ANGLE=90            # góc thanh chắn nâng (0..180 độ); servo quay ngược thì đảo hai giá trị. Hai cổng khác nhau: đặt riêng trong .env.in / .env.out
+ 
+ # Cảm biến hồng ngoại (mỗi cổng 2 cái, trước + sau thanh chắn): xe đã qua thì hạ thanh chắn ngay, kết quả ghi vào SQL Server
+ IR_ENABLED=1                   # 0 = chưa gắn cảm biến thì tắt đi (bỏ qua PASS / NOPASS từ Arduino)
+diff --git a/README.md b/README.md
+index bb26ea9..6fa469e 100644
+--- a/README.md
++++ b/README.md
+@@ -73,6 +73,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
+ | `SERVO_ENABLED` | `1` | `1` = quẹt thẻ thành công thì mở servo thanh chắn; `0` = chưa gắn servo thì tắt đi (không gửi lệnh nào) |
+ | `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
++| `SERVO_CLOSED_ANGLE`, `SERVO_OPEN_ANGLE` | `0`, `90` | **Góc ban đầu** (thanh chắn hạ) và góc thanh chắn nâng của servo, `0`..`180` độ. Gửi cho Arduino mỗi lần nó khởi động. Servo quay ngược thì đảo hai giá trị; hai cổng gắn khác nhau thì đặt riêng trong `.env.in` / `.env.out` |
+ | `IR_ENABLED` | `1` | `1` = ghi kết quả cảm biến hồng ngoại (xe đã qua / hết giờ chưa qua) vào SQL Server; `0` = chưa gắn cảm biến thì tắt đi (bỏ qua `PASS` / `NOPASS` từ Arduino) |
+ | `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
+ 
+@@ -90,6 +91,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | Một cửa sổ nhưng hai khung camera hiện cùng một hình | Hai cổng đang trùng `CAMERA_INDEX`: sửa lại trong `.env.in` / `.env.out` |
+ | Cửa sổ chung quá rộng, tràn màn hình | Giảm `VIEW_W` / `VIEW_H` trong `.env` (hoặc để chương trình tự thu nhỏ theo độ rộng màn hình) |
+ | "Không mở được camera" | Đổi số trong ô "Camera số" rồi bấm Mở camera; đóng ứng dụng khác đang dùng camera |
++| Bấm "Test servo" thanh chắn không nhúc nhích / quay sai góc | Xem dòng trạng thái: `KHÔNG gửi được lệnh` = Arduino chưa kết nối; `SERVO_ENABLED=0` = servo đang bị tắt. Nếu lệnh đã gửi mà servo không động: kiểm tra dây tín hiệu (D6 cổng vào, D7 cổng ra) và nguồn 5V riêng + nối chung GND. Quay sai chiều hoặc không khớp thanh chắn: chỉnh `SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` (đảo hai giá trị nếu ngược) rồi chạy lại chương trình |
+ | Quẹt thẻ chậm | OCR chạy bằng CPU, mỗi ảnh có thể mất vài giây. Giảm `SCAN_FRAMES` nếu cần |
+ | Thẻ báo "đang ở trong bãi" dù xe đã đi | Lượt cũ chưa đóng: đóng bằng câu SQL ở trên |
+ | Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
+@@ -113,6 +115,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | `SERVOIN:OPEN` / `SERVOOUT:OPEN` | Mở servo **cổng vào** / **cổng ra**, giữ thời gian mặc định (3 giây) rồi Arduino **tự đóng** |
+ | `SERVOIN:OPEN:3000` | Như trên nhưng giữ 3000 ms (Arduino kẹp trong khoảng 500..30000 ms). Python gửi dạng này theo `SERVO_OPEN_SECONDS` |
+ | `SERVOIN:CLOSE` / `SERVOOUT:CLOSE` | Đóng ngay (dự phòng) |
++| `SERVOIN:ANGLE:0:90` | Đặt **góc đóng (vị trí ban đầu)** rồi **góc mở** (`0`..`180` độ) cho servo cổng vào (`SERVOOUT:ANGLE:...` cho cổng ra); servo chạy tới góc mới ngay. Lệnh sai định dạng hoặc ngoài `0`..`180` bị bỏ qua cả lệnh. Python gửi lệnh này theo `SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` mỗi khi Arduino khởi động |
+ 
+ Hướng đi do **tiền tố** (`IN:` / `OUT:`) quyết định. Dòng UID trần không có tiền tố (firmware cũ) bị coi là sai định dạng và báo lỗi trên thanh tình trạng, chương trình không đoán cổng.
+ 
+@@ -175,9 +178,11 @@ Mỗi cổng một servo (SG90 / MG90S...) gắn vào chính Arduino đó. **Khi
+ 
+ Hai chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), cảm biến hồng ngoại (D2..D5), còi (A5) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
+ 
+-**Chỉnh cho khớp thanh chắn thật** (đầu `dual_rfid.ino`): `SERVO_CLOSED_ANGLE` (mặc định 0°) và `SERVO_OPEN_ANGLE` (mặc định 90°; đảo hai giá trị nếu servo quay ngược), `SERVO_HOLD_MS` (thời gian mở mặc định). Thời gian giữ mở thực tế do `SERVO_OPEN_SECONDS` trong `.env` quyết định.
++**Góc ban đầu và góc mở** do `SERVO_CLOSED_ANGLE` (mặc định 0°, vị trí ban đầu = thanh chắn hạ) và `SERVO_OPEN_ANGLE` (mặc định 90°) trong `.env` quyết định (đảo hai giá trị nếu servo quay ngược; hai cổng khác nhau thì đặt riêng trong `.env.in` / `.env.out`). Chương trình gửi hai góc này cho Arduino (`SERVOIN:ANGLE:...`) ngay khi Arduino khởi động xong, và gửi lại nếu Arduino bị reset, nên **đổi góc chỉ cần sửa `.env` rồi chạy lại chương trình, không phải nạp lại sketch**. Lúc mới cấp điện, trước khi chương trình kịp gửi, servo ở góc mặc định trong sketch (`SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` đầu `dual_rfid.ino`, 0° / 90°), nên có thể thấy servo giật nhẹ một lần nếu `.env` đặt góc khác. `SERVO_HOLD_MS` trong sketch là thời gian mở mặc định; thời gian giữ mở thực tế do `SERVO_OPEN_SECONDS` quyết định.
+ 
+-**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
++**Nút "🔧 Test servo"** (mỗi cổng một nút, nằm cạnh nút *Thử với ảnh từ máy*): bấm để mở thanh chắn của cổng đó, rồi Arduino tự đóng sau `SERVO_OPEN_SECONDS` giây. Dùng để kiểm tra dây, nguồn và chỉnh góc mà không cần quẹt thẻ. Lần thử **không tạo lượt gửi xe, không đụng LCD và không ghi gì vào SQL Server** (kết quả cảm biến của lần thử bị bỏ qua). Nút bị khóa khi đang xử lý một lần quẹt thẻ hoặc đang chờ nhân viên xác nhận. Nút báo ngay trên dòng trạng thái nếu không gửi được: `SERVO_ENABLED=0` hoặc Arduino chưa kết nối.
++
++**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo (hoặc `SERVOIN:ANGLE:0:90` để đặt góc).
+ 
+ ## Còi bíp (tùy chọn: MỘT còi dùng chung cho cả hai cổng)
+ Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi kêu **một tiếng bíp ngắn** (mặc định 2000 Hz, 120 ms) để người quẹt biết thẻ đã được đọc. Còi do **Arduino tự điều khiển** ngay khi đọc được thẻ, không cần chờ máy tính, nên vẫn kêu khi chương trình Python chưa chạy; bíp kêu cho mọi thẻ đọc được, kể cả thẻ chưa đăng ký. Không có lệnh nào từ máy tính để điều khiển còi, và không có biến cấu hình trong `.env`.
+diff --git a/arduino/dual_rfid/dual_rfid.ino b/arduino/dual_rfid/dual_rfid.ino
+index 5da161c..0d988e6 100644
+--- a/arduino/dual_rfid/dual_rfid.ino
++++ b/arduino/dual_rfid/dual_rfid.ino
+@@ -24,6 +24,9 @@
+       SERVOIN:OPEN:3000     như trên nhưng giữ 3000 ms (giới hạn SERVO_HOLD_MIN_MS..SERVO_HOLD_MAX_MS)
+       SERVOOUT:OPEN[:ms]    như trên cho servo CỔNG RA
+       SERVOIN:CLOSE         đóng ngay (SERVOOUT:CLOSE cho cổng ra)
++      SERVOIN:ANGLE:0:90    đặt GÓC ĐÓNG (vị trí ban đầu) và GÓC MỞ của servo CỔNG VÀO, 0..180 độ (SERVOOUT:ANGLE:... cho
++                            cổng ra). Servo chạy tới góc mới ngay. Máy tính gửi lệnh này mỗi khi Arduino khởi động; chưa nhận
++                            được thì servo dùng SERVO_CLOSED_ANGLE / SERVO_OPEN_ANGLE bên dưới.
+                             Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo cũng không kẹt thanh chắn mở.
+ 
+   Đấu dây RFID (Arduino Uno/Nano; đổi chân trong 3 hằng số bên dưới nếu cần):
+@@ -91,8 +94,8 @@ const uint8_t LCD_ADDRS[] = {0x27, 0x3F};
+ // Servo thanh chắn: mỗi cổng một servo. Góc 0..180 độ; chỉnh cho khớp cơ cấu thật (đảo hai góc nếu quay ngược).
+ const uint8_t PIN_SERVO_IN = 6;
+ const uint8_t PIN_SERVO_OUT = 7;
+-const uint8_t SERVO_CLOSED_ANGLE = 0;          // thanh chắn hạ (đóng)
+-const uint8_t SERVO_OPEN_ANGLE = 90;           // thanh chắn nâng (mở)
++const uint8_t SERVO_CLOSED_ANGLE = 0;          // thanh chắn hạ (đóng) = vị trí ban đầu; máy tính ghi đè bằng SERVO_CLOSED_ANGLE trong .env
++const uint8_t SERVO_OPEN_ANGLE = 90;           // thanh chắn nâng (mở); máy tính ghi đè bằng SERVO_OPEN_ANGLE trong .env
+ const unsigned long SERVO_HOLD_MS = 3000;      // giữ mở mặc định khi lệnh không nêu thời gian
+ const unsigned long SERVO_HOLD_MIN_MS = 500;   // chặn lệnh sai: tối thiểu / tối đa
+ const unsigned long SERVO_HOLD_MAX_MS = 30000;
+@@ -300,7 +303,7 @@ class Barrier {
+ 
+   void begin() {
+     servo_.attach(pin_);
+-    servo_.write(SERVO_CLOSED_ANGLE);          // khởi động luôn ở vị trí đóng
++    servo_.write(closedAngle_);                // khởi động luôn ở vị trí đóng (góc ban đầu)
+     open_ = false;
+     before_.begin();
+     after_.begin();
+@@ -310,7 +313,7 @@ class Barrier {
+   void open(unsigned long holdMs) {
+     holdMs = constrain(holdMs, SERVO_HOLD_MIN_MS, SERVO_HOLD_MAX_MS);
+     if (!open_) {
+-      servo_.write(SERVO_OPEN_ANGLE);
++      servo_.write(openAngle_);
+       detector_.reset();                       // lần mở mới: theo dõi xe từ đầu
+     }
+     open_ = true;
+@@ -320,10 +323,17 @@ class Barrier {
+ 
+   // Đóng theo lệnh (không báo PASS / NOPASS).
+   void close() {
+-    if (open_) servo_.write(SERVO_CLOSED_ANGLE);
++    if (open_) servo_.write(closedAngle_);
+     open_ = false;
+   }
+ 
++  // Đặt góc đóng (vị trí ban đầu) / góc mở. Servo chạy tới góc tương ứng với trạng thái hiện tại ngay.
++  void setAngles(uint8_t closedAngle, uint8_t openAngle) {
++    closedAngle_ = closedAngle > 180 ? 180 : closedAngle;
++    openAngle_ = openAngle > 180 ? 180 : openAngle;
++    servo_.write(open_ ? openAngle_ : closedAngle_);
++  }
++
+   void update() {                              // gọi mỗi vòng loop
+     before_.update();
+     after_.update();
+@@ -354,6 +364,7 @@ class Barrier {
+   PassDetector detector_;
+   const char *tag_;                            // "IN" / "OUT" (chuỗi thường: F() không dùng được ở phạm vi toàn cục)
+   bool open_ = false;
++  uint8_t closedAngle_ = SERVO_CLOSED_ANGLE, openAngle_ = SERVO_OPEN_ANGLE;   // mặc định; máy tính ghi đè bằng ANGLE
+   unsigned long openedAt_ = 0, holdMs_ = SERVO_HOLD_MS;
+ };
+ 
+@@ -465,6 +476,15 @@ void handleServo(Barrier &barrier, char *args) {
+     barrier.open(holdMs);
+   } else if (strncmp(args, "CLOSE", 5) == 0) {
+     barrier.close();
++  } else if (strncmp(args, "ANGLE:", 6) == 0) {           // "ANGLE:<góc đóng>:<góc mở>", mỗi góc 0..180
++    char *end = nullptr;
++    long closedAngle = strtol(args + 6, &end, 10);
++    if (end == args + 6 || *end != ':') return;           // sai định dạng: bỏ qua cả lệnh
++    char *start = end + 1;
++    long openAngle = strtol(start, &end, 10);
++    if (end == start) return;
++    if (closedAngle < 0 || closedAngle > 180 || openAngle < 0 || openAngle > 180) return;
++    barrier.setAngles((uint8_t)closedAngle, (uint8_t)openAngle);
+   }
+ }
+ 
+diff --git a/config.py b/config.py
+index aaa8100..952adcb 100644
+--- a/config.py
++++ b/config.py
+@@ -124,6 +124,8 @@ class Settings:
+     window_pos: str            # VD "+0+0" hoặc "+900+0" để xếp hai cửa sổ cạnh nhau; để trống = mặc định
+     servo_enabled: bool = True      # False = không gửi lệnh mở thanh chắn (chưa gắn servo)
+     servo_open_seconds: float = 3.0 # giây giữ thanh chắn mở sau khi quẹt thẻ thành công rồi Arduino tự đóng lại
++    servo_closed_angle: int = 0     # độ: vị trí ban đầu / thanh chắn hạ (gửi cho Arduino mỗi lần nó khởi động)
++    servo_open_angle: int = 90      # độ: thanh chắn nâng (mở)
+     ir_enabled: bool = True         # False = chưa gắn cảm biến hồng ngoại: bỏ qua PASS / NOPASS từ Arduino
+     lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE"; 0 = giữ đến lần quẹt sau
+ 
+@@ -175,6 +177,8 @@ def load_settings(gate, env=None):
+         lcd_idle_seconds=_num("LCD_IDLE_SECONDS", "5", float),
+         servo_enabled=_env("SERVO_ENABLED", "1") == "1",
+         servo_open_seconds=_num("SERVO_OPEN_SECONDS", "3", float),
++        servo_closed_angle=_num("SERVO_CLOSED_ANGLE", "0"),
++        servo_open_angle=_num("SERVO_OPEN_ANGLE", "90"),
+         ir_enabled=_env("IR_ENABLED", "1") == "1",
+     )
+     if s.scan_frames < 1:
+@@ -185,6 +189,11 @@ def load_settings(gate, env=None):
+         raise ValueError("LCD_IDLE_SECONDS phải >= 0 (0 = không tự quay về)")
+     if not 0.5 <= s.servo_open_seconds <= 30:
+         raise ValueError("SERVO_OPEN_SECONDS phải nằm trong khoảng 0.5..30 giây")
++    for name, angle in (("SERVO_CLOSED_ANGLE", s.servo_closed_angle), ("SERVO_OPEN_ANGLE", s.servo_open_angle)):
++        if not 0 <= angle <= 180:
++            raise ValueError(f"{name} phải nằm trong khoảng 0..180 độ")
++    if s.servo_closed_angle == s.servo_open_angle:
++        raise ValueError("SERVO_CLOSED_ANGLE và SERVO_OPEN_ANGLE không được bằng nhau (thanh chắn sẽ không nhúc nhích)")
+     if s.rfid_heartbeat < 0:
+         raise ValueError("RFID_HEARTBEAT_TIMEOUT phải >= 0 (0 = tắt kiểm tra)")
+     if s.block_minutes < 1 or s.price_per_block < 0:
+diff --git a/hardware/rfid.py b/hardware/rfid.py
+index cb01ed0..6d8a9c4 100644
+--- a/hardware/rfid.py
++++ b/hardware/rfid.py
+@@ -21,6 +21,8 @@ Chiều NGƯỢC LẠI thứ hai: mở thanh chắn (servo) của từng cổng
+     SERVOIN:OPEN           mở servo CỔNG VÀO (Arduino tự đóng lại sau thời gian mặc định trong firmware)
+     SERVOOUT:OPEN:3000     mở servo CỔNG RA và giữ 3000 ms rồi Arduino tự đóng lại
+     SERVOIN:CLOSE          đóng servo ngay (dự phòng)
++    SERVOIN:ANGLE:0:90     đặt góc đóng (vị trí ban đầu) và góc mở của servo CỔNG VÀO (SERVOOUT:ANGLE:... cho cổng ra);
++                           gửi mỗi khi Arduino khởi động (xem init_commands)
+                            Arduino tự đóng, nên dù máy tính treo thì thanh chắn cũng không kẹt ở trạng thái mở.
+ 
+ Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
+@@ -72,6 +74,7 @@ def format_lcd_command(line1, line2="", gate="in"):
+     return f"{prefix}:{lcd_text(line1)}|{lcd_text(line2)}\n"
+ 
+ 
++BOOT_BANNER = "# dual_rfid"      # dòng chú thích Arduino in ra khi khởi động xong (setup)
+ SERVO_PREFIX = {"in": "SERVOIN", "out": "SERVOOUT"}   # mã cổng -> tiền tố lệnh servo
+ SERVO_ACTIONS = ("OPEN", "CLOSE")
+ 
+@@ -95,6 +98,28 @@ def format_servo_command(gate, action="OPEN", hold_seconds=None):
+     return f"{prefix}:{action}\n"
+ 
+ 
++SERVO_MAX_ANGLE = 180
++
++
++def format_servo_angle_command(gate, closed_angle, open_angle):
++    """Lệnh đặt góc servo, VD 'SERVOIN:ANGLE:0:90\\n': góc đóng (vị trí ban đầu) rồi góc mở, mỗi góc 0..180 độ."""
++    try:
++        prefix = SERVO_PREFIX[gate]
++    except KeyError:
++        raise ValueError(f"cổng không hợp lệ: {gate!r} (chỉ nhận 'in' hoặc 'out')") from None
++    for angle in (closed_angle, open_angle):
++        if isinstance(angle, bool) or not isinstance(angle, int) or not 0 <= angle <= SERVO_MAX_ANGLE:
++            raise ValueError(f"góc servo phải là số nguyên 0..{SERVO_MAX_ANGLE}, đang là {angle!r}")
++    return f"{prefix}:ANGLE:{closed_angle}:{open_angle}\n"
++
++
++def servo_init_commands(*cfgs):
++    """Các lệnh đặt góc servo (init_commands của ArduinoRfidReader) cho những cổng có cấu hình `cfgs`.
++    Cổng tắt servo (SERVO_ENABLED=0) thì không gửi gì."""
++    return [format_servo_angle_command(c.gate, c.servo_closed_angle, c.servo_open_angle)
++            for c in cfgs if getattr(c, "servo_enabled", True)]
++
++
+ # ---------------------------------------------------------------- phân tích một dòng (hàm thuần)
+ @dataclass(frozen=True)
+ class CardSwipe:
+@@ -151,7 +176,7 @@ class ArduinoRfidReader(threading.Thread):
+     BAD_LINES_BEFORE_ALERT = 3      # vài dòng rác lúc Arduino vừa khởi động là bình thường
+ 
+     def __init__(self, port, baudrate, on_card, on_status=None, on_reader_status=None,
+-                 debounce=2.0, heartbeat_timeout=8.0, on_barrier=None,
++                 debounce=2.0, heartbeat_timeout=8.0, on_barrier=None, init_commands=(),
+                  serial_factory=serial.Serial, clock=time.monotonic, sleep=time.sleep):
+         super().__init__(daemon=True)
+         self.port, self.baudrate = port, baudrate
+@@ -161,6 +186,10 @@ class ArduinoRfidReader(threading.Thread):
+         self.on_barrier = on_barrier or (lambda gate, passed: None)
+         self.debounce = debounce
+         self.heartbeat_timeout = heartbeat_timeout
++        # Các dòng lệnh (đã có \\n) gửi cho Arduino mỗi khi nó khởi động, VD góc servo ban đầu. Arduino Uno tự reset
++        # khi mở cổng COM nên không gửi ngay lúc kết nối được: chờ dòng STATUS đầu tiên (Arduino đã sẵn sàng).
++        self.init_commands = tuple(init_commands)
++        self._init_pending = True
+         self._serial_factory, self._clock, self._sleep = serial_factory, clock, sleep
+         self._running = True
+         self._last_swipe = {}           # (cổng, uid) -> thời điểm quẹt gần nhất, để chống quẹt trùng
+@@ -211,6 +240,18 @@ class ArduinoRfidReader(threading.Thread):
+         Trả về True nếu đã ghi ra cổng COM; False nếu đang mất kết nối hoặc ghi lỗi (không ném ngoại lệ)."""
+         return self._write_line(format_servo_command(gate, action, hold_seconds))
+ 
++    def send_servo_angles(self, gate, closed_angle, open_angle):
++        """Đặt góc đóng (vị trí ban đầu) và góc mở cho servo của cổng `gate`. Trả về True nếu đã ghi ra cổng COM."""
++        return self._write_line(format_servo_angle_command(gate, closed_angle, open_angle))
++
++    def _send_init_commands(self):
++        """Gửi các lệnh khởi tạo; chưa gửi hết (mất kết nối giữa chừng) thì thử lại ở dòng STATUS kế tiếp (~2 giây)."""
++        try:
++            if all([self._write_line(line) for line in self.init_commands]):
++                self._init_pending = False
++        except Exception:
++            pass        # chạy trong luồng đọc thẻ: servo chỉ là phần phụ, không được làm chết việc đọc RFID
++
+     def _write_line(self, line):
+         data = line.encode("ascii")
+         ser = self._ser
+@@ -228,6 +269,7 @@ class ArduinoRfidReader(threading.Thread):
+         self._silent = False
+         self._bad_streak = 0
+         self._format_alert = False
++        self._init_pending = True
+ 
+     def _connected_text(self):
+         return f"Arduino: đã kết nối {self.port}"
+@@ -239,6 +281,8 @@ class ArduinoRfidReader(threading.Thread):
+             self._silent = False
+             self.on_status(True, self._connected_text())
+ 
++        if raw.lstrip().startswith(BOOT_BANNER):
++            self._init_pending = True       # Arduino vừa (khởi động lại): servo về góc mặc định, cần cài lại góc
+         msg = parse_line(raw)
+         if isinstance(msg, BadLine):
+             self._bad_streak += 1
+@@ -255,6 +299,8 @@ class ArduinoRfidReader(threading.Thread):
+             self.on_status(True, self._connected_text())
+ 
+         if isinstance(msg, ReaderStatus):
++            if self._init_pending:
++                self._send_init_commands()
+             for gate, ok in msg.readers.items():
+                 self.on_reader_status(gate, ok)
+         elif isinstance(msg, BarrierEvent):
+diff --git a/main.py b/main.py
+index 9eb8353..688d556 100644
+--- a/main.py
++++ b/main.py
+@@ -40,11 +40,12 @@ def _make_db(cfg):
+ 
+ 
+ def _make_rfid(cfg, apps, **reader_kwargs):
+-    """MỘT bộ đọc cho cả Arduino. apps: {mã cổng: giao diện của cổng đó}.
++    """MỘT bộ đọc cho cả Arduino. apps: {mã cổng: giao diện của cổng đó}. Góc servo ban đầu của các cổng đang chạy
++    được gửi cho Arduino mỗi khi nó khởi động (init_commands).
+ 
+     Thẻ / tình trạng đầu đọc được chuyển đúng cổng; cổng nào không có giao diện (chạy một cổng) thì bỏ qua.
+     Tình trạng Arduino (cổng COM) gửi cho mọi cổng vì chung một thiết bị."""
+-    from hardware.rfid import ArduinoRfidReader
++    from hardware.rfid import ArduinoRfidReader, servo_init_commands
+ 
+     def on_card(gate, uid):
+         if gate in apps:
+@@ -65,7 +66,9 @@ def _make_rfid(cfg, apps, **reader_kwargs):
+     return ArduinoRfidReader(cfg.rfid_port, cfg.rfid_baud, on_card=on_card, on_status=on_status,
+                              on_reader_status=on_reader_status, on_barrier=on_barrier,
+                              debounce=cfg.rfid_debounce,
+-                             heartbeat_timeout=cfg.rfid_heartbeat, **reader_kwargs)
++                             heartbeat_timeout=cfg.rfid_heartbeat,
++                             init_commands=servo_init_commands(*(a.cfg for a in apps.values())),
++                             **reader_kwargs)
+ 
+ 
+ def _make_entry_service(recognizer, db, cfg):
+diff --git a/tests/test_config.py b/tests/test_config.py
+index f8020c8..de3e87a 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -248,3 +248,42 @@ def test_servo_defaults_are_in_env_example(tmp_path):
+     env, _ = config.gate_env("in", str(tmp_path), environ={})
+     s = config.load_settings("in", env)
+     assert s.servo_enabled is True and s.servo_open_seconds == 3.0
++    assert (s.servo_closed_angle, s.servo_open_angle) == (0, 90)
++
++
++def test_servo_angle_settings(monkeypatch):
++    monkeypatch.delenv("SERVO_CLOSED_ANGLE", raising=False)
++    monkeypatch.delenv("SERVO_OPEN_ANGLE", raising=False)
++    s = config.load_settings("in")
++    assert (s.servo_closed_angle, s.servo_open_angle) == (0, 90)          # mặc định khớp firmware
++    monkeypatch.setenv("SERVO_CLOSED_ANGLE", "10")
++    monkeypatch.setenv("SERVO_OPEN_ANGLE", "120")
++    s = config.load_settings("out")
++    assert (s.servo_closed_angle, s.servo_open_angle) == (10, 120)
++    # servo quay ngược: đảo hai góc là hợp lệ
++    assert config.load_settings("in", {"SERVO_CLOSED_ANGLE": "90", "SERVO_OPEN_ANGLE": "0"}).servo_closed_angle == 90
++
++
++def test_servo_angles_can_differ_per_gate(tmp_path):
++    (tmp_path / ".env").write_text("SERVO_OPEN_ANGLE=90\n", encoding="utf-8")
++    (tmp_path / ".env.out").write_text("SERVO_OPEN_ANGLE=110\n", encoding="utf-8")
++    env_in, _ = config.gate_env("in", str(tmp_path), environ={})
++    env_out, _ = config.gate_env("out", str(tmp_path), environ={})
++    assert config.load_settings("in", env_in).servo_open_angle == 90
++    assert config.load_settings("out", env_out).servo_open_angle == 110
++
++
++@pytest.mark.parametrize("name", ["SERVO_CLOSED_ANGLE", "SERVO_OPEN_ANGLE"])
++@pytest.mark.parametrize("value", ["-1", "181", "360"])
++def test_servo_angle_out_of_range_is_rejected(monkeypatch, name, value):
++    monkeypatch.setenv(name, value)
++    with pytest.raises(ValueError, match=name):
++        config.load_settings("in")
++
++
++def test_servo_angles_must_differ_and_be_integers(monkeypatch):
++    with pytest.raises(ValueError, match="không được bằng nhau"):
++        config.load_settings("in", {"SERVO_CLOSED_ANGLE": "45", "SERVO_OPEN_ANGLE": "45"})
++    monkeypatch.setenv("SERVO_OPEN_ANGLE", "chín mươi")
++    with pytest.raises(ValueError, match="SERVO_OPEN_ANGLE phải là số"):
++        config.load_settings("in")
+diff --git a/tests/test_firmware_docs.py b/tests/test_firmware_docs.py
+index 39990d0..51650b8 100644
+--- a/tests/test_firmware_docs.py
++++ b/tests/test_firmware_docs.py
+@@ -83,3 +83,36 @@ def test_barrier_reports_pass_and_nopass_with_the_gate_tag():
+     assert 'PIN_IR_IN_AFTER, "IN")' in INO and 'PIN_IR_OUT_AFTER, "OUT")' in INO
+     for line in ("PASS:IN", "NOPASS:OUT"):
+         assert line in README
++
++
++def test_servo_angle_defaults_agree_between_sketch_env_example_and_readme():
++    """Góc mặc định trong sketch, .env.example và README phải nói cùng một số (0° đóng / 90° mở)."""
++    closed = int(re.search(r"const uint8_t SERVO_CLOSED_ANGLE\s*=\s*(\d+);", INO).group(1))
++    open_ = int(re.search(r"const uint8_t SERVO_OPEN_ANGLE\s*=\s*(\d+);", INO).group(1))
++    example = (ROOT / ".env.example").read_text(encoding="utf-8")
++    assert re.search(rf"^SERVO_CLOSED_ANGLE={closed}\b", example, re.M)
++    assert re.search(rf"^SERVO_OPEN_ANGLE={open_}\b", example, re.M)
++    assert f"| `SERVO_CLOSED_ANGLE`, `SERVO_OPEN_ANGLE` | `{closed}`, `{open_}` |" in README
++
++
++def test_servo_angle_command_is_documented_and_implemented_on_both_sides():
++    """Lệnh SERVOIN:ANGLE: có trong sketch (xử lý + chú thích đầu file), README, và hardware/rfid.py gửi đúng dạng đó."""
++    assert 'strncmp(args, "ANGLE:", 6)' in INO
++    assert "SERVOIN:ANGLE:" in INO and "SERVOOUT:ANGLE:" in INO
++    assert "`SERVOIN:ANGLE:0:90`" in README
++    from hardware.rfid import format_servo_angle_command
++    assert format_servo_angle_command("in", 0, 90) == "SERVOIN:ANGLE:0:90\n"
++    assert format_servo_angle_command("out", 0, 90) == "SERVOOUT:ANGLE:0:90\n"
++
++
++def test_sketch_boot_banner_matches_what_python_waits_for():
++    """Python cài lại góc servo khi thấy dòng này (Arduino vừa khởi động lại): sketch phải còn in đúng tiền tố đó."""
++    from hardware.rfid import BOOT_BANNER
++    assert f'Serial.println(F("{BOOT_BANNER} san sang' in INO
++
++
++def test_barrier_uses_runtime_angles_not_the_constants_directly():
++    """Chỉ phần khởi tạo giá trị mặc định mới được dùng hằng số góc; còn lại phải dùng biến để lệnh ANGLE có tác dụng."""
++    body = INO[INO.index("class Barrier"):INO.index("Barrier barrierIn(")]
++    assert "servo_.write(SERVO_CLOSED_ANGLE)" not in body and "servo_.write(SERVO_OPEN_ANGLE)" not in body
++    assert "servo_.write(closedAngle_)" in body and "servo_.write(openAngle_)" in body
+diff --git a/tests/test_rfid.py b/tests/test_rfid.py
+index 922d2ff..0cc213e 100644
+--- a/tests/test_rfid.py
++++ b/tests/test_rfid.py
+@@ -3,8 +3,8 @@ import pytest
+ import serial
+ 
+ from hardware.rfid import (
+-    ArduinoRfidReader, BadLine, BarrierEvent, CardSwipe, ReaderStatus, format_lcd_command, format_servo_command,
+-    lcd_text, parse_line,
++    ArduinoRfidReader, BadLine, BarrierEvent, CardSwipe, ReaderStatus, format_lcd_command,
++    format_servo_angle_command, format_servo_command, lcd_text, parse_line, servo_init_commands,
+ )
+ 
+ 
+@@ -379,3 +379,86 @@ def test_send_servo_write_error_is_swallowed():
+     box["reader"] = reader
+     reader.run()
+     assert results == [False] and sent == []
++
++
++# ---------------------------------------------------------------- góc servo ban đầu
++def test_format_servo_angle_command():
++    assert format_servo_angle_command("in", 0, 90) == "SERVOIN:ANGLE:0:90\n"
++    assert format_servo_angle_command("out", 10, 120) == "SERVOOUT:ANGLE:10:120\n"
++    assert format_servo_angle_command("in", 90, 0) == "SERVOIN:ANGLE:90:0\n"        # servo quay ngược
++    assert format_servo_angle_command("in", 0, 180).endswith(":0:180\n")             # biên trên
++
++
++@pytest.mark.parametrize("args", [("left", 0, 90), ("in", -1, 90), ("in", 0, 181), ("in", 0.5, 90),
++                                  ("in", "0", 90), ("in", None, 90), ("in", True, 90)])
++def test_format_servo_angle_command_rejects_bad_input(args):
++    with pytest.raises(ValueError):
++        format_servo_angle_command(*args)
++
++
++def test_send_servo_angles_writes_one_line_and_never_raises_when_disconnected():
++    sent, results = [], []
++    box = {}
++    box["reader"] = _reader_with_writable_serial(
++        [b"IN:AAAA1111\n"], sent,
++        on_card=lambda gate, uid: results.append(box["reader"].send_servo_angles("out", 5, 95)))
++    box["reader"].run()
++    assert results == [True] and sent == [b"SERVOOUT:ANGLE:5:95\n"]
++    assert box["reader"].send_servo_angles("in", 0, 90) is False                  # đã đóng cổng COM
++
++
++class _Cfg:
++    def __init__(self, gate, closed=0, open_=90, enabled=True):
++        self.gate, self.servo_closed_angle, self.servo_open_angle, self.servo_enabled = gate, closed, open_, enabled
++
++
++def test_servo_init_commands_per_gate_and_skips_disabled_servo():
++    assert servo_init_commands(_Cfg("in", 0, 90), _Cfg("out", 10, 100)) == \
++        ["SERVOIN:ANGLE:0:90\n", "SERVOOUT:ANGLE:10:100\n"]
++    assert servo_init_commands(_Cfg("out", 5, 95)) == ["SERVOOUT:ANGLE:5:95\n"]          # chạy một cổng
++    assert servo_init_commands(_Cfg("in", enabled=False), _Cfg("out")) == ["SERVOOUT:ANGLE:0:90\n"]
++    assert servo_init_commands() == []
++
++
++def _init_reader(script, sent, init=("SERVOIN:ANGLE:0:90\n", "SERVOOUT:ANGLE:0:90\n"), fail_write=False):
++    clock, box = Clock(), {}
++
++    def factory(port, baud, timeout):
++        return WritableSerial(script, clock, lambda: box["reader"].stop(), sent, fail_write)
++
++    box["reader"] = ArduinoRfidReader("COM3", 9600, lambda g, u: None, serial_factory=factory, clock=clock,
++                                      sleep=lambda s: None, init_commands=init)
++    return box["reader"]
++
++
++def test_init_commands_wait_for_the_first_status_then_are_sent_once():
++    """Arduino Uno tự reset khi mở cổng COM: chưa gửi lúc vừa kết nối, mà chờ dòng STATUS (đã khởi động xong)."""
++    sent = []
++    _init_reader([b"# dual_rfid san sang\n"], sent).run()
++    assert sent == []                                                  # mới có banner, chưa có STATUS -> chưa gửi
++
++    sent.clear()
++    _init_reader([b"# dual_rfid san sang\n", b"STATUS:IN=1,OUT=1\n", b"STATUS:IN=1,OUT=1\n",
++                  b"STATUS:IN=1,OUT=1\n"], sent).run()
++    assert sent == [b"SERVOIN:ANGLE:0:90\n", b"SERVOOUT:ANGLE:0:90\n"]       # đúng một lần dù có nhiều STATUS
++
++
++def test_init_commands_are_resent_when_arduino_reboots():
++    sent = []
++    _init_reader([b"STATUS:IN=1,OUT=1\n", b"# dual_rfid san sang\n", b"STATUS:IN=1,OUT=1\n"], sent,
++                 init=("SERVOIN:ANGLE:0:90\n",)).run()
++    assert sent == [b"SERVOIN:ANGLE:0:90\n"] * 2                       # Arduino reset -> servo về mặc định -> cài lại
++
++
++def test_init_commands_retry_after_a_failed_write_and_never_kill_the_reader():
++    sent, cards = [], []
++    reader = _init_reader([b"STATUS:IN=1,OUT=1\n", b"IN:AAAA1111\n"], sent, fail_write=True)
++    reader.on_card = lambda gate, uid: cards.append(uid)
++    reader.run()
++    assert sent == [] and cards == ["AAAA1111"]                         # ghi lỗi: vẫn đọc thẻ bình thường
++    assert reader._init_pending is True                                 # và sẽ thử lại ở STATUS kế tiếp
++
++
++def test_init_commands_default_to_nothing():
++    reader = ArduinoRfidReader("COM3", 9600, lambda g, u: None, serial_factory=None)
++    assert reader.init_commands == ()
+diff --git a/tests/test_servo_command.py b/tests/test_servo_command.py
+new file mode 100644
+index 0000000..60c7b2b
+--- /dev/null
++++ b/tests/test_servo_command.py
+@@ -0,0 +1,90 @@
++"""Thử cách firmware hiểu lệnh servo từ máy tính (hàm handleServo trong dual_rfid.ino), nhất là lệnh đặt góc
++SERVOIN:ANGLE:<đóng>:<mở>. Hàm được trích ra, biên dịch bằng g++ thường với một Barrier giả (không cần Arduino).
++Máy không có g++ thì bỏ qua."""
++import shutil
++import subprocess
++from pathlib import Path
++
++import pytest
++
++ROOT = Path(__file__).resolve().parent.parent
++INO = (ROOT / "arduino" / "dual_rfid" / "dual_rfid.ino").read_text(encoding="utf-8")
++
++DRIVER = r"""
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <cstdint>
++#include <iostream>
++#include <string>
++const unsigned long SERVO_HOLD_MS = 3000;
++struct Barrier {                      // chỉ ghi lại lời gọi; setAngles kẹp 180 giống bản thật
++  void open(unsigned long h) { std::printf("open %%lu\n", h); }
++  void close() { std::printf("close\n"); }
++  void setAngles(uint8_t c, uint8_t o) { std::printf("angles %%d %%d\n", c > 180 ? 180 : c, o > 180 ? 180 : o); }
++};
++%s
++int main() {
++  std::string line;
++  while (std::getline(std::cin, line)) {
++    char buf[64];
++    std::strncpy(buf, line.c_str(), sizeof buf - 1);
++    buf[sizeof buf - 1] = '\0';
++    Barrier b;
++    handleServo(b, buf);
++    std::puts("--");                  // hết một lệnh (lệnh bị bỏ qua thì không in gì trước dòng này)
++  }
++}
++"""
++
++
++@pytest.fixture(scope="module")
++def servo_cmd(tmp_path_factory):
++    gxx = shutil.which("g++")
++    if gxx is None:
++        pytest.skip("không có g++ để biên dịch thử handleServo")
++    start = INO.index("void handleServo(Barrier &barrier, char *args)")
++    func = INO[start:INO.index("\n}\n", start) + 3]
++    d = tmp_path_factory.mktemp("servo_cmd")
++    (d / "main.cpp").write_text(DRIVER % func, encoding="utf-8")
++    subprocess.run([gxx, "-std=c++11", "-Wall", "-Werror", str(d / "main.cpp"), "-o", str(d / "run")], check=True)
++
++    def run(*args):
++        """args: phần sau 'SERVOIN:' (VD 'ANGLE:0:90'). Trả về list các tác động lên Barrier giả."""
++        out = subprocess.run([str(d / "run")], input="\n".join(args) + "\n", capture_output=True, text=True,
++                             check=True).stdout
++        groups, cur = [], []
++        for line in out.splitlines():
++            if line == "--":
++                groups.append(cur)
++                cur = []
++            else:
++                cur.append(line)
++        return groups
++
++    return run
++
++
++@pytest.mark.parametrize("cmd, expected", [
++    ("ANGLE:0:90", "angles 0 90"),
++    ("ANGLE:10:120", "angles 10 120"),
++    ("ANGLE:90:0", "angles 90 0"),            # servo quay ngược
++    ("ANGLE:0:180", "angles 0 180"),          # biên
++    ("ANGLE:180:0", "angles 180 0"),
++])
++def test_angle_command_sets_both_angles(servo_cmd, cmd, expected):
++    assert servo_cmd(cmd) == [[expected]]
++
++
++@pytest.mark.parametrize("cmd", [
++    "ANGLE:", "ANGLE:90", "ANGLE:90:", "ANGLE::90", "ANGLE:abc:90", "ANGLE:0:xyz",
++    "ANGLE:-1:90", "ANGLE:0:181", "ANGLE:999:90",
++    "ANGLE:256:90", "ANGLE:300:0",             # ép sang uint8 sẽ thành góc nhỏ sai: phải bị chặn từ trước
++])
++def test_bad_angle_commands_are_ignored_entirely(servo_cmd, cmd):
++    assert servo_cmd(cmd) == [[]]               # sai định dạng / ngoài 0..180: không đổi góc nào
++
++
++def test_open_and_close_commands_still_work(servo_cmd):
++    assert servo_cmd("OPEN", "OPEN:2500", "OPEN:abc", "OPEN:0", "CLOSE", "NOPE") == [
++        ["open 3000"], ["open 2500"], ["open 3000"], ["open 3000"], ["close"], []]
+diff --git a/tests/test_ui_smoke.py b/tests/test_ui_smoke.py
+index 0a72b6d..1323779 100644
+--- a/tests/test_ui_smoke.py
++++ b/tests/test_ui_smoke.py
+@@ -777,6 +777,111 @@ def test_open_barrier_never_breaks_card_handling(root, tmp_path, monkeypatch):
+     assert len(db.rows) == 1 and "XE VÀO" in app.status_lbl.cget("text")
+ 
+ 
++# ---------------------------------------------------------------- nút Test servo
++def test_test_servo_button_opens_only_this_gates_barrier(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    assert str(app.servo_btn.cget("state")) == "normal"
++
++    lcd_before = list(rfid.sent)
++    app.servo_btn.invoke()                                    # bấm nút thật
++    assert rfid.servos == [("in", "OPEN", 3.0)]               # đúng cổng, đúng thời gian giữ mở
++    assert "Test servo" in app.status_lbl.cget("text") and "3 giây" in app.status_lbl.cget("text")
++    assert db.rows == [] and rfid.sent == lcd_before          # thử servo không tạo lượt gửi xe, không đụng LCD
++
++
++def test_test_servo_result_is_not_recorded_in_the_database(root, tmp_path, monkeypatch):
++    """PASS / NOPASS của lần thử không gắn với lượt gửi xe nào -> bị bỏ qua, và không cướp lượt đang chờ cảm biến."""
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    swipe(app, "CARD1")                                       # xe thật vào, đang chờ cảm biến báo
++    real_session = app._barrier_session
++    assert real_session is not None
++
++    app.servo_btn.invoke()
++    assert app._barrier_session == real_session               # nút thử không đổi lượt đang chờ
++
++    app.handle_barrier(True)
++    assert drain_barrier(root, db) and db.passes[0][0] == real_session
++
++    app.handle_barrier(False)                                 # kết quả thứ hai (của lần thử): không còn lượt nào để ghi
++    assert not pump(root, lambda: len(db.passes) > 1, timeout=0.3)
++
++
++def test_test_servo_button_is_locked_while_waiting_for_staff(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, [""])
++    swipe(app, "CARD1")                                       # không đọc được số nào -> chờ nhân viên
++    assert app.pending is not None
++    assert pump(root, lambda: str(app.servo_btn.cget("state")) == "disabled")
++    assert app.test_servo() is False and rfid.servos == []    # gọi bằng code cũng không mở thanh chắn
++
++    app.cancel_pending()
++    assert pump(root, lambda: str(app.servo_btn.cget("state")) == "normal")
++    app.servo_btn.invoke()
++    assert rfid.servos == [("in", "OPEN", 3.0)]
++
++
++def test_test_servo_works_before_ocr_model_is_loaded(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    rec.ready = False                                         # OCR chưa nạp xong: các nút "thử nhận diện" bị khóa
++    app.refresh_buttons()
++    assert str(app.capture_btn.cget("state")) == "disabled"
++    assert str(app.servo_btn.cget("state")) == "normal"       # nhưng thử servo thì vẫn được
++
++
++def test_test_servo_when_servo_disabled_or_arduino_missing_explains_why(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    app.rfid = None                                           # chưa có Arduino
++    assert app.test_servo() is False
++    assert "Arduino chưa kết nối" in app.status_lbl.cget("text")
++
++    class Offline:
++        def send_servo(self, *a, **k):
++            return False                                      # cổng COM đang mất kết nối
++
++    app.rfid = Offline()
++    assert app.test_servo() is False and "KHÔNG gửi được" in app.status_lbl.cget("text")
++
++    class Broken:
++        def send_servo(self, *a, **k):
++            raise RuntimeError("cổng COM hỏng")
++
++    app.rfid = Broken()
++    assert app.test_servo() is False                          # không ném ngoại lệ ra giao diện
++
++    monkeypatch.setenv("SERVO_ENABLED", "0")
++    app2, db2, rec2, rfid2 = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    assert app2.test_servo() is False and rfid2.servos == []
++    assert "SERVO_ENABLED=0" in app2.status_lbl.cget("text")
++
++
++def test_dual_each_gate_has_its_own_test_servo_button(root, tmp_path, monkeypatch):
++    app, db, rec = make_dual(root, tmp_path, monkeypatch)
++    rfid = app.entry.rfid = app.exit.rfid = LcdSpy()
++    app.exit.servo_btn.invoke()
++    assert rfid.servos == [("out", "OPEN", 3.0)]              # nút cổng RA chỉ mở servo cổng RA
++    app.entry.servo_btn.invoke()
++    assert rfid.servos == [("out", "OPEN", 3.0), ("in", "OPEN", 3.0)]
++
++
++def test_real_reader_sends_servo_angles_after_arduino_boots_and_test_button_after(root, tmp_path, monkeypatch):
++    """Đường đi thật: main._make_rfid -> luồng đọc -> (STATUS đầu tiên) gửi góc ban đầu của cả hai servo -> bấm Test servo."""
++    import main
++    monkeypatch.setenv("SERVO_CLOSED_ANGLE", "5")
++    monkeypatch.setenv("SERVO_OPEN_ANGLE", "100")
++    app, db, _ = make_dual(root, tmp_path, monkeypatch)
++    app.entry.cfg = config.load_settings("in", {"SERVO_CLOSED_ANGLE": "5", "SERVO_OPEN_ANGLE": "100"})
++    app.exit.cfg = config.load_settings("out", {"SERVO_CLOSED_ANGLE": "12", "SERVO_OPEN_ANGLE": "110"})
++    ser = LiveSerialW(["# dual_rfid san sang\n", "STATUS:IN=1,OUT=1\n"])
++    reader = main._make_rfid(app.entry.cfg, {"in": app.entry, "out": app.exit},
++                             serial_factory=lambda port, baud, timeout: ser)
++    app.set_rfid(reader)
++    assert pump(root, lambda: len(ser.sent) >= 2)
++    assert ser.sent[:2] == [b"SERVOIN:ANGLE:5:100\n", b"SERVOOUT:ANGLE:12:110\n"]
++
++    app.exit.servo_btn.invoke()
++    assert pump(root, lambda: b"SERVOOUT:OPEN:3000\n" in ser.sent)
++    app.on_close()
++
++
+ # ---------------------------------------------------------------- cảm biến hồng ngoại: xe đã qua thanh chắn
+ def drain_barrier(root, db, count=1):
+     return pump(root, lambda: len(db.passes) >= count)
+diff --git a/ui/base_gate_app.py b/ui/base_gate_app.py
+index c841791..0620b71 100644
+--- a/ui/base_gate_app.py
++++ b/ui/base_gate_app.py
+@@ -157,6 +157,7 @@ class BaseGateApp:
+         self._closing = False
+         self._lcd_job = None        # hẹn giờ đưa LCD về "MOI QUET THE" (xem lcd)
+         self._barrier_session = None    # id lượt gửi xe vừa được mở thanh chắn, chờ cảm biến báo xe đã qua chưa
++        self._servo_btn_state = "normal"    # trạng thái hiện tại của nút Test servo (xem sync_servo_button)
+ 
+         self.build_ui()
+         self.open_camera(cfg.camera_index)
+@@ -211,6 +212,32 @@ class BaseGateApp:
+             self._barrier_session = session_id
+         return sent
+ 
++    def test_servo(self):
++        """Nút "Test servo": mở thanh chắn của CỔNG NÀY để kiểm tra servo / góc quay, rồi Arduino tự đóng lại sau
++        cfg.servo_open_seconds giây. Không gắn với lượt gửi xe nào nên kết quả cảm biến (PASS / NOPASS) của lần thử
++        bị bỏ qua, không ghi vào SQL Server. Trả về True nếu đã gửi lệnh."""
++        label = self.cfg.label
++        if self.busy or self.pending is not None:
++            return False                # đang xử lý một lần quẹt thẻ / chờ nhân viên: không mở thanh chắn lúc này
++        if not getattr(self.cfg, "servo_enabled", True):
++            self.set_status(f"Servo {label} đang tắt (SERVO_ENABLED=0 trong .env). Đặt thành 1 rồi chạy lại để thử.",
++                            COLOR_WARN)
++            return False
++        send = getattr(self.rfid, "send_servo", None)
++        sent = False
++        if send is not None:
++            try:
++                sent = bool(send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds))
++            except Exception:
++                sent = False
++        if sent:
++            self.set_status(f"Test servo {label}: đã gửi lệnh mở, thanh chắn tự đóng sau "
++                            f"{self.cfg.servo_open_seconds:g} giây.", COLOR_OK)
++        else:
++            self.set_status(f"Test servo {label}: KHÔNG gửi được lệnh (Arduino chưa kết nối). "
++                            "Xem thanh tình trạng thiết bị phía trên.", COLOR_ERR)
++        return sent
++
+     def handle_barrier(self, passed):
+         """Arduino báo kết quả lần mở thanh chắn của cổng này: passed=True xe đã qua hẳn, False hết giờ mà chưa qua.
+         Gọi được từ luồng nền: chuyển sang luồng GUI."""
+@@ -340,6 +367,8 @@ class BaseGateApp:
+         self.open_btn = ttk.Button(btns, text="📁 Thử với ảnh từ máy",
+                                    command=self.open_image, state="disabled")
+         self.open_btn.pack(side="left", padx=5)
++        self.servo_btn = ttk.Button(btns, text="🔧 Test servo", command=self.test_servo)
++        self.servo_btn.pack(side="left", padx=5)
+ 
+         # Hàng 3: lịch sử (cửa sổ chung thì dùng bảng do cửa sổ chung tạo)
+         if self.history is None:
+@@ -417,8 +446,18 @@ class BaseGateApp:
+         can_trial = self.service.ready and not self.busy and self.pending is None
+         for b in (self.capture_btn, self.open_btn):
+             b.configure(state="normal" if can_trial else "disabled")
++        self.sync_servo_button()
+         self.update_action_buttons()
+ 
++    def sync_servo_button(self):
++        """Test servo không cần OCR nạp xong; chỉ khóa khi đang xử lý một lần quẹt thẻ / chờ nhân viên (khỏi mở
++        thanh chắn nhầm giữa chừng và khỏi đè dòng trạng thái đang cần nhân viên đọc). `pending` đổi ở nhiều chỗ
++        trong lớp con nên được gọi cả từ update_loop; chỉ đụng tới nút khi trạng thái thật sự đổi."""
++        state = "normal" if not self.busy and self.pending is None else "disabled"
++        if state != self._servo_btn_state:
++            self._servo_btn_state = state
++            self.servo_btn.configure(state=state)
++
+     # ---------- Chạy việc nặng ở luồng nền ----------
+     def _bg(self, fn, on_ok, busy=True, on_error=None):
+         if busy:
+@@ -491,6 +530,7 @@ class BaseGateApp:
+             except queue.Empty:
+                 break
+ 
++        self.sync_servo_button()
+         frame = self.camera.read()
+         if frame is not None:
+             self.last_frame = frame

@@ -124,6 +124,8 @@ class Settings:
     window_pos: str            # VD "+0+0" hoặc "+900+0" để xếp hai cửa sổ cạnh nhau; để trống = mặc định
     servo_enabled: bool = True      # False = không gửi lệnh mở thanh chắn (chưa gắn servo)
     servo_open_seconds: float = 3.0 # giây giữ thanh chắn mở sau khi quẹt thẻ thành công rồi Arduino tự đóng lại
+    servo_closed_angle: int = 0     # độ: vị trí ban đầu / thanh chắn hạ (gửi cho Arduino mỗi lần nó khởi động)
+    servo_open_angle: int = 90      # độ: thanh chắn nâng (mở)
     ir_enabled: bool = True         # False = chưa gắn cảm biến hồng ngoại: bỏ qua PASS / NOPASS từ Arduino
     lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE"; 0 = giữ đến lần quẹt sau
 
@@ -175,6 +177,8 @@ def load_settings(gate, env=None):
         lcd_idle_seconds=_num("LCD_IDLE_SECONDS", "5", float),
         servo_enabled=_env("SERVO_ENABLED", "1") == "1",
         servo_open_seconds=_num("SERVO_OPEN_SECONDS", "3", float),
+        servo_closed_angle=_num("SERVO_CLOSED_ANGLE", "0"),
+        servo_open_angle=_num("SERVO_OPEN_ANGLE", "90"),
         ir_enabled=_env("IR_ENABLED", "1") == "1",
     )
     if s.scan_frames < 1:
@@ -185,6 +189,11 @@ def load_settings(gate, env=None):
         raise ValueError("LCD_IDLE_SECONDS phải >= 0 (0 = không tự quay về)")
     if not 0.5 <= s.servo_open_seconds <= 30:
         raise ValueError("SERVO_OPEN_SECONDS phải nằm trong khoảng 0.5..30 giây")
+    for name, angle in (("SERVO_CLOSED_ANGLE", s.servo_closed_angle), ("SERVO_OPEN_ANGLE", s.servo_open_angle)):
+        if not 0 <= angle <= 180:
+            raise ValueError(f"{name} phải nằm trong khoảng 0..180 độ")
+    if s.servo_closed_angle == s.servo_open_angle:
+        raise ValueError("SERVO_CLOSED_ANGLE và SERVO_OPEN_ANGLE không được bằng nhau (thanh chắn sẽ không nhúc nhích)")
     if s.rfid_heartbeat < 0:
         raise ValueError("RFID_HEARTBEAT_TIMEOUT phải >= 0 (0 = tắt kiểm tra)")
     if s.block_minutes < 1 or s.price_per_block < 0:
