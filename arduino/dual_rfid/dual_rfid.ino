@@ -68,6 +68,12 @@
   NHƯNG nếu lúc đó còn có vật chắn cảm biến (xe đang ở dưới thanh chắn) thì chờ thêm tối đa IR_EXTEND_MAX_MS
   rồi mới hạ, để thanh chắn không đóng xuống xe.
 
+  Đấu dây ĐÈN LED BÁO XE VÀO (chỉ cổng vào): chân dương (anode, chân dài) -> điện trở 220 ohm -> A4,  chân âm -> GND.
+  Khi cảm biến xác nhận xe đã ĐI QUA HẲN thanh chắn cổng vào (cùng lúc gửi PASS:IN) đèn sáng và giữ LED_ON_MS
+  (20 giây) rồi tự tắt. Có xe khác vào khi đèn còn sáng thì đếm lại từ đầu. Do Arduino tự làm (millis(), không chặn
+  vòng loop), không cần máy tính. NOPASS:IN (hết giờ mà xe chưa qua) KHÔNG làm đèn sáng. Đèn công suất lớn thì qua
+  transistor / relay thay vì nối thẳng chân A4. Đổi chân / thời gian: sửa PIN_LED, LED_ON_MS bên dưới.
+
   Thư viện (Arduino IDE: Tools > Manage Libraries):
     - "MFRC522" của GithubCommunity
     - "Servo" (có sẵn trong Arduino IDE, không cần cài thêm)
@@ -111,6 +117,9 @@ const unsigned long IR_EXTEND_MAX_MS = 10000;  // hết giờ mà còn vật ch�
 const uint8_t PIN_BUZZER = A5;
 const unsigned int BUZZER_FREQ_HZ = 2000;      // passive: đây là cao độ; active: vẫn kêu bình thường
 const unsigned int BUZZER_BEEP_MS = 120;       // độ dài một tiếng bíp
+// Đèn LED báo xe vào (chỉ cổng vào): sáng LED_ON_MS kể từ lúc xe đi qua hẳn thanh chắn cổng vào rồi tự tắt.
+const uint8_t PIN_LED = A4;
+const unsigned long LED_ON_MS = 20000;         // 20 giây
 const uint8_t RX_MAX = 48;                     // "LCDOUT:" + 16 + "|" + 16 = 40 ký tự, chừa dư
 
 MFRC522 readerIn(PIN_SS_IN, PIN_RST);
@@ -291,6 +300,35 @@ class PassDetector {
 };
 // END PassDetector
 
+// BEGIN LedTimer (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
+// Hẹn giờ đèn: trigger() bật đèn và bắt đầu đếm; hết `durationMs` thì tự tắt. trigger() khi đèn đang sáng thì đếm lại
+// từ đầu. Thời gian truyền vào (millis()), trừ số nguyên không dấu nên vẫn đúng khi millis() tràn (~49 ngày).
+class LedTimer {
+ public:
+  explicit LedTimer(unsigned long durationMs) : durationMs_(durationMs) {}
+
+  void trigger(unsigned long nowMs) {
+    on_ = true;
+    startedAt_ = nowMs;
+  }
+
+  // Gọi mỗi vòng loop. Trả về true nếu đèn đang sáng.
+  bool update(unsigned long nowMs) {
+    if (on_ && nowMs - startedAt_ >= durationMs_) on_ = false;
+    return on_;
+  }
+
+  bool isOn() const { return on_; }
+
+ private:
+  unsigned long durationMs_;
+  unsigned long startedAt_ = 0;
+  bool on_ = false;
+};
+// END LedTimer
+
+LedTimer entryLed(LED_ON_MS);                  // đèn báo xe vào (gắn vào PIN_LED)
+
 // ------------------------------------------------------------------ Servo thanh chắn
 // Một thanh chắn: mở theo lệnh rồi TỰ đóng khi hết thời gian giữ (đo bằng millis(), không chặn vòng loop nên
 // việc quét thẻ và nhận lệnh LCD vẫn chạy bình thường trong lúc thanh chắn đang mở).
@@ -298,8 +336,9 @@ class PassDetector {
 // NOPASS:<cổng> (còn vật chắn cảm biến thì chờ thêm tối đa IR_EXTEND_MAX_MS để không hạ xuống xe).
 class Barrier {
  public:
-  Barrier(uint8_t servoPin, uint8_t irBeforePin, uint8_t irAfterPin, const char *tag)
-      : pin_(servoPin), before_(irBeforePin), after_(irAfterPin), tag_(tag) {}
+  // led: đèn báo xe đã qua thanh chắn của cổng này (nullptr = cổng không có đèn).
+  Barrier(uint8_t servoPin, uint8_t irBeforePin, uint8_t irAfterPin, const char *tag, LedTimer *led = nullptr)
+      : pin_(servoPin), before_(irBeforePin), after_(irAfterPin), tag_(tag), led_(led) {}
 
   void begin() {
     servo_.attach(pin_);
@@ -341,6 +380,7 @@ class Barrier {
 
     if (detector_.update(before_.blocked(), after_.blocked())) {
       close();                                 // xe đã qua hẳn: hạ ngay
+      if (led_ != nullptr) led_->trigger(millis());   // bật đèn báo xe vào (đếm lại nếu đang sáng)
       report(F("PASS:"));
       return;
     }
@@ -363,12 +403,13 @@ class Barrier {
   IrSensor before_, after_;
   PassDetector detector_;
   const char *tag_;                            // "IN" / "OUT" (chuỗi thường: F() không dùng được ở phạm vi toàn cục)
+  LedTimer *led_;                              // đèn báo xe qua thanh chắn; nullptr = không có
   bool open_ = false;
   uint8_t closedAngle_ = SERVO_CLOSED_ANGLE, openAngle_ = SERVO_OPEN_ANGLE;   // mặc định; máy tính ghi đè bằng ANGLE
   unsigned long openedAt_ = 0, holdMs_ = SERVO_HOLD_MS;
 };
 
-Barrier barrierIn(PIN_SERVO_IN, PIN_IR_IN_BEFORE, PIN_IR_IN_AFTER, "IN");
+Barrier barrierIn(PIN_SERVO_IN, PIN_IR_IN_BEFORE, PIN_IR_IN_AFTER, "IN", &entryLed);
 Barrier barrierOut(PIN_SERVO_OUT, PIN_IR_OUT_BEFORE, PIN_IR_OUT_AFTER, "OUT");
 
 // ------------------------------------------------------------------ RFID
@@ -542,9 +583,11 @@ void setup() {
   readerOut.PCD_Init();
   initLcds();
   pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LOW);                  // khởi động / reset luôn ở trạng thái tắt
   barrierIn.begin();
   barrierOut.begin();
-  Serial.println(F("# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)"));
+  Serial.println(F("# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5, led=A4)"));
   sendStatus();
   lastStatus = millis();
 }
@@ -555,6 +598,7 @@ void loop() {
   pollReader(readerOut, outOk, F("OUT"));
   barrierIn.update();
   barrierOut.update();
+  digitalWrite(PIN_LED, entryLed.update(millis()) ? HIGH : LOW);   // đèn báo xe vào: tự tắt sau LED_ON_MS
 
   if (millis() - lastStatus >= STATUS_INTERVAL_MS) {
     lastStatus = millis();

@@ -6,6 +6,7 @@ Cả hai cổng hiện trong **MỘT cửa sổ** (hai khung camera cạnh nhau:
 Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này (xem mục *Giao thức với Arduino*).
 Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một ở cổng ra) để báo cho tài xế (VD "XE LECH VI TRI" khi không đọc đủ 5 số, "XE RA OK - TIEN 5.000 D") — xem mục *Hai màn LCD 1602 I2C*.
 Tùy chọn: gắn **một còi bíp** dùng chung, mỗi lần quẹt thẻ (cổng vào hoặc cổng ra) còi kêu một tiếng — xem mục *Còi bíp*.
+Tùy chọn: gắn **một đèn LED** ở cổng vào: xe đi qua hẳn thanh chắn thì đèn sáng 20 giây rồi tự tắt — xem mục *Đèn LED báo xe vào*.
 Bãi có số chỗ (slot) giới hạn (`PARKING_CAPACITY`, mặc định **3**): LCD hiện số chỗ còn trống, **đủ chỗ thì cổng vào không nhận quẹt thẻ** — xem mục *Số chỗ đỗ xe*.
 Tùy chọn: gắn **hai servo thanh chắn** (một ở cổng vào, một ở cổng ra): quẹt thẻ thành công thì servo của cổng đó tự mở rồi tự đóng lại — xem mục *Hai servo thanh chắn*.
 Tùy chọn: gắn **bốn cảm biến hồng ngoại** (mỗi cổng hai cái, trước và sau thanh chắn) để biết xe đã đi qua thanh chắn chưa: qua rồi thì hạ thanh chắn ngay, kết quả ghi vào SQL Server — xem mục *Cảm biến hồng ngoại*.
@@ -109,7 +110,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `IN:AB1992CA` | Thẻ quẹt ở đầu đọc **cổng vào** (UID dạng HEX) |
 | `OUT:DB2B11CA` | Thẻ quẹt ở đầu đọc **cổng ra** |
 | `STATUS:IN=1,OUT=0` | Tình trạng từng đầu đọc (`1` = hoạt động, `0` = không nói chuyện được với module). Gửi lúc khởi động và mỗi ~2 giây; cũng là "nhịp tim" để phát hiện Arduino treo |
-| `PASS:IN` / `PASS:OUT` | Xe đã **đi qua hẳn** thanh chắn cổng vào / cổng ra (cảm biến hồng ngoại); Arduino đã hạ thanh chắn |
+| `PASS:IN` / `PASS:OUT` | Xe đã **đi qua hẳn** thanh chắn cổng vào / cổng ra (cảm biến hồng ngoại); Arduino đã hạ thanh chắn. `PASS:IN` còn làm **đèn LED cổng vào sáng 20 giây** (Arduino tự làm) |
 | `NOPASS:IN` / `NOPASS:OUT` | Hết giờ mở thanh chắn mà xe **chưa qua**; Arduino đã hạ thanh chắn |
 | `# ...` | Chú thích / log, bị bỏ qua |
 | `LCDIN:dòng 1\|dòng 2` | **Chiều ngược lại (máy tính -> Arduino)**: hiển thị lên LCD **cổng vào**. Mỗi dòng tối đa 16 ký tự ASCII không dấu. Arduino không có LCD đó hoặc còn firmware cũ thì bỏ qua |
@@ -186,7 +187,7 @@ Hai chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), cảm biến hồng n
 
 **Nút "🔧 Test servo"** (mỗi cổng một nút, nằm cạnh nút *Thử với ảnh từ máy*): bấm để mở thanh chắn của cổng đó, rồi Arduino tự đóng sau `SERVO_OPEN_SECONDS` giây. Dùng để kiểm tra dây, nguồn và chỉnh góc mà không cần quẹt thẻ. Lần thử **không tạo lượt gửi xe, không đụng LCD và không ghi gì vào SQL Server** (kết quả cảm biến của lần thử bị bỏ qua). Nút bị khóa khi đang xử lý một lần quẹt thẻ hoặc đang chờ nhân viên xác nhận. Nút báo ngay trên dòng trạng thái nếu không gửi được: `SERVO_ENABLED=0` hoặc Arduino chưa kết nối.
 
-**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo (hoặc `SERVOIN:ANGLE:0:90` để đặt góc).
+**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5, led=A4)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo (hoặc `SERVOIN:ANGLE:0:90` để đặt góc).
 
 ## Còi bíp (tùy chọn: MỘT còi dùng chung cho cả hai cổng)
 Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi kêu **một tiếng bíp ngắn** (mặc định 2000 Hz, 120 ms) để người quẹt biết thẻ đã được đọc. Còi do **Arduino tự điều khiển** ngay khi đọc được thẻ, không cần chờ máy tính, nên vẫn kêu khi chương trình Python chưa chạy; bíp kêu cho mọi thẻ đọc được, kể cả thẻ chưa đăng ký. Không có lệnh nào từ máy tính để điều khiển còi, và không có biến cấu hình trong `.env`.
@@ -228,6 +229,27 @@ Quẹt thẻ liên tiếp khi thanh chắn còn đang mở chỉ gia hạn thờ
 **Giới hạn:** chỉ dùng hai cảm biến nên khó phân biệt xe ngắn đã chạy tới cảm biến sau rồi lùi ra hẳn (cảm biến trước đã nhả) với xe đã qua. Cần chắc chắn hơn thì cân nhắc thêm vòng cảm ứng từ hoặc đặt khoảng cách hai cảm biến ngắn hơn chiều dài xe.
 
 **Kiểm tra:** mở Serial Monitor (9600), quẹt thẻ cho thanh chắn mở rồi đưa vật qua lần lượt cảm biến trước -> sau: thấy thanh chắn hạ và dòng `PASS:IN` (hoặc `PASS:OUT`); không đưa gì qua thì sau `SERVO_OPEN_SECONDS` giây thấy `NOPASS:...`.
+
+## Đèn LED báo xe vào (tùy chọn: một đèn ở cổng vào)
+Khi cảm biến hồng ngoại xác nhận xe **đã đi qua hẳn thanh chắn cổng vào** (đúng lúc Arduino gửi `PASS:IN`), đèn LED **sáng 20 giây rồi tự tắt**. Đèn do **Arduino tự điều khiển** (đếm giờ bằng `millis()`, không chặn vòng đọc thẻ / cảm biến), không cần máy tính và không có lệnh hay biến cấu hình nào trong `.env`. Chỉ cổng vào có đèn; cổng ra không.
+
+**Đấu dây:**
+
+| Đèn LED | Chân Arduino |
+|---|---|
+| Chân dương (anode, chân dài) -> điện trở 220 ohm | **A4** |
+| Chân âm (cathode, chân ngắn) | GND |
+
+A4 không trùng SPI (D8..D13), servo (D6/D7), cảm biến hồng ngoại (D2..D5), LCD (A0..A3), còi (A5) hay Serial. Đèn công suất lớn (đèn 12V, dải LED...) thì **không nối thẳng** chân A4 (tối đa ~20 mA): đi qua transistor hoặc relay.
+
+**Quy tắc:**
+- Đèn chỉ sáng khi xe **đã qua hẳn** (chắn cảm biến trước, rồi sau, rồi rời cả hai). Xe lùi ra, vật chắn riêng cảm biến sau, hoặc hết giờ mở thanh chắn mà xe chưa qua (`NOPASS:IN`) đều **không** làm đèn sáng.
+- Có xe khác đi qua khi đèn còn sáng thì **đếm lại 20 giây từ đầu**, đèn không tắt giữa chừng.
+- Mở nguồn hoặc Arduino reset thì đèn luôn **tắt**.
+- Đổi thời gian hoặc chân: sửa `LED_ON_MS` (mili giây, mặc định `20000`) và `PIN_LED` (mặc định `A4`) đầu `dual_rfid.ino` rồi nạp lại.
+- Đèn dựa vào **hai cảm biến hồng ngoại cổng vào** (D2, D3) nên phải gắn đủ hai cái thì đèn mới sáng. `IR_ENABLED` trong `.env` chỉ quyết định Python có ghi kết quả vào SQL Server hay không, **không** ảnh hưởng đèn.
+
+**Kiểm tra:** mở Serial Monitor (9600), quẹt thẻ cho thanh chắn mở rồi đưa vật qua lần lượt cảm biến trước (D2) -> sau (D3) rồi bỏ ra: thấy dòng `PASS:IN` và đèn sáng; sau 20 giây đèn tắt. Không đưa gì qua thì chỉ thấy `NOPASS:IN` và đèn không sáng.
 
 ## Số chỗ đỗ xe (slot)
 Bãi có `PARKING_CAPACITY` chỗ (mặc định **3**). Số chỗ trống = `PARKING_CAPACITY` trừ số xe đang ở trong bãi (đếm từ SQL Server: các lượt chưa có giờ ra).

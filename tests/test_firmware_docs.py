@@ -31,7 +31,8 @@ def test_buzzer_pin_matches_readme_and_does_not_clash():
     assert f"coi={buzzer}" in INO and f"coi={buzzer}" in README
     others = {pin(n) for n in ("PIN_RST", "PIN_SS_IN", "PIN_SS_OUT", "PIN_SERVO_IN", "PIN_SERVO_OUT",
                                "PIN_LCD_IN_SDA", "PIN_LCD_IN_SCL", "PIN_LCD_OUT_SDA", "PIN_LCD_OUT_SCL",
-                               "PIN_IR_IN_BEFORE", "PIN_IR_IN_AFTER", "PIN_IR_OUT_BEFORE", "PIN_IR_OUT_AFTER")}
+                               "PIN_IR_IN_BEFORE", "PIN_IR_IN_AFTER", "PIN_IR_OUT_BEFORE", "PIN_IR_OUT_AFTER",
+                               "PIN_LED")}
     others |= {"D0", "D1", "D11", "D12", "D13"}   # Serial + SPI (MOSI/MISO/SCK)
     assert buzzer not in others
 
@@ -55,7 +56,7 @@ def test_ir_pins_match_readme_and_do_not_clash():
     assert ir in INO and ir in README
     others = {pin(n) for n in ("PIN_RST", "PIN_SS_IN", "PIN_SS_OUT", "PIN_SERVO_IN", "PIN_SERVO_OUT",
                                "PIN_LCD_IN_SDA", "PIN_LCD_IN_SCL", "PIN_LCD_OUT_SDA", "PIN_LCD_OUT_SCL",
-                               "PIN_BUZZER")}
+                               "PIN_BUZZER", "PIN_LED")}
     others |= {"D0", "D1", "D11", "D12", "D13"}
     assert not set(pins.values()) & others
 
@@ -80,7 +81,7 @@ def test_every_card_swipe_beeps_before_reporting():
 def test_barrier_reports_pass_and_nopass_with_the_gate_tag():
     """Giao thức PASS:/NOPASS: trong sketch phải khớp bên Python (hardware/rfid.py) và README."""
     assert 'report(F("PASS:"))' in INO and 'report(F("NOPASS:"))' in INO
-    assert 'PIN_IR_IN_AFTER, "IN")' in INO and 'PIN_IR_OUT_AFTER, "OUT")' in INO
+    assert 'PIN_IR_IN_AFTER, "IN"' in INO and 'PIN_IR_OUT_AFTER, "OUT"' in INO   # cổng vào còn thêm tham số đèn
     for line in ("PASS:IN", "NOPASS:OUT"):
         assert line in README
 
@@ -116,3 +117,43 @@ def test_barrier_uses_runtime_angles_not_the_constants_directly():
     body = INO[INO.index("class Barrier"):INO.index("Barrier barrierIn(")]
     assert "servo_.write(SERVO_CLOSED_ANGLE)" not in body and "servo_.write(SERVO_OPEN_ANGLE)" not in body
     assert "servo_.write(closedAngle_)" in body and "servo_.write(openAngle_)" in body
+
+
+def test_led_pin_matches_readme_and_does_not_clash():
+    led = pin("PIN_LED")
+    assert led == "A4"
+    assert f"| Chân dương (anode, chân dài) -> điện trở 220 ohm | **{led}** |" in README
+    assert f"led={led}" in INO and f"led={led}" in README
+    others = {pin(n) for n in ("PIN_RST", "PIN_SS_IN", "PIN_SS_OUT", "PIN_SERVO_IN", "PIN_SERVO_OUT",
+                               "PIN_LCD_IN_SDA", "PIN_LCD_IN_SCL", "PIN_LCD_OUT_SDA", "PIN_LCD_OUT_SCL",
+                               "PIN_IR_IN_BEFORE", "PIN_IR_IN_AFTER", "PIN_IR_OUT_BEFORE", "PIN_IR_OUT_AFTER",
+                               "PIN_BUZZER")}
+    others |= {"D0", "D1", "D11", "D12", "D13"}   # Serial + SPI (MOSI/MISO/SCK)
+    assert led not in others
+
+
+def test_led_duration_is_20_seconds_in_sketch_and_readme():
+    ms = int(re.search(r"const unsigned long LED_ON_MS\s*=\s*(\d+);", INO).group(1))
+    assert ms == 20000
+    assert f"`LED_ON_MS` (mili giây, mặc định `{ms}`)" in README
+
+
+def test_only_the_entry_barrier_drives_the_led_and_only_after_a_real_pass():
+    """Đèn chỉ gắn vào Barrier cổng vào và chỉ bật cùng lúc PASS (xe qua hẳn), không bật ở nhánh NOPASS / close()."""
+    assert 'PIN_IR_IN_AFTER, "IN", &entryLed)' in INO
+    assert 'PIN_IR_OUT_AFTER, "OUT")' in INO and "&entryLed" not in INO[INO.index("Barrier barrierOut("):].split("\n")[0]
+    body = INO[INO.index("class Barrier"):INO.index("Barrier barrierIn(")]
+    assert body.count("led_->trigger(") == 1
+    trigger_at = body.index("led_->trigger(")
+    assert body.index('report(F("PASS:"))') > trigger_at > body.index("detector_.update(")
+    assert trigger_at < body.index('report(F("NOPASS:"))')
+    # trigger nằm trong nhánh PASS (trước dòng return của nhánh đó), không phải sau nhánh hết giờ
+    assert "return;" in body[trigger_at:body.index('report(F("NOPASS:"))')]
+
+
+def test_led_is_off_at_boot_and_updated_every_loop_without_blocking():
+    setup = INO[INO.index("void setup()"):INO.index("void loop()")]
+    assert "pinMode(PIN_LED, OUTPUT)" in setup and "digitalWrite(PIN_LED, LOW)" in setup
+    loop = INO[INO.index("void loop()"):]
+    assert "entryLed.update(millis())" in loop
+    assert "delay(" not in loop
