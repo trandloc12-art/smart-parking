@@ -58,8 +58,13 @@ def _make_rfid(cfg, apps, **reader_kwargs):
         if gate in apps:
             apps[gate].handle_reader_status(ok)
 
+    def on_barrier(gate, passed):
+        if gate in apps:
+            apps[gate].handle_barrier(passed)
+
     return ArduinoRfidReader(cfg.rfid_port, cfg.rfid_baud, on_card=on_card, on_status=on_status,
-                             on_reader_status=on_reader_status, debounce=cfg.rfid_debounce,
+                             on_reader_status=on_reader_status, on_barrier=on_barrier,
+                             debounce=cfg.rfid_debounce,
                              heartbeat_timeout=cfg.rfid_heartbeat, **reader_kwargs)
 
 

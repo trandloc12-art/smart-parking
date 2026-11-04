@@ -152,7 +152,7 @@ class ExitApp(BaseGateApp):
             self.match_lbl.configure(text=f"KHỚP biển lúc vào ({session.plate_number})", fg=COLOR_OK)
             self.upsert_row(session)
             self.lcd(lcd_exit_ok(session.fee), revert=True)
-            self.open_barrier()     # biển khớp, đã đóng lượt -> mở thanh chắn cổng ra
+            self.open_barrier(session.id)   # biển khớp, đã đóng lượt -> mở thanh chắn cổng ra
             self.set_status(self._exit_text("XE RA", session), COLOR_OK)
             return
 
@@ -196,7 +196,7 @@ class ExitApp(BaseGateApp):
         self.pending = None
         self.upsert_row(event)
         self.lcd(lcd_exit_ok(event.fee), revert=True)
-        self.open_barrier()         # nhân viên đã duyệt cho xe ra -> mở thanh chắn cổng ra
+        self.open_barrier(event.id)     # nhân viên đã duyệt cho xe ra -> mở thanh chắn cổng ra
         self.update_action_buttons()
         exact = event.match_status == "MATCH"
         self.match_lbl.configure(

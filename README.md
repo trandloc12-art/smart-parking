@@ -7,6 +7,7 @@ Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này
 Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một ở cổng ra) để báo cho tài xế (VD "XE LECH VI TRI" khi không đọc đủ 5 số, "XE RA OK - TIEN 5.000 D") — xem mục *Hai màn LCD 1602 I2C*.
 Tùy chọn: gắn **một còi bíp** dùng chung, mỗi lần quẹt thẻ (cổng vào hoặc cổng ra) còi kêu một tiếng — xem mục *Còi bíp*.
 Tùy chọn: gắn **hai servo thanh chắn** (một ở cổng vào, một ở cổng ra): quẹt thẻ thành công thì servo của cổng đó tự mở rồi tự đóng lại — xem mục *Hai servo thanh chắn*.
+Tùy chọn: gắn **bốn cảm biến hồng ngoại** (mỗi cổng hai cái, trước và sau thanh chắn) để biết xe đã đi qua thanh chắn chưa: qua rồi thì hạ thanh chắn ngay, kết quả ghi vào SQL Server — xem mục *Cảm biến hồng ngoại*.
 
 ## Cài đặt
 1. Python 3.10+, SQL Server, **ODBC Driver 17/18 for SQL Server**.
@@ -72,6 +73,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
 | `SERVO_ENABLED` | `1` | `1` = quẹt thẻ thành công thì mở servo thanh chắn; `0` = chưa gắn servo thì tắt đi (không gửi lệnh nào) |
 | `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
+| `IR_ENABLED` | `1` | `1` = ghi kết quả cảm biến hồng ngoại (xe đã qua / hết giờ chưa qua) vào SQL Server; `0` = chưa gắn cảm biến thì tắt đi (bỏ qua `PASS` / `NOPASS` từ Arduino) |
 | `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
 
 ## Xử lý sự cố
@@ -91,6 +93,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | Quẹt thẻ chậm | OCR chạy bằng CPU, mỗi ảnh có thể mất vài giây. Giảm `SCAN_FRAMES` nếu cần |
 | Thẻ báo "đang ở trong bãi" dù xe đã đi | Lượt cũ chưa đóng: đóng bằng câu SQL ở trên |
 | Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
+| Luôn hiện cảnh báo "hết giờ mở thanh chắn mà xe chưa đi qua" | Cảm biến hồng ngoại chưa gắn / sai dây / sai mức tín hiệu (`IR_ACTIVE_LOW`), hoặc xe không chắn đủ hai cảm biến theo thứ tự trước -> sau. Chưa gắn cảm biến thì đặt `IR_ENABLED=0` |
+| Thanh chắn không hạ xuống dù xe đã đi qua | Cảm biến sau còn bị chắn (lệch hướng, vật chắn cố định): thanh chắn vẫn tự hạ sau `SERVO_OPEN_SECONDS` + tối đa 10 giây |
 
 ## Giao thức với Arduino
 **MỘT Arduino, MỘT cổng COM, hai đầu đọc.** Serial 9600 baud, mỗi dòng kết thúc bằng `\n`:
@@ -100,6 +104,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `IN:AB1992CA` | Thẻ quẹt ở đầu đọc **cổng vào** (UID dạng HEX) |
 | `OUT:DB2B11CA` | Thẻ quẹt ở đầu đọc **cổng ra** |
 | `STATUS:IN=1,OUT=0` | Tình trạng từng đầu đọc (`1` = hoạt động, `0` = không nói chuyện được với module). Gửi lúc khởi động và mỗi ~2 giây; cũng là "nhịp tim" để phát hiện Arduino treo |
+| `PASS:IN` / `PASS:OUT` | Xe đã **đi qua hẳn** thanh chắn cổng vào / cổng ra (cảm biến hồng ngoại); Arduino đã hạ thanh chắn |
+| `NOPASS:IN` / `NOPASS:OUT` | Hết giờ mở thanh chắn mà xe **chưa qua**; Arduino đã hạ thanh chắn |
 | `# ...` | Chú thích / log, bị bỏ qua |
 | `LCDIN:dòng 1\|dòng 2` | **Chiều ngược lại (máy tính -> Arduino)**: hiển thị lên LCD **cổng vào**. Mỗi dòng tối đa 16 ký tự ASCII không dấu. Arduino không có LCD đó hoặc còn firmware cũ thì bỏ qua |
 | `LCDOUT:dòng 1\|dòng 2` | Như trên nhưng cho LCD **cổng ra** |
@@ -167,11 +173,11 @@ Mỗi cổng một servo (SG90 / MG90S...) gắn vào chính Arduino đó. **Khi
 | **Cổng VÀO** | **D6** | 5V | GND |
 | **Cổng RA** | **D7** | 5V | GND |
 
-Hai chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), còi (D4) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
+Hai chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), cảm biến hồng ngoại (D2..D5), còi (A5) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
 
 **Chỉnh cho khớp thanh chắn thật** (đầu `dual_rfid.ino`): `SERVO_CLOSED_ANGLE` (mặc định 0°) và `SERVO_OPEN_ANGLE` (mặc định 90°; đảo hai giá trị nếu servo quay ngược), `SERVO_HOLD_MS` (thời gian mở mặc định). Thời gian giữ mở thực tế do `SERVO_OPEN_SECONDS` trong `.env` quyết định.
 
-**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=D4)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
+**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
 
 ## Còi bíp (tùy chọn: MỘT còi dùng chung cho cả hai cổng)
 Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi kêu **một tiếng bíp ngắn** (mặc định 2000 Hz, 120 ms) để người quẹt biết thẻ đã được đọc. Còi do **Arduino tự điều khiển** ngay khi đọc được thẻ, không cần chờ máy tính, nên vẫn kêu khi chương trình Python chưa chạy; bíp kêu cho mọi thẻ đọc được, kể cả thẻ chưa đăng ký. Không có lệnh nào từ máy tính để điều khiển còi, và không có biến cấu hình trong `.env`.
@@ -183,7 +189,36 @@ Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi k
 | Chân dương (+) | **A5** |
 | Chân âm (-) | GND |
 
-D4 không trùng SPI (D8..D13), servo (D6/D7), LCD (A0..A3) hay Serial. Sketch dùng `tone()` nên chạy được **cả còi active lẫn passive** (không cần biết loại còi). Còi nhỏ (dưới khoảng 20 mA) nối thẳng chân D4; còi công suất lớn thì qua transistor. Đổi chân / tần số / độ dài tiếng bíp ở `PIN_BUZZER`, `BUZZER_FREQ_HZ`, `BUZZER_BEEP_MS` đầu `dual_rfid.ino`, rồi nạp lại. Nếu dùng còi active mà tiếng nghe rè, thử đổi `tone(...)` trong hàm `beep()` thành `digitalWrite(PIN_BUZZER, HIGH)` rồi `LOW` sau một khoảng ngắn.
+A5 không trùng SPI (D8..D13), servo (D6/D7), cảm biến hồng ngoại (D2..D5), LCD (A0..A3) hay Serial. Sketch dùng `tone()` nên chạy được **cả còi active lẫn passive** (không cần biết loại còi). Còi nhỏ (dưới khoảng 20 mA) nối thẳng chân A5; còi công suất lớn thì qua transistor. Đổi chân / tần số / độ dài tiếng bíp ở `PIN_BUZZER`, `BUZZER_FREQ_HZ`, `BUZZER_BEEP_MS` đầu `dual_rfid.ino`, rồi nạp lại. Nếu dùng còi active mà tiếng nghe rè, thử đổi `tone(...)` trong hàm `beep()` thành `digitalWrite(PIN_BUZZER, HIGH)` rồi `LOW` sau một khoảng ngắn.
+
+## Cảm biến hồng ngoại (tùy chọn: bốn cảm biến, mỗi cổng hai cái)
+Mỗi cổng có hai cảm biến hồng ngoại: một ở **trước** thanh chắn (phía xe đi tới) và một ở **sau** thanh chắn, để Arduino biết xe đã đi qua thanh chắn chưa. Không gắn cảm biến thì hệ thống vẫn chạy như cũ (thanh chắn tự đóng theo giờ); nhớ đặt `IR_ENABLED=0` trong `.env` để chương trình không ghi nhận `NOPASS` cho mọi lượt.
+
+**Đấu dây** (mỗi cảm biến: VCC -> 5V, GND -> GND, ngõ ra OUT -> chân số):
+
+| Cảm biến | Chân Arduino |
+|---|---|
+| **Cổng VÀO, trước** thanh chắn | **D2** |
+| **Cổng VÀO, sau** thanh chắn | **D3** |
+| **Cổng RA, trước** thanh chắn | **D4** |
+| **Cổng RA, sau** thanh chắn | **D5** |
+
+Mặc định ngõ ra xuống LOW khi có vật chắn (đa số module E18-D80NK / FC-51). Loại ngược lại thì đổi `IR_ACTIVE_LOW` thành `false` trong `dual_rfid.ino`. Các chân đổi được ở `PIN_IR_*`. Chân dùng `INPUT_PULLUP` nên ngõ ra open-collector cũng chạy được.
+
+**Cách hoạt động** (tính từ lúc thanh chắn MỞ): xe chắn cảm biến trước, rồi chắn cảm biến sau, rồi rời khỏi cả hai thì Arduino coi là **đã qua**: **hạ thanh chắn ngay** (không chờ hết `SERVO_OPEN_SECONDS`) và gửi `PASS:<cổng>`. Xe lùi ra (cảm biến sau nhả khi cảm biến trước còn bị chắn) thì không tính là đã qua. Vật chỉ chắn cảm biến sau mà chưa từng chắn cảm biến trước (VD người đi ngược chiều) cũng bị bỏ qua. Tín hiệu được chống nhiễu `IR_DEBOUNCE_MS` (30 ms).
+
+**Hết giờ mà xe chưa qua:** Arduino hạ thanh chắn rồi gửi `NOPASS:<cổng>`. Nhưng nếu lúc hết giờ **vẫn còn vật chắn cảm biến** (xe đang đứng ở thanh chắn) thì Arduino chờ thêm, tối đa `IR_EXTEND_MAX_MS` (10 giây), để thanh chắn không hạ xuống xe. Đây là việc của Arduino, không cần máy tính.
+
+**Ghi nhận:** chương trình **không hiển thị** kết quả xe đã qua trên giao diện; chỉ ghi vào bảng `access_log`: `pass_in_status` / `pass_in_at` (cổng vào), `pass_out_status` / `pass_out_at` (cổng ra), trạng thái là `PASSED` (đã qua) hoặc `TIMEOUT` (hết giờ mà chưa qua). Mỗi cổng ghi một lần cho mỗi lượt. Ngoại lệ duy nhất: khi `TIMEOUT`, thanh trạng thái của cổng đó hiện một dòng cảnh báo vàng (nếu lúc đó không có việc khác đang hiện). Xem nhanh:
+```sql
+SELECT id, card_uid, time_in, pass_in_status, pass_in_at, time_out, pass_out_status, pass_out_at
+FROM BienSoDB.dbo.access_log ORDER BY id DESC;
+```
+Quẹt thẻ liên tiếp khi thanh chắn còn đang mở chỉ gia hạn thời gian, nên chỉ có **một** kết quả cho cả đợt mở và nó được ghi vào lượt của lần quẹt sau cùng.
+
+**Giới hạn:** chỉ dùng hai cảm biến nên khó phân biệt xe ngắn đã chạy tới cảm biến sau rồi lùi ra hẳn (cảm biến trước đã nhả) với xe đã qua. Cần chắc chắn hơn thì cân nhắc thêm vòng cảm ứng từ hoặc đặt khoảng cách hai cảm biến ngắn hơn chiều dài xe.
+
+**Kiểm tra:** mở Serial Monitor (9600), quẹt thẻ cho thanh chắn mở rồi đưa vật qua lần lượt cảm biến trước -> sau: thấy thanh chắn hạ và dòng `PASS:IN` (hoặc `PASS:OUT`); không đưa gì qua thì sau `SERVO_OPEN_SECONDS` giây thấy `NOPASS:...`.
 
 ## Quy tắc nghiệp vụ
 
@@ -239,7 +274,7 @@ core/                        plate_utils.py     xử lý ảnh + chuỗi biển
                              plate_voting.py    bỏ phiếu giữa nhiều lần đọc
                              scanner.py         quét nhiều khung + bỏ phiếu
                              plate_match.py     so khớp 5 số vào / ra
-hardware/                    rfid.py (Serial: một Arduino, hai đầu đọc, báo tình trạng, gửi lệnh LCD + servo), camera.py (đọc camera ở luồng nền, báo mất hình)
+hardware/                    rfid.py (Serial: một Arduino, hai đầu đọc, báo tình trạng + kết quả cảm biến PASS/NOPASS, gửi lệnh LCD + servo), camera.py (đọc camera ở luồng nền, báo mất hình)
 storage/                     database.py (SQL Server), schema.sql, models.py, errors.py
 services/                    gate_service.py    phần chung (quét, lưu ảnh)
                              entry_service.py   nghiệp vụ cổng vào

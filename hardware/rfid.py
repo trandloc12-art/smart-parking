@@ -6,6 +6,8 @@ Giao thức (9600 baud, mỗi dòng kết thúc bằng \\n; xem arduino/dual_rfi
     OUT:DB2B11CA           quẹt thẻ ở đầu đọc CỔNG RA
     STATUS:IN=1,OUT=0      tình trạng từng đầu đọc (1 = hoạt động, 0 = Arduino không nói chuyện được
                            với module RFID). Arduino gửi lúc khởi động và định kỳ (~2 giây).
+    PASS:IN                xe đã đi qua hẳn thanh chắn CỔNG VÀO (PASS:OUT: cổng ra); Arduino đã hạ thanh chắn
+    NOPASS:OUT             hết giờ mở thanh chắn mà xe CHƯA đi qua (NOPASS:IN: cổng vào); thanh chắn đã hạ
     # ...                  dòng chú thích / log, bị bỏ qua
 
 Chiều NGƯỢC LẠI (máy tính -> Arduino), chỉ để hiển thị lên hai màn LCD 1602 I2C (một ở mỗi cổng):
@@ -26,6 +28,8 @@ Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
     on_status(connected, message)       tình trạng Arduino: mất cổng COM, không phản hồi, sai định dạng...
     on_reader_status(gate, ok)          tình trạng đầu đọc của cổng: True / False / None (chưa rõ,
                                         VD khi Arduino đang mất kết nối)
+    on_barrier(gate, passed)            kết quả của một lần mở thanh chắn (cảm biến hồng ngoại): True = xe đã qua,
+                                        False = hết giờ mà xe chưa qua
 LƯU Ý: các callback chạy ở luồng nền, KHÔNG được đụng trực tiếp vào widget Tkinter.
 """
 import re
@@ -37,6 +41,7 @@ from dataclasses import dataclass, field
 import serial  # pip install pyserial
 
 GATE_CODES = {"IN": "in", "OUT": "out"}      # tiền tố trong giao thức -> mã cổng trong chương trình
+BARRIER_HEADS = {"PASS": True, "NOPASS": False}   # tiền tố báo kết quả thanh chắn -> xe đã qua?
 _UID_RE = re.compile(r"^[0-9A-Z]{4,32}$")
 LCD_WIDTH = 16                                # LCD 1602: 16 cột x 2 dòng
 
@@ -103,12 +108,18 @@ class ReaderStatus:
 
 
 @dataclass(frozen=True)
+class BarrierEvent:
+    gate: str
+    passed: bool            # True: PASS (xe đã qua hẳn); False: NOPASS (hết giờ mở mà chưa qua)
+
+
+@dataclass(frozen=True)
 class BadLine:
     text: str
 
 
 def parse_line(raw):
-    """Một dòng từ Arduino -> CardSwipe | ReaderStatus | BadLine; dòng trống hoặc chú thích -> None."""
+    """Một dòng từ Arduino -> CardSwipe | ReaderStatus | BarrierEvent | BadLine; dòng trống hoặc chú thích -> None."""
     text = raw.strip()
     if not text or text.startswith("#"):
         return None
@@ -127,6 +138,10 @@ def parse_line(raw):
                 readers[GATE_CODES[key]] = value == "1"
         if readers:
             return ReaderStatus(readers)
+    elif sep and head in BARRIER_HEADS:
+        gate = GATE_CODES.get(body.strip().upper())
+        if gate:
+            return BarrierEvent(gate, BARRIER_HEADS[head])
     return BadLine(text)
 
 
@@ -136,13 +151,14 @@ class ArduinoRfidReader(threading.Thread):
     BAD_LINES_BEFORE_ALERT = 3      # vài dòng rác lúc Arduino vừa khởi động là bình thường
 
     def __init__(self, port, baudrate, on_card, on_status=None, on_reader_status=None,
-                 debounce=2.0, heartbeat_timeout=8.0,
+                 debounce=2.0, heartbeat_timeout=8.0, on_barrier=None,
                  serial_factory=serial.Serial, clock=time.monotonic, sleep=time.sleep):
         super().__init__(daemon=True)
         self.port, self.baudrate = port, baudrate
         self.on_card = on_card
         self.on_status = on_status or (lambda connected, msg: None)
         self.on_reader_status = on_reader_status or (lambda gate, ok: None)
+        self.on_barrier = on_barrier or (lambda gate, passed: None)
         self.debounce = debounce
         self.heartbeat_timeout = heartbeat_timeout
         self._serial_factory, self._clock, self._sleep = serial_factory, clock, sleep
@@ -241,6 +257,8 @@ class ArduinoRfidReader(threading.Thread):
         if isinstance(msg, ReaderStatus):
             for gate, ok in msg.readers.items():
                 self.on_reader_status(gate, ok)
+        elif isinstance(msg, BarrierEvent):
+            self.on_barrier(msg.gate, msg.passed)      # không chống trùng: mỗi lần mở thanh chắn chỉ có một kết quả
         else:
             self._emit_card(msg.gate, msg.uid)
 

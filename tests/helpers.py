@@ -16,6 +16,7 @@ class FakeDb:
         self.rows = []
         self.votes = {}
         self.votes_out = {}
+        self.passes = []        # (id lượt, cổng, trạng thái, thời điểm)
 
     def is_card_registered(self, uid):
         return uid in self.cards
@@ -45,6 +46,12 @@ class FakeDb:
                 self.votes_out[session_id] = votes_out
                 return
         raise SessionAlreadyClosed("đã đóng")
+
+    def record_pass(self, session_id, gate, status, at):
+        if any(p[0] == session_id and p[1] == gate for p in self.passes):
+            return False
+        self.passes.append((session_id, gate, status, at))
+        return True
 
     def recent(self, limit=100):
         return list(reversed(self.rows))[:limit]

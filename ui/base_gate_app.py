@@ -20,6 +20,7 @@ from PIL import Image, ImageTk
 from core.plate_voting import NUMBER_LEN
 from hardware import camera as cam_state
 from services.gate_service import Outcome
+from services.gate_service import now as current_time
 from ui.device_status import ARDUINO, DB, DeviceStatusBar, camera_key, reader_key
 
 COLOR_OK = "#1a7f37"
@@ -155,6 +156,7 @@ class BaseGateApp:
         self._history_loading = False
         self._closing = False
         self._lcd_job = None        # hẹn giờ đưa LCD về "MOI QUET THE" (xem lcd)
+        self._barrier_session = None    # id lượt gửi xe vừa được mở thanh chắn, chờ cảm biến báo xe đã qua chưa
 
         self.build_ui()
         self.open_camera(cfg.camera_index)
@@ -189,10 +191,12 @@ class BaseGateApp:
         if revert:
             self._schedule_lcd_revert()
 
-    def open_barrier(self):
+    def open_barrier(self, session_id=None):
         """Mở thanh chắn (servo) của CỔNG NÀY khi xe được chấp nhận (quẹt thẻ thành công).
-        Arduino tự đóng lại sau cfg.servo_open_seconds giây. Giống LCD: chưa có Arduino, mất kết nối
-        hoặc tắt bằng SERVO_ENABLED=0 thì bỏ qua, không bao giờ làm hỏng việc xử lý thẻ.
+        Arduino tự đóng lại sau cfg.servo_open_seconds giây (hoặc ngay khi cảm biến thấy xe đã qua). Giống LCD:
+        chưa có Arduino, mất kết nối hoặc tắt bằng SERVO_ENABLED=0 thì bỏ qua, không bao giờ làm hỏng việc xử lý thẻ.
+
+        session_id: lượt gửi xe của xe này; kết quả cảm biến (đã qua / hết giờ) sẽ được ghi vào lượt đó.
         Trả về True nếu đã gửi lệnh."""
         if not getattr(self.cfg, "servo_enabled", True):
             return False
@@ -200,9 +204,35 @@ class BaseGateApp:
         if send is None:
             return False
         try:
-            return bool(send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds))
+            sent = bool(send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds))
         except Exception:
             return False
+        if sent:
+            self._barrier_session = session_id
+        return sent
+
+    def handle_barrier(self, passed):
+        """Arduino báo kết quả lần mở thanh chắn của cổng này: passed=True xe đã qua hẳn, False hết giờ mà chưa qua.
+        Gọi được từ luồng nền: chuyển sang luồng GUI."""
+        at = current_time()
+        self.q.put(lambda: self.on_barrier_result(passed, at))
+
+    def on_barrier_result(self, passed, at):
+        """Ghi kết quả vào SQL Server (không hiển thị). Riêng trường hợp bất thường (hết giờ mà xe chưa qua) có
+        một dòng cảnh báo ở thanh trạng thái của cổng, nếu lúc đó không có việc khác đang hiện."""
+        if not getattr(self.cfg, "ir_enabled", True):
+            return                      # chưa gắn cảm biến hồng ngoại
+        session_id, self._barrier_session = self._barrier_session, None
+        if session_id is None:
+            return                      # thanh chắn không do chương trình mở (VD gõ lệnh tay): không có lượt để ghi
+        self._bg(lambda: self.service.record_pass(session_id, passed, at), lambda _: None,
+                 busy=False, on_error=self.on_pass_record_error)
+        if not passed and self.pending is None and not self.busy:
+            self.set_status(f"CẢNH BÁO {self.cfg.label}: hết giờ mở thanh chắn mà xe chưa đi qua "
+                            "(thanh chắn đã hạ).", COLOR_WARN)
+
+    def on_pass_record_error(self, exc):
+        self.devices.set(DB, False, f"SQL Server: LỖI ({str(exc)[:60]})")
 
     def _cancel_lcd_revert(self):
         job, self._lcd_job = self._lcd_job, None

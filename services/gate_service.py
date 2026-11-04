@@ -13,6 +13,9 @@ from core.scanner import scan_best_of
 
 NUMBER_RE = re.compile(r"^\d{5}$")
 
+PASS_PASSED = "PASSED"      # cảm biến hồng ngoại: xe đã đi qua hẳn thanh chắn
+PASS_TIMEOUT = "TIMEOUT"    # hết giờ mở thanh chắn mà xe chưa qua
+
 
 class Outcome(Enum):
     UNREGISTERED = "unregistered"     # thẻ chưa đăng ký / bị khóa
@@ -86,6 +89,11 @@ class GateService:
 
     def recent_events(self, limit=100):
         return self.db.recent(limit)
+
+    def record_pass(self, session_id, passed, at=None):
+        """Ghi vào lượt `session_id` việc xe đã qua thanh chắn (passed=True) hay hết giờ mà chưa qua."""
+        return self.db.record_pass(session_id, self.gate_code,
+                                   PASS_PASSED if passed else PASS_TIMEOUT, at or now())
 
     # ---------- Ảnh ----------
     def save_image(self, image, card_uid):

@@ -1,0 +1,1131 @@
+diff --git a/.env.example b/.env.example
+index 978e969..64cf2b7 100644
+--- a/.env.example
++++ b/.env.example
+@@ -29,6 +29,9 @@ LCD_IDLE_SECONDS=5
+ SERVO_ENABLED=1                # 0 = chưa gắn servo thì tắt đi
+ SERVO_OPEN_SECONDS=3           # giây giữ thanh chắn mở (0.5..30)
+ 
++# Cảm biến hồng ngoại (mỗi cổng 2 cái, trước + sau thanh chắn): xe đã qua thì hạ thanh chắn ngay, kết quả ghi vào SQL Server
++IR_ENABLED=1                   # 0 = chưa gắn cảm biến thì tắt đi (bỏ qua PASS / NOPASS từ Arduino)
++
+ # Kích thước khung camera (mỗi cổng ~900px rộng; hai cổng cạnh nhau vừa màn hình 1920, màn nhỏ hơn sẽ tự thu nhỏ)
+ VIEW_W=420
+ VIEW_H=315
+diff --git a/README.md b/README.md
+index 5c34e39..bb26ea9 100644
+--- a/README.md
++++ b/README.md
+@@ -7,6 +7,7 @@ Arduino cần nạp sketch **`arduino/dual_rfid/dual_rfid.ino`** trong repo này
+ Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một ở cổng ra) để báo cho tài xế (VD "XE LECH VI TRI" khi không đọc đủ 5 số, "XE RA OK - TIEN 5.000 D") — xem mục *Hai màn LCD 1602 I2C*.
+ Tùy chọn: gắn **một còi bíp** dùng chung, mỗi lần quẹt thẻ (cổng vào hoặc cổng ra) còi kêu một tiếng — xem mục *Còi bíp*.
+ Tùy chọn: gắn **hai servo thanh chắn** (một ở cổng vào, một ở cổng ra): quẹt thẻ thành công thì servo của cổng đó tự mở rồi tự đóng lại — xem mục *Hai servo thanh chắn*.
++Tùy chọn: gắn **bốn cảm biến hồng ngoại** (mỗi cổng hai cái, trước và sau thanh chắn) để biết xe đã đi qua thanh chắn chưa: qua rồi thì hạ thanh chắn ngay, kết quả ghi vào SQL Server — xem mục *Cảm biến hồng ngoại*.
+ 
+ ## Cài đặt
+ 1. Python 3.10+, SQL Server, **ODBC Driver 17/18 for SQL Server**.
+@@ -72,6 +73,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | `VIEW_W`, `VIEW_H` | `420`, `315` | Kích thước khung camera (mỗi cửa sổ rộng khoảng 900 px) |
+ | `SERVO_ENABLED` | `1` | `1` = quẹt thẻ thành công thì mở servo thanh chắn; `0` = chưa gắn servo thì tắt đi (không gửi lệnh nào) |
+ | `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
++| `IR_ENABLED` | `1` | `1` = ghi kết quả cảm biến hồng ngoại (xe đã qua / hết giờ chưa qua) vào SQL Server; `0` = chưa gắn cảm biến thì tắt đi (bỏ qua `PASS` / `NOPASS` từ Arduino) |
+ | `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
+ 
+ ## Xử lý sự cố
+@@ -91,6 +93,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | Quẹt thẻ chậm | OCR chạy bằng CPU, mỗi ảnh có thể mất vài giây. Giảm `SCAN_FRAMES` nếu cần |
+ | Thẻ báo "đang ở trong bãi" dù xe đã đi | Lượt cũ chưa đóng: đóng bằng câu SQL ở trên |
+ | Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
++| Luôn hiện cảnh báo "hết giờ mở thanh chắn mà xe chưa đi qua" | Cảm biến hồng ngoại chưa gắn / sai dây / sai mức tín hiệu (`IR_ACTIVE_LOW`), hoặc xe không chắn đủ hai cảm biến theo thứ tự trước -> sau. Chưa gắn cảm biến thì đặt `IR_ENABLED=0` |
++| Thanh chắn không hạ xuống dù xe đã đi qua | Cảm biến sau còn bị chắn (lệch hướng, vật chắn cố định): thanh chắn vẫn tự hạ sau `SERVO_OPEN_SECONDS` + tối đa 10 giây |
+ 
+ ## Giao thức với Arduino
+ **MỘT Arduino, MỘT cổng COM, hai đầu đọc.** Serial 9600 baud, mỗi dòng kết thúc bằng `\n`:
+@@ -100,6 +104,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
+ | `IN:AB1992CA` | Thẻ quẹt ở đầu đọc **cổng vào** (UID dạng HEX) |
+ | `OUT:DB2B11CA` | Thẻ quẹt ở đầu đọc **cổng ra** |
+ | `STATUS:IN=1,OUT=0` | Tình trạng từng đầu đọc (`1` = hoạt động, `0` = không nói chuyện được với module). Gửi lúc khởi động và mỗi ~2 giây; cũng là "nhịp tim" để phát hiện Arduino treo |
++| `PASS:IN` / `PASS:OUT` | Xe đã **đi qua hẳn** thanh chắn cổng vào / cổng ra (cảm biến hồng ngoại); Arduino đã hạ thanh chắn |
++| `NOPASS:IN` / `NOPASS:OUT` | Hết giờ mở thanh chắn mà xe **chưa qua**; Arduino đã hạ thanh chắn |
+ | `# ...` | Chú thích / log, bị bỏ qua |
+ | `LCDIN:dòng 1\|dòng 2` | **Chiều ngược lại (máy tính -> Arduino)**: hiển thị lên LCD **cổng vào**. Mỗi dòng tối đa 16 ký tự ASCII không dấu. Arduino không có LCD đó hoặc còn firmware cũ thì bỏ qua |
+ | `LCDOUT:dòng 1\|dòng 2` | Như trên nhưng cho LCD **cổng ra** |
+@@ -167,11 +173,11 @@ Mỗi cổng một servo (SG90 / MG90S...) gắn vào chính Arduino đó. **Khi
+ | **Cổng VÀO** | **D6** | 5V | GND |
+ | **Cổng RA** | **D7** | 5V | GND |
+ 
+-Hai chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), còi (D4) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
++Hai chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), cảm biến hồng ngoại (D2..D5), còi (A5) hay Serial. **Nguồn:** servo giật dòng lớn khi chạy nên nên cấp 5V riêng (pin / adapter 5V 2A) cho hai servo và **nối chung GND** với Arduino; cấp thẳng từ chân 5V của Arduino (qua USB) dễ làm Arduino reset, LCD nháy hoặc RC522 mất tín hiệu. Thư viện `Servo` có sẵn trong Arduino IDE; nạp lại `dual_rfid.ino`.
+ 
+ **Chỉnh cho khớp thanh chắn thật** (đầu `dual_rfid.ino`): `SERVO_CLOSED_ANGLE` (mặc định 0°) và `SERVO_OPEN_ANGLE` (mặc định 90°; đảo hai giá trị nếu servo quay ngược), `SERVO_HOLD_MS` (thời gian mở mặc định). Thời gian giữ mở thực tế do `SERVO_OPEN_SECONDS` trong `.env` quyết định.
+ 
+-**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=D4)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
++**An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo.
+ 
+ ## Còi bíp (tùy chọn: MỘT còi dùng chung cho cả hai cổng)
+ Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi kêu **một tiếng bíp ngắn** (mặc định 2000 Hz, 120 ms) để người quẹt biết thẻ đã được đọc. Còi do **Arduino tự điều khiển** ngay khi đọc được thẻ, không cần chờ máy tính, nên vẫn kêu khi chương trình Python chưa chạy; bíp kêu cho mọi thẻ đọc được, kể cả thẻ chưa đăng ký. Không có lệnh nào từ máy tính để điều khiển còi, và không có biến cấu hình trong `.env`.
+@@ -183,7 +189,36 @@ Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi k
+ | Chân dương (+) | **A5** |
+ | Chân âm (-) | GND |
+ 
+-D4 không trùng SPI (D8..D13), servo (D6/D7), LCD (A0..A3) hay Serial. Sketch dùng `tone()` nên chạy được **cả còi active lẫn passive** (không cần biết loại còi). Còi nhỏ (dưới khoảng 20 mA) nối thẳng chân D4; còi công suất lớn thì qua transistor. Đổi chân / tần số / độ dài tiếng bíp ở `PIN_BUZZER`, `BUZZER_FREQ_HZ`, `BUZZER_BEEP_MS` đầu `dual_rfid.ino`, rồi nạp lại. Nếu dùng còi active mà tiếng nghe rè, thử đổi `tone(...)` trong hàm `beep()` thành `digitalWrite(PIN_BUZZER, HIGH)` rồi `LOW` sau một khoảng ngắn.
++A5 không trùng SPI (D8..D13), servo (D6/D7), cảm biến hồng ngoại (D2..D5), LCD (A0..A3) hay Serial. Sketch dùng `tone()` nên chạy được **cả còi active lẫn passive** (không cần biết loại còi). Còi nhỏ (dưới khoảng 20 mA) nối thẳng chân A5; còi công suất lớn thì qua transistor. Đổi chân / tần số / độ dài tiếng bíp ở `PIN_BUZZER`, `BUZZER_FREQ_HZ`, `BUZZER_BEEP_MS` đầu `dual_rfid.ino`, rồi nạp lại. Nếu dùng còi active mà tiếng nghe rè, thử đổi `tone(...)` trong hàm `beep()` thành `digitalWrite(PIN_BUZZER, HIGH)` rồi `LOW` sau một khoảng ngắn.
++
++## Cảm biến hồng ngoại (tùy chọn: bốn cảm biến, mỗi cổng hai cái)
++Mỗi cổng có hai cảm biến hồng ngoại: một ở **trước** thanh chắn (phía xe đi tới) và một ở **sau** thanh chắn, để Arduino biết xe đã đi qua thanh chắn chưa. Không gắn cảm biến thì hệ thống vẫn chạy như cũ (thanh chắn tự đóng theo giờ); nhớ đặt `IR_ENABLED=0` trong `.env` để chương trình không ghi nhận `NOPASS` cho mọi lượt.
++
++**Đấu dây** (mỗi cảm biến: VCC -> 5V, GND -> GND, ngõ ra OUT -> chân số):
++
++| Cảm biến | Chân Arduino |
++|---|---|
++| **Cổng VÀO, trước** thanh chắn | **D2** |
++| **Cổng VÀO, sau** thanh chắn | **D3** |
++| **Cổng RA, trước** thanh chắn | **D4** |
++| **Cổng RA, sau** thanh chắn | **D5** |
++
++Mặc định ngõ ra xuống LOW khi có vật chắn (đa số module E18-D80NK / FC-51). Loại ngược lại thì đổi `IR_ACTIVE_LOW` thành `false` trong `dual_rfid.ino`. Các chân đổi được ở `PIN_IR_*`. Chân dùng `INPUT_PULLUP` nên ngõ ra open-collector cũng chạy được.
++
++**Cách hoạt động** (tính từ lúc thanh chắn MỞ): xe chắn cảm biến trước, rồi chắn cảm biến sau, rồi rời khỏi cả hai thì Arduino coi là **đã qua**: **hạ thanh chắn ngay** (không chờ hết `SERVO_OPEN_SECONDS`) và gửi `PASS:<cổng>`. Xe lùi ra (cảm biến sau nhả khi cảm biến trước còn bị chắn) thì không tính là đã qua. Vật chỉ chắn cảm biến sau mà chưa từng chắn cảm biến trước (VD người đi ngược chiều) cũng bị bỏ qua. Tín hiệu được chống nhiễu `IR_DEBOUNCE_MS` (30 ms).
++
++**Hết giờ mà xe chưa qua:** Arduino hạ thanh chắn rồi gửi `NOPASS:<cổng>`. Nhưng nếu lúc hết giờ **vẫn còn vật chắn cảm biến** (xe đang đứng ở thanh chắn) thì Arduino chờ thêm, tối đa `IR_EXTEND_MAX_MS` (10 giây), để thanh chắn không hạ xuống xe. Đây là việc của Arduino, không cần máy tính.
++
++**Ghi nhận:** chương trình **không hiển thị** kết quả xe đã qua trên giao diện; chỉ ghi vào bảng `access_log`: `pass_in_status` / `pass_in_at` (cổng vào), `pass_out_status` / `pass_out_at` (cổng ra), trạng thái là `PASSED` (đã qua) hoặc `TIMEOUT` (hết giờ mà chưa qua). Mỗi cổng ghi một lần cho mỗi lượt. Ngoại lệ duy nhất: khi `TIMEOUT`, thanh trạng thái của cổng đó hiện một dòng cảnh báo vàng (nếu lúc đó không có việc khác đang hiện). Xem nhanh:
++```sql
++SELECT id, card_uid, time_in, pass_in_status, pass_in_at, time_out, pass_out_status, pass_out_at
++FROM BienSoDB.dbo.access_log ORDER BY id DESC;
++```
++Quẹt thẻ liên tiếp khi thanh chắn còn đang mở chỉ gia hạn thời gian, nên chỉ có **một** kết quả cho cả đợt mở và nó được ghi vào lượt của lần quẹt sau cùng.
++
++**Giới hạn:** chỉ dùng hai cảm biến nên khó phân biệt xe ngắn đã chạy tới cảm biến sau rồi lùi ra hẳn (cảm biến trước đã nhả) với xe đã qua. Cần chắc chắn hơn thì cân nhắc thêm vòng cảm ứng từ hoặc đặt khoảng cách hai cảm biến ngắn hơn chiều dài xe.
++
++**Kiểm tra:** mở Serial Monitor (9600), quẹt thẻ cho thanh chắn mở rồi đưa vật qua lần lượt cảm biến trước -> sau: thấy thanh chắn hạ và dòng `PASS:IN` (hoặc `PASS:OUT`); không đưa gì qua thì sau `SERVO_OPEN_SECONDS` giây thấy `NOPASS:...`.
+ 
+ ## Quy tắc nghiệp vụ
+ 
+@@ -239,7 +274,7 @@ core/                        plate_utils.py     xử lý ảnh + chuỗi biển
+                              plate_voting.py    bỏ phiếu giữa nhiều lần đọc
+                              scanner.py         quét nhiều khung + bỏ phiếu
+                              plate_match.py     so khớp 5 số vào / ra
+-hardware/                    rfid.py (Serial: một Arduino, hai đầu đọc, báo tình trạng, gửi lệnh LCD + servo), camera.py (đọc camera ở luồng nền, báo mất hình)
++hardware/                    rfid.py (Serial: một Arduino, hai đầu đọc, báo tình trạng + kết quả cảm biến PASS/NOPASS, gửi lệnh LCD + servo), camera.py (đọc camera ở luồng nền, báo mất hình)
+ storage/                     database.py (SQL Server), schema.sql, models.py, errors.py
+ services/                    gate_service.py    phần chung (quét, lưu ảnh)
+                              entry_service.py   nghiệp vụ cổng vào
+diff --git a/arduino/dual_rfid/dual_rfid.ino b/arduino/dual_rfid/dual_rfid.ino
+index 95df111..3f64e64 100644
+--- a/arduino/dual_rfid/dual_rfid.ino
++++ b/arduino/dual_rfid/dual_rfid.ino
+@@ -10,6 +10,8 @@
+                            khởi động và mỗi 2 giây. Chương trình Python dùng dòng này để báo "đầu đọc nào mất
+                            kết nối" và coi Arduino là "không phản hồi" nếu quá RFID_HEARTBEAT_TIMEOUT giây
+                            không nhận được dòng nào.
++      PASS:IN              xe đã đi qua hẳn thanh chắn CỔNG VÀO (PASS:OUT cho cổng ra); thanh chắn đã được hạ ngay
++      NOPASS:IN            hết giờ mở mà xe CHƯA đi qua (NOPASS:OUT cho cổng ra); thanh chắn đã được hạ
+       # ...                dòng chú thích, Python bỏ qua
+     Máy tính -> Arduino:
+       LCDIN:dòng 1|dòng 2   hiển thị lên LCD CỔNG VÀO
+@@ -42,15 +44,27 @@
+     SERVO CỔNG RA  :  tín hiệu -> D7
+   LƯU Ý NGUỒN: servo giật dòng lớn khi chạy (có thể > 500 mA mỗi con) nên NÊN cấp 5V riêng (pin/adapter 5V 2A)
+   cho hai servo và NỐI CHUNG GND với Arduino; cấp thẳng từ chân 5V của Arduino qua cổng USB dễ làm Arduino reset,
+-  LCD nháy hoặc RC522 mất tín hiệu. Chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), còi (D4) hay Serial (D0/D1).
++  LCD nháy hoặc RC522 mất tín hiệu. Chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), cảm biến (D2..D5), còi (A5) hay Serial (D0/D1).
+   Góc mở/đóng chỉnh ở SERVO_*_ANGLE bên dưới cho khớp thanh chắn thật.
+ 
+-  Đấu dây CÒI BÍP (MỘT còi dùng chung cho cả hai cổng): chân (+) -> D4,  chân (-) -> GND.
++  Đấu dây CÒI BÍP (MỘT còi dùng chung cho cả hai cổng): chân (+) -> A5,  chân (-) -> GND.
+   Mỗi lần quẹt thẻ ở BẤT KỲ cổng nào còi kêu một tiếng bíp ngắn (do Arduino tự làm ngay khi đọc được thẻ,
+   không chờ máy tính). Dùng tone() nên chạy được cả còi active lẫn passive; còi nhỏ (< 20 mA) nối thẳng
+-  chân D4, còi công suất lớn thì qua transistor. Muốn đổi chân / tần số / độ dài: sửa PIN_BUZZER,
++  chân A5, còi công suất lớn thì qua transistor. Muốn đổi chân / tần số / độ dài: sửa PIN_BUZZER,
+   BUZZER_FREQ_HZ, BUZZER_BEEP_MS bên dưới.
+ 
++  Đấu dây BỐN CẢM BIẾN HỒNG NGOẠI (mỗi cổng hai cái: một ở TRƯỚC, một ở SAU thanh chắn), dùng để biết xe đã
++  đi qua hẳn thanh chắn chưa. Mỗi cảm biến: VCC -> 5V, GND -> GND, ngõ ra (OUT) -> chân số:
++    CỔNG VÀO :  trước -> D2,  sau -> D3
++    CỔNG RA  :  trước -> D4,  sau -> D5
++  Mặc định ngõ ra xuống LOW khi có vật chắn (đa số module E18-D80NK / FC-51); loại ngược lại thì đặt
++  IR_ACTIVE_LOW = false. Chân dùng INPUT_PULLUP nên ngõ ra open-collector cũng chạy được.
++  Cách hoạt động (sau khi thanh chắn MỞ): xe chắn cảm biến trước, rồi chắn cảm biến sau, rồi rời khỏi cả hai
++  -> "đã qua": thanh chắn HẠ NGAY và Arduino gửi PASS:<cổng>. Xe lùi ra (cảm biến sau nhả khi cảm biến trước
++  còn bị chắn) thì không tính là đã qua. Hết giờ giữ mở mà chưa qua thì hạ thanh chắn và gửi NOPASS:<cổng>,
++  NHƯNG nếu lúc đó còn có vật chắn cảm biến (xe đang ở dưới thanh chắn) thì chờ thêm tối đa IR_EXTEND_MAX_MS
++  rồi mới hạ, để thanh chắn không đóng xuống xe.
++
+   Thư viện (Arduino IDE: Tools > Manage Libraries):
+     - "MFRC522" của GithubCommunity
+     - "Servo" (có sẵn trong Arduino IDE, không cần cài thêm)
+@@ -82,6 +96,14 @@ const uint8_t SERVO_OPEN_ANGLE = 90;           // thanh chắn nâng (mở)
+ const unsigned long SERVO_HOLD_MS = 3000;      // giữ mở mặc định khi lệnh không nêu thời gian
+ const unsigned long SERVO_HOLD_MIN_MS = 500;   // chặn lệnh sai: tối thiểu / tối đa
+ const unsigned long SERVO_HOLD_MAX_MS = 30000;
++// Cảm biến hồng ngoại: mỗi cổng hai cái, "trước" = phía xe đi tới, "sau" = phía bên kia thanh chắn.
++const uint8_t PIN_IR_IN_BEFORE = 2;
++const uint8_t PIN_IR_IN_AFTER = 3;
++const uint8_t PIN_IR_OUT_BEFORE = 4;
++const uint8_t PIN_IR_OUT_AFTER = 5;
++const bool IR_ACTIVE_LOW = true;               // true: ngõ ra LOW khi có vật chắn; false: HIGH khi có vật chắn
++const unsigned long IR_DEBOUNCE_MS = 30;       // tín hiệu phải ổn định ngần này ms mới được tin (chống nhiễu)
++const unsigned long IR_EXTEND_MAX_MS = 10000;  // hết giờ mà còn vật chắn cảm biến: chờ thêm tối đa ngần này ms
+ // Còi bíp: một còi chung, kêu mỗi lần quẹt thẻ (cổng vào hoặc cổng ra).
+ const uint8_t PIN_BUZZER = A5;
+ const unsigned int BUZZER_FREQ_HZ = 2000;      // passive: đây là cao độ; active: vẫn kêu bình thường
+@@ -204,46 +226,139 @@ char rxBuf[RX_MAX + 1];                        // dòng lệnh đang nhận từ
+ uint8_t rxLen = 0;
+ bool rxOverflow = false;                       // dòng quá dài: bỏ cả dòng
+ 
++// ------------------------------------------------------------------ Cảm biến hồng ngoại
++// Một cảm biến có chống nhiễu: chỉ đổi trạng thái khi tín hiệu giữ ổn định IR_DEBOUNCE_MS.
++class IrSensor {
++ public:
++  explicit IrSensor(uint8_t pin) : pin_(pin) {}
++
++  void begin() {
++    pinMode(pin_, IR_ACTIVE_LOW ? INPUT_PULLUP : INPUT);   // active-HIGH mà kéo lên thì lúc không cắm sẽ luôn "bị chắn"
++    raw_ = stable_ = read();
++    changedAt_ = millis();
++  }
++
++  void update() {                              // gọi mỗi vòng loop
++    bool now = read();
++    if (now != raw_) {
++      raw_ = now;
++      changedAt_ = millis();
++    } else if (raw_ != stable_ && millis() - changedAt_ >= IR_DEBOUNCE_MS) {
++      stable_ = raw_;
++    }
++  }
++
++  bool blocked() const { return stable_; }
++
++ private:
++  bool read() const {
++    bool high = (digitalRead(pin_) == HIGH);
++    return IR_ACTIVE_LOW ? !high : high;
++  }
++
++  uint8_t pin_;
++  bool raw_ = false, stable_ = false;
++  unsigned long changedAt_ = 0;
++};
++
++// BEGIN PassDetector (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
++// Nhận biết "xe đã đi qua hẳn" từ hai cảm biến (trước / sau thanh chắn):
++//   cảm biến trước bị chắn -> cảm biến sau bị chắn -> cảm biến sau nhả ra khi cảm biến trước cũng đã nhả.
++// Nếu cảm biến sau nhả ra trong lúc cảm biến trước còn bị chắn thì xe đang lùi ra: bỏ lần chắn sau đó.
++class PassDetector {
++ public:
++  void reset() { seenBefore_ = seenAfter_ = false; }
++
++  // before / after: cảm biến tương ứng đang bị chắn. Trả về true đúng một lần khi xe đã qua hẳn.
++  bool update(bool before, bool after) {
++    if (!seenBefore_ && before) seenBefore_ = true;
++    if (seenBefore_ && !seenAfter_ && after) seenAfter_ = true;
++    if (seenAfter_ && !after) {
++      if (!before) {
++        reset();                               // báo đúng một lần
++        return true;
++      }
++      seenAfter_ = false;                      // xe lùi ra
++    }
++    return false;
++  }
++
++ private:
++  bool seenBefore_ = false, seenAfter_ = false;
++};
++// END PassDetector
++
+ // ------------------------------------------------------------------ Servo thanh chắn
+ // Một thanh chắn: mở theo lệnh rồi TỰ đóng khi hết thời gian giữ (đo bằng millis(), không chặn vòng loop nên
+ // việc quét thẻ và nhận lệnh LCD vẫn chạy bình thường trong lúc thanh chắn đang mở).
++// Có hai cảm biến hồng ngoại: xe đã đi qua hẳn thì HẠ NGAY và báo PASS:<cổng>; hết giờ mà chưa qua thì hạ và báo
++// NOPASS:<cổng> (còn vật chắn cảm biến thì chờ thêm tối đa IR_EXTEND_MAX_MS để không hạ xuống xe).
+ class Barrier {
+  public:
+-  explicit Barrier(uint8_t pin) : pin_(pin) {}
++  Barrier(uint8_t servoPin, uint8_t irBeforePin, uint8_t irAfterPin, const __FlashStringHelper *tag)
++      : pin_(servoPin), before_(irBeforePin), after_(irAfterPin), tag_(tag) {}
+ 
+   void begin() {
+     servo_.attach(pin_);
+     servo_.write(SERVO_CLOSED_ANGLE);          // khởi động luôn ở vị trí đóng
+     open_ = false;
++    before_.begin();
++    after_.begin();
+   }
+ 
+   // Mở (hoặc gia hạn nếu đang mở: quẹt thẻ liên tiếp thì thanh chắn không đóng giữa chừng).
+   void open(unsigned long holdMs) {
+     holdMs = constrain(holdMs, SERVO_HOLD_MIN_MS, SERVO_HOLD_MAX_MS);
+-    if (!open_) servo_.write(SERVO_OPEN_ANGLE);
++    if (!open_) {
++      servo_.write(SERVO_OPEN_ANGLE);
++      detector_.reset();                       // lần mở mới: theo dõi xe từ đầu
++    }
+     open_ = true;
+     openedAt_ = millis();
+     holdMs_ = holdMs;
+   }
+ 
++  // Đóng theo lệnh (không báo PASS / NOPASS).
+   void close() {
+     if (open_) servo_.write(SERVO_CLOSED_ANGLE);
+     open_ = false;
+   }
+ 
+   void update() {                              // gọi mỗi vòng loop
+-    if (open_ && millis() - openedAt_ >= holdMs_) close();
++    before_.update();
++    after_.update();
++    if (!open_) return;
++
++    if (detector_.update(before_.blocked(), after_.blocked())) {
++      close();                                 // xe đã qua hẳn: hạ ngay
++      report(F("PASS:"));
++      return;
++    }
++    unsigned long elapsed = millis() - openedAt_;
++    if (elapsed < holdMs_) return;
++    bool occupied = before_.blocked() || after_.blocked();
++    if (occupied && elapsed < holdMs_ + IR_EXTEND_MAX_MS) return;   // xe đang ở thanh chắn: chưa hạ
++    close();
++    report(F("NOPASS:"));                      // hết giờ mà chưa thấy xe qua
+   }
+ 
+  private:
++  void report(const __FlashStringHelper *kind) {
++    Serial.print(kind);
++    Serial.println(tag_);
++  }
++
+   uint8_t pin_;
+   Servo servo_;
++  IrSensor before_, after_;
++  PassDetector detector_;
++  const __FlashStringHelper *tag_;
+   bool open_ = false;
+   unsigned long openedAt_ = 0, holdMs_ = SERVO_HOLD_MS;
+ };
+ 
+-Barrier barrierIn(PIN_SERVO_IN);
+-Barrier barrierOut(PIN_SERVO_OUT);
++Barrier barrierIn(PIN_SERVO_IN, PIN_IR_IN_BEFORE, PIN_IR_IN_AFTER, F("IN"));
++Barrier barrierOut(PIN_SERVO_OUT, PIN_IR_OUT_BEFORE, PIN_IR_OUT_AFTER, F("OUT"));
+ 
+ // ------------------------------------------------------------------ RFID
+ // Module có đang nói chuyện được không? Đọc thanh ghi phiên bản: 0x00 hoặc 0xFF = không có tín hiệu.
+@@ -409,7 +524,7 @@ void setup() {
+   pinMode(PIN_BUZZER, OUTPUT);
+   barrierIn.begin();
+   barrierOut.begin();
+-  Serial.println(F("# dual_rfid san sang (servo: vao=D6, ra=D7, coi=D4)"));
++  Serial.println(F("# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)"));
+   sendStatus();
+   lastStatus = millis();
+ }
+diff --git a/config.py b/config.py
+index 23c2a13..aaa8100 100644
+--- a/config.py
++++ b/config.py
+@@ -124,6 +124,7 @@ class Settings:
+     window_pos: str            # VD "+0+0" hoặc "+900+0" để xếp hai cửa sổ cạnh nhau; để trống = mặc định
+     servo_enabled: bool = True      # False = không gửi lệnh mở thanh chắn (chưa gắn servo)
+     servo_open_seconds: float = 3.0 # giây giữ thanh chắn mở sau khi quẹt thẻ thành công rồi Arduino tự đóng lại
++    ir_enabled: bool = True         # False = chưa gắn cảm biến hồng ngoại: bỏ qua PASS / NOPASS từ Arduino
+     lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE"; 0 = giữ đến lần quẹt sau
+ 
+ 
+@@ -174,6 +175,7 @@ def load_settings(gate, env=None):
+         lcd_idle_seconds=_num("LCD_IDLE_SECONDS", "5", float),
+         servo_enabled=_env("SERVO_ENABLED", "1") == "1",
+         servo_open_seconds=_num("SERVO_OPEN_SECONDS", "3", float),
++        ir_enabled=_env("IR_ENABLED", "1") == "1",
+     )
+     if s.scan_frames < 1:
+         raise ValueError("SCAN_FRAMES phải >= 1")
+diff --git a/hardware/rfid.py b/hardware/rfid.py
+index e99cf79..cb01ed0 100644
+--- a/hardware/rfid.py
++++ b/hardware/rfid.py
+@@ -6,6 +6,8 @@ Giao thức (9600 baud, mỗi dòng kết thúc bằng \\n; xem arduino/dual_rfi
+     OUT:DB2B11CA           quẹt thẻ ở đầu đọc CỔNG RA
+     STATUS:IN=1,OUT=0      tình trạng từng đầu đọc (1 = hoạt động, 0 = Arduino không nói chuyện được
+                            với module RFID). Arduino gửi lúc khởi động và định kỳ (~2 giây).
++    PASS:IN                xe đã đi qua hẳn thanh chắn CỔNG VÀO (PASS:OUT: cổng ra); Arduino đã hạ thanh chắn
++    NOPASS:OUT             hết giờ mở thanh chắn mà xe CHƯA đi qua (NOPASS:IN: cổng vào); thanh chắn đã hạ
+     # ...                  dòng chú thích / log, bị bỏ qua
+ 
+ Chiều NGƯỢC LẠI (máy tính -> Arduino), chỉ để hiển thị lên hai màn LCD 1602 I2C (một ở mỗi cổng):
+@@ -26,6 +28,8 @@ Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
+     on_status(connected, message)       tình trạng Arduino: mất cổng COM, không phản hồi, sai định dạng...
+     on_reader_status(gate, ok)          tình trạng đầu đọc của cổng: True / False / None (chưa rõ,
+                                         VD khi Arduino đang mất kết nối)
++    on_barrier(gate, passed)            kết quả của một lần mở thanh chắn (cảm biến hồng ngoại): True = xe đã qua,
++                                        False = hết giờ mà xe chưa qua
+ LƯU Ý: các callback chạy ở luồng nền, KHÔNG được đụng trực tiếp vào widget Tkinter.
+ """
+ import re
+@@ -37,6 +41,7 @@ from dataclasses import dataclass, field
+ import serial  # pip install pyserial
+ 
+ GATE_CODES = {"IN": "in", "OUT": "out"}      # tiền tố trong giao thức -> mã cổng trong chương trình
++BARRIER_HEADS = {"PASS": True, "NOPASS": False}   # tiền tố báo kết quả thanh chắn -> xe đã qua?
+ _UID_RE = re.compile(r"^[0-9A-Z]{4,32}$")
+ LCD_WIDTH = 16                                # LCD 1602: 16 cột x 2 dòng
+ 
+@@ -102,13 +107,19 @@ class ReaderStatus:
+     readers: dict = field(default_factory=dict)     # {"in": True, "out": False}; có thể chỉ có một cổng
+ 
+ 
++@dataclass(frozen=True)
++class BarrierEvent:
++    gate: str
++    passed: bool            # True: PASS (xe đã qua hẳn); False: NOPASS (hết giờ mở mà chưa qua)
++
++
+ @dataclass(frozen=True)
+ class BadLine:
+     text: str
+ 
+ 
+ def parse_line(raw):
+-    """Một dòng từ Arduino -> CardSwipe | ReaderStatus | BadLine; dòng trống hoặc chú thích -> None."""
++    """Một dòng từ Arduino -> CardSwipe | ReaderStatus | BarrierEvent | BadLine; dòng trống hoặc chú thích -> None."""
+     text = raw.strip()
+     if not text or text.startswith("#"):
+         return None
+@@ -127,6 +138,10 @@ def parse_line(raw):
+                 readers[GATE_CODES[key]] = value == "1"
+         if readers:
+             return ReaderStatus(readers)
++    elif sep and head in BARRIER_HEADS:
++        gate = GATE_CODES.get(body.strip().upper())
++        if gate:
++            return BarrierEvent(gate, BARRIER_HEADS[head])
+     return BadLine(text)
+ 
+ 
+@@ -136,13 +151,14 @@ class ArduinoRfidReader(threading.Thread):
+     BAD_LINES_BEFORE_ALERT = 3      # vài dòng rác lúc Arduino vừa khởi động là bình thường
+ 
+     def __init__(self, port, baudrate, on_card, on_status=None, on_reader_status=None,
+-                 debounce=2.0, heartbeat_timeout=8.0,
++                 debounce=2.0, heartbeat_timeout=8.0, on_barrier=None,
+                  serial_factory=serial.Serial, clock=time.monotonic, sleep=time.sleep):
+         super().__init__(daemon=True)
+         self.port, self.baudrate = port, baudrate
+         self.on_card = on_card
+         self.on_status = on_status or (lambda connected, msg: None)
+         self.on_reader_status = on_reader_status or (lambda gate, ok: None)
++        self.on_barrier = on_barrier or (lambda gate, passed: None)
+         self.debounce = debounce
+         self.heartbeat_timeout = heartbeat_timeout
+         self._serial_factory, self._clock, self._sleep = serial_factory, clock, sleep
+@@ -241,6 +257,8 @@ class ArduinoRfidReader(threading.Thread):
+         if isinstance(msg, ReaderStatus):
+             for gate, ok in msg.readers.items():
+                 self.on_reader_status(gate, ok)
++        elif isinstance(msg, BarrierEvent):
++            self.on_barrier(msg.gate, msg.passed)      # không chống trùng: mỗi lần mở thanh chắn chỉ có một kết quả
+         else:
+             self._emit_card(msg.gate, msg.uid)
+ 
+diff --git a/main.py b/main.py
+index f00f5e1..9eb8353 100644
+--- a/main.py
++++ b/main.py
+@@ -58,8 +58,13 @@ def _make_rfid(cfg, apps, **reader_kwargs):
+         if gate in apps:
+             apps[gate].handle_reader_status(ok)
+ 
++    def on_barrier(gate, passed):
++        if gate in apps:
++            apps[gate].handle_barrier(passed)
++
+     return ArduinoRfidReader(cfg.rfid_port, cfg.rfid_baud, on_card=on_card, on_status=on_status,
+-                             on_reader_status=on_reader_status, debounce=cfg.rfid_debounce,
++                             on_reader_status=on_reader_status, on_barrier=on_barrier,
++                             debounce=cfg.rfid_debounce,
+                              heartbeat_timeout=cfg.rfid_heartbeat, **reader_kwargs)
+ 
+ 
+diff --git a/services/gate_service.py b/services/gate_service.py
+index f2d2bd6..99bf431 100644
+--- a/services/gate_service.py
++++ b/services/gate_service.py
+@@ -13,6 +13,9 @@ from core.scanner import scan_best_of
+ 
+ NUMBER_RE = re.compile(r"^\d{5}$")
+ 
++PASS_PASSED = "PASSED"      # cảm biến hồng ngoại: xe đã đi qua hẳn thanh chắn
++PASS_TIMEOUT = "TIMEOUT"    # hết giờ mở thanh chắn mà xe chưa qua
++
+ 
+ class Outcome(Enum):
+     UNREGISTERED = "unregistered"     # thẻ chưa đăng ký / bị khóa
+@@ -87,6 +90,11 @@ class GateService:
+     def recent_events(self, limit=100):
+         return self.db.recent(limit)
+ 
++    def record_pass(self, session_id, passed, at=None):
++        """Ghi vào lượt `session_id` việc xe đã qua thanh chắn (passed=True) hay hết giờ mà chưa qua."""
++        return self.db.record_pass(session_id, self.gate_code,
++                                   PASS_PASSED if passed else PASS_TIMEOUT, at or now())
++
+     # ---------- Ảnh ----------
+     def save_image(self, image, card_uid):
+         """Lưu ảnh, trả về tên file ("" nếu không có ảnh hoặc không mã hóa được)."""
+diff --git a/storage/database.py b/storage/database.py
+index 25738c6..391b58b 100644
+--- a/storage/database.py
++++ b/storage/database.py
+@@ -14,6 +14,7 @@ SCHEMA_FILE = Path(__file__).with_name("schema.sql")
+ _COLUMNS = ("id, card_uid, plate_number, plate_full, image_in, time_in, time_out, fee, "
+             "plate_out, image_out, match_status, override_note, gate_in, gate_out")
+ _OPEN_INDEX = "UX_access_log_open_card"
++_PASS_COLUMNS = {"in": ("pass_in_status", "pass_in_at"), "out": ("pass_out_status", "pass_out_at")}
+ 
+ 
+ def _to_event(r):
+@@ -126,6 +127,18 @@ class Database:
+         if changed != 1:
+             raise SessionAlreadyClosed("Lượt gửi xe này đã được đóng trước đó")
+ 
++    def record_pass(self, session_id, gate, status, at):
++        """Ghi kết quả thanh chắn của cổng `gate` ('in' / 'out') cho một lượt: status = PASSED / TIMEOUT.
++
++        Mỗi cổng chỉ ghi một lần cho mỗi lượt (không đè kết quả đã có). Trả về True nếu đã ghi."""
++        status_col, at_col = _PASS_COLUMNS[gate]          # tên cột lấy từ bảng cố định, không từ dữ liệu ngoài
++        with self._connect() as conn:
++            changed = conn.execute(
++                f"UPDATE dbo.access_log SET {status_col} = ?, {at_col} = ? "
++                f"WHERE id = ? AND {status_col} IS NULL", status, at, session_id).rowcount
++            conn.commit()
++        return changed == 1
++
+     def recent(self, limit=100):
+         with self._connect() as conn:
+             rows = conn.execute(
+diff --git a/storage/schema.sql b/storage/schema.sql
+index 82c20eb..aab5ffa 100644
+--- a/storage/schema.sql
++++ b/storage/schema.sql
+@@ -58,6 +58,11 @@ IF COL_LENGTH(N'dbo.access_log', N'votes_in')     IS NULL ALTER TABLE dbo.access
+ IF COL_LENGTH(N'dbo.access_log', N'votes_out')    IS NULL ALTER TABLE dbo.access_log ADD votes_out    NVARCHAR(100) NULL;
+ IF COL_LENGTH(N'dbo.access_log', N'gate_in')      IS NULL ALTER TABLE dbo.access_log ADD gate_in      NVARCHAR(10)  NULL;
+ IF COL_LENGTH(N'dbo.access_log', N'gate_out')     IS NULL ALTER TABLE dbo.access_log ADD gate_out     NVARCHAR(10)  NULL;
++-- Cảm biến hồng ngoại: xe đã đi qua thanh chắn chưa (PASSED = đã qua; TIMEOUT = hết giờ mở mà chưa qua)
++IF COL_LENGTH(N'dbo.access_log', N'pass_in_status')  IS NULL ALTER TABLE dbo.access_log ADD pass_in_status  NVARCHAR(10) NULL;
++IF COL_LENGTH(N'dbo.access_log', N'pass_in_at')      IS NULL ALTER TABLE dbo.access_log ADD pass_in_at      DATETIME2(0) NULL;
++IF COL_LENGTH(N'dbo.access_log', N'pass_out_status') IS NULL ALTER TABLE dbo.access_log ADD pass_out_status NVARCHAR(10) NULL;
++IF COL_LENGTH(N'dbo.access_log', N'pass_out_at')     IS NULL ALTER TABLE dbo.access_log ADD pass_out_at     DATETIME2(0) NULL;
+ GO
+ 
+ -- 6) Ràng buộc: biển số mới phải đúng 5 chữ số. WITH NOCHECK -> dữ liệu cũ không bị kiểm tra lại.
+diff --git a/tests/helpers.py b/tests/helpers.py
+index e05f859..2ad5f04 100644
+--- a/tests/helpers.py
++++ b/tests/helpers.py
+@@ -16,6 +16,7 @@ class FakeDb:
+         self.rows = []
+         self.votes = {}
+         self.votes_out = {}
++        self.passes = []        # (id lượt, cổng, trạng thái, thời điểm)
+ 
+     def is_card_registered(self, uid):
+         return uid in self.cards
+@@ -46,6 +47,12 @@ class FakeDb:
+                 return
+         raise SessionAlreadyClosed("đã đóng")
+ 
++    def record_pass(self, session_id, gate, status, at):
++        if any(p[0] == session_id and p[1] == gate for p in self.passes):
++            return False
++        self.passes.append((session_id, gate, status, at))
++        return True
++
+     def recent(self, limit=100):
+         return list(reversed(self.rows))[:limit]
+ 
+diff --git a/tests/test_config.py b/tests/test_config.py
+index b7f8005..f8020c8 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -224,6 +224,23 @@ def test_servo_open_seconds_must_be_a_number(monkeypatch):
+         config.load_settings("in")
+ 
+ 
++def test_ir_setting(monkeypatch):
++    monkeypatch.delenv("IR_ENABLED", raising=False)
++    assert config.load_settings("in").ir_enabled is True            # mặc định bật
++    monkeypatch.setenv("IR_ENABLED", "0")
++    assert config.load_settings("out").ir_enabled is False          # chưa gắn cảm biến thì tắt
++    assert config.load_settings("in", {"IR_ENABLED": "1"}).ir_enabled is True
++
++
++def test_ir_default_is_in_env_example(tmp_path):
++    import os
++    example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
++    assert "IR_ENABLED=1" in example
++    (tmp_path / ".env").write_text(example, encoding="utf-8")
++    env, _ = config.gate_env("in", str(tmp_path), environ={})
++    assert config.load_settings("in", env).ir_enabled is True
++
++
+ def test_servo_defaults_are_in_env_example(tmp_path):
+     import os
+     example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
+diff --git a/tests/test_firmware_docs.py b/tests/test_firmware_docs.py
+index ee530c4..d4f5a59 100644
+--- a/tests/test_firmware_docs.py
++++ b/tests/test_firmware_docs.py
+@@ -1,4 +1,5 @@
+-"""Kiểm tra sketch Arduino và README nói cùng một số chân (từng bị lệch: README ghi servo D5/D6, code dùng D6/D7)."""
++"""Kiểm tra sketch Arduino và README nói cùng một số chân (từng bị lệch: README ghi servo D5/D6, code dùng D6/D7;
++còi đổi sang A5 nhưng tài liệu vẫn ghi D4)."""
+ import re
+ from pathlib import Path
+ 
+@@ -8,26 +9,55 @@ README = (ROOT / "README.md").read_text(encoding="utf-8")
+ 
+ 
+ def pin(name):
+-    m = re.search(rf"const uint8_t {name}\s*=\s*(\d+);", INO)
++    """Nhãn chân của hằng số trong sketch: số -> 'D6', analog -> 'A5'."""
++    m = re.search(rf"const uint8_t {name}\s*=\s*(A\d|\d+);", INO)
+     assert m, f"không thấy {name} trong dual_rfid.ino"
+-    return int(m.group(1))
++    value = m.group(1)
++    return value if value.startswith("A") else f"D{value}"
+ 
+ 
+ def test_servo_pins_match_readme():
+     vao, ra = pin("PIN_SERVO_IN"), pin("PIN_SERVO_OUT")
+-    assert re.search(rf"\*\*Cổng VÀO\*\* \| \*\*D{vao}\*\* \| 5V", README)
+-    assert re.search(rf"\*\*Cổng RA\*\* \| \*\*D{ra}\*\* \| 5V", README)
+-    assert f"servo: vao=D{vao}, ra=D{ra}" in INO
+-    assert f"servo: vao=D{vao}, ra=D{ra}" in README
++    assert re.search(rf"\*\*Cổng VÀO\*\* \| \*\*{vao}\*\* \| 5V", README)
++    assert re.search(rf"\*\*Cổng RA\*\* \| \*\*{ra}\*\* \| 5V", README)
++    assert f"servo: vao={vao}, ra={ra}" in INO
++    assert f"servo: vao={vao}, ra={ra}" in README
+ 
+ 
+ def test_buzzer_pin_matches_readme_and_does_not_clash():
+     buzzer = pin("PIN_BUZZER")
+-    assert f"| Chân dương (+) | **D{buzzer}** |" in README
+-    assert f"coi=D{buzzer}" in INO
+-    used = {pin(n) for n in ("PIN_RST", "PIN_SS_IN", "PIN_SS_OUT", "PIN_SERVO_IN", "PIN_SERVO_OUT")}
+-    used |= {0, 1, 11, 12, 13}   # Serial + SPI (MOSI/MISO/SCK)
+-    assert buzzer not in used
++    assert buzzer == "A5"
++    assert f"| Chân dương (+) | **{buzzer}** |" in README
++    assert f"coi={buzzer}" in INO and f"coi={buzzer}" in README
++    others = {pin(n) for n in ("PIN_RST", "PIN_SS_IN", "PIN_SS_OUT", "PIN_SERVO_IN", "PIN_SERVO_OUT",
++                               "PIN_LCD_IN_SDA", "PIN_LCD_IN_SCL", "PIN_LCD_OUT_SDA", "PIN_LCD_OUT_SCL",
++                               "PIN_IR_IN_BEFORE", "PIN_IR_IN_AFTER", "PIN_IR_OUT_BEFORE", "PIN_IR_OUT_AFTER")}
++    others |= {"D0", "D1", "D11", "D12", "D13"}   # Serial + SPI (MOSI/MISO/SCK)
++    assert buzzer not in others
++
++
++def test_no_stale_buzzer_pin_in_docs():
++    """Còi ở A5: không còn chỗ nào nói còi ở D4 (D4 nay là cảm biến hồng ngoại cổng ra)."""
++    for text in (INO, README):
++        assert not re.search(r"còi[^\n]{0,40}D4|D4[^\n]{0,40}còi|coi=D4", text), "vẫn còn ghi còi ở D4"
++
++
++def test_ir_pins_match_readme_and_do_not_clash():
++    pins = {name: pin(name) for name in ("PIN_IR_IN_BEFORE", "PIN_IR_IN_AFTER",
++                                         "PIN_IR_OUT_BEFORE", "PIN_IR_OUT_AFTER")}
++    assert len(set(pins.values())) == 4
++    assert f"| **Cổng VÀO, trước** thanh chắn | **{pins['PIN_IR_IN_BEFORE']}** |" in README
++    assert f"| **Cổng VÀO, sau** thanh chắn | **{pins['PIN_IR_IN_AFTER']}** |" in README
++    assert f"| **Cổng RA, trước** thanh chắn | **{pins['PIN_IR_OUT_BEFORE']}** |" in README
++    assert f"| **Cổng RA, sau** thanh chắn | **{pins['PIN_IR_OUT_AFTER']}** |" in README
++    ir = f"ir: vao={pins['PIN_IR_IN_BEFORE']}/{pins['PIN_IR_IN_AFTER']}, " \
++         f"ra={pins['PIN_IR_OUT_BEFORE']}/{pins['PIN_IR_OUT_AFTER']}"
++    assert ir in INO and ir in README
++    others = {pin(n) for n in ("PIN_RST", "PIN_SS_IN", "PIN_SS_OUT", "PIN_SERVO_IN", "PIN_SERVO_OUT",
++                               "PIN_LCD_IN_SDA", "PIN_LCD_IN_SCL", "PIN_LCD_OUT_SDA", "PIN_LCD_OUT_SCL",
++                               "PIN_BUZZER")}
++    others |= {"D0", "D1", "D11", "D12", "D13"}
++    assert not set(pins.values()) & others
+ 
+ 
+ def test_every_card_swipe_beeps_before_reporting():
+@@ -37,3 +67,11 @@ def test_every_card_swipe_beeps_before_reporting():
+     assert "beep();" in body
+     assert body.index("beep();") < body.index("Serial.print(tag)")
+     assert "tone(PIN_BUZZER" in INO
++
++
++def test_barrier_reports_pass_and_nopass_with_the_gate_tag():
++    """Giao thức PASS:/NOPASS: trong sketch phải khớp bên Python (hardware/rfid.py) và README."""
++    assert 'report(F("PASS:"))' in INO and 'report(F("NOPASS:"))' in INO
++    assert 'F("IN")' in INO and 'F("OUT")' in INO
++    for line in ("PASS:IN", "NOPASS:OUT"):
++        assert line in README
+diff --git a/tests/test_pass_detector.py b/tests/test_pass_detector.py
+new file mode 100644
+index 0000000..57c112f
+--- /dev/null
++++ b/tests/test_pass_detector.py
+@@ -0,0 +1,87 @@
++"""Thử logic nhận biết "xe đã qua thanh chắn" của firmware (lớp PassDetector trong dual_rfid.ino).
++
++Đoạn mã giữa BEGIN/END PassDetector không phụ thuộc Arduino nên được biên dịch bằng g++ thường và chạy với các
++kịch bản cảm biến. Máy không có g++ thì bỏ qua.
++"""
++import shutil
++import subprocess
++from pathlib import Path
++
++import pytest
++
++INO = (Path(__file__).resolve().parent.parent / "arduino" / "dual_rfid" / "dual_rfid.ino").read_text(encoding="utf-8")
++
++DRIVER = r"""
++#include <cstdio>
++#include <iostream>
++#include <string>
++%s
++int main() {
++  PassDetector d;
++  std::string a, b;
++  while (std::cin >> a) {
++    if (a == "R") { d.reset(); continue; }
++    std::cin >> b;
++    std::putchar(d.update(a == "1", b == "1") ? 'P' : '.');
++  }
++  std::putchar('\n');
++}
++"""
++
++
++@pytest.fixture(scope="module")
++def detector(tmp_path_factory):
++    gxx = shutil.which("g++")
++    if gxx is None:
++        pytest.skip("không có g++ để biên dịch thử PassDetector")
++    code = INO[INO.index("// BEGIN PassDetector"):INO.index("// END PassDetector")]
++    d = tmp_path_factory.mktemp("pass_detector")
++    (d / "main.cpp").write_text(DRIVER % code, encoding="utf-8")
++    subprocess.run([gxx, "-std=c++11", "-Wall", "-Werror", str(d / "main.cpp"), "-o", str(d / "run")], check=True)
++
++    def run(steps):
++        """steps: các cặp (trước, sau) = 0/1 (1 = bị chắn). Trả về chuỗi: 'P' = xe vừa qua hẳn, '.' = chưa."""
++        text = "\n".join(f"{b} {a}" for b, a in steps)
++        out = subprocess.run([str(d / "run")], input=text, capture_output=True, text=True, check=True)
++        return out.stdout.strip()
++
++    return run
++
++
++def test_long_vehicle_passes_when_it_leaves_the_last_sensor(detector):
++    # xe dài: chắn trước, chắn cả hai, nhả trước, nhả sau
++    assert detector([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]) == "....P"
++
++
++def test_short_vehicle_never_covering_both_sensors_still_passes(detector):
++    assert detector([(1, 0), (0, 0), (0, 1), (0, 0)]) == "...P"
++
++
++def test_both_sensors_blocked_at_the_same_moment(detector):
++    assert detector([(1, 1), (0, 1), (0, 0)]) == "..P"
++
++
++def test_not_passed_while_vehicle_still_on_a_sensor(detector):
++    assert detector([(1, 0), (1, 1), (0, 1)]) == "..."          # còn nằm trên cảm biến sau
++    assert detector([(1, 0), (1, 1), (1, 0)]) == "..."          # cảm biến sau nhả nhưng trước còn chắn
++
++
++def test_reversing_out_is_not_a_pass(detector):
++    assert detector([(1, 0), (1, 1), (1, 0), (0, 0)]) == "...."
++
++
++def test_vehicle_reverses_then_drives_through(detector):
++    assert detector([(1, 0), (1, 1), (1, 0), (1, 1), (0, 1), (0, 0)]) == ".....P"
++
++
++def test_something_crossing_only_the_rear_sensor_is_ignored(detector):
++    assert detector([(0, 0), (0, 1), (0, 0)]) == "..."          # chưa từng chắn cảm biến trước
++
++
++def test_idle_sensors_never_report(detector):
++    assert detector([(0, 0)] * 5) == "....."
++
++
++def test_reports_once_and_can_track_the_next_vehicle(detector):
++    one = [(1, 0), (1, 1), (0, 1), (0, 0)]
++    assert detector(one + [(0, 0), (0, 0)] + one) == "...P" + ".." + "...P"
+diff --git a/tests/test_pass_record.py b/tests/test_pass_record.py
+new file mode 100644
+index 0000000..0fefdc6
+--- /dev/null
++++ b/tests/test_pass_record.py
+@@ -0,0 +1,52 @@
++"""Ghi kết quả cảm biến hồng ngoại (xe đã qua thanh chắn / hết giờ chưa qua) vào lượt gửi xe."""
++import re
++from pathlib import Path
++
++from helpers import FakeCamera, FakeDb, ScriptedRecognizer
++from services.entry_service import EntryService
++from services.exit_service import ExitService
++from services.gate_service import PASS_PASSED, PASS_TIMEOUT, now
++
++ROOT = Path(__file__).resolve().parent.parent
++
++
++def make_services(tmp_path):
++    db, rec = FakeDb(), ScriptedRecognizer(["25888"])
++    return (EntryService(rec, db, str(tmp_path), sleep=lambda s: None),
++            ExitService(rec, db, str(tmp_path), sleep=lambda s: None), db)
++
++
++def test_entry_and_exit_record_into_their_own_gate_column(tmp_path):
++    entry, exit_, db = make_services(tmp_path)
++    session = entry.handle_card("CARD1", lambda: FakeCamera().read()).event
++    at = now()
++
++    assert entry.record_pass(session.id, True, at) is True
++    assert exit_.record_pass(session.id, False, at) is True
++    assert db.passes == [(session.id, "in", PASS_PASSED, at), (session.id, "out", PASS_TIMEOUT, at)]
++
++
++def test_pass_result_is_written_once_per_gate(tmp_path):
++    entry, _, db = make_services(tmp_path)
++    session = entry.handle_card("CARD1", lambda: FakeCamera().read()).event
++    assert entry.record_pass(session.id, True) is True
++    assert entry.record_pass(session.id, False) is False          # không đè kết quả đã có
++    assert [p[2] for p in db.passes] == [PASS_PASSED]
++
++
++def test_record_pass_defaults_to_now(tmp_path):
++    entry, _, db = make_services(tmp_path)
++    session = entry.handle_card("CARD1", lambda: FakeCamera().read()).event
++    entry.record_pass(session.id, True)
++    assert abs((db.passes[0][3] - now()).total_seconds()) < 5
++
++
++def test_schema_has_the_columns_that_database_writes():
++    """database.py ghi vào các cột pass_*; schema.sql phải tạo đúng các cột đó (không import pyodbc)."""
++    code = (ROOT / "storage" / "database.py").read_text(encoding="utf-8")
++    schema = (ROOT / "storage" / "schema.sql").read_text(encoding="utf-8")
++    block = code[code.index("_PASS_COLUMNS"):].split("\n", 1)[0]
++    columns = re.findall(r'"(pass_\w+)"', block)
++    assert sorted(columns) == ["pass_in_at", "pass_in_status", "pass_out_at", "pass_out_status"]
++    for col in columns:
++        assert re.search(rf"COL_LENGTH\(N'dbo\.access_log', N'{col}'\)\s+IS NULL\s+ALTER TABLE", schema), col
+diff --git a/tests/test_rfid.py b/tests/test_rfid.py
+index 55e1b35..922d2ff 100644
+--- a/tests/test_rfid.py
++++ b/tests/test_rfid.py
+@@ -3,8 +3,8 @@ import pytest
+ import serial
+ 
+ from hardware.rfid import (
+-    ArduinoRfidReader, BadLine, CardSwipe, ReaderStatus, format_lcd_command, format_servo_command, lcd_text,
+-    parse_line,
++    ArduinoRfidReader, BadLine, BarrierEvent, CardSwipe, ReaderStatus, format_lcd_command, format_servo_command,
++    lcd_text, parse_line,
+ )
+ 
+ 
+@@ -22,6 +22,18 @@ def test_parse_reader_status():
+     assert parse_line("status: out=1") == ReaderStatus({"out": True})            # chỉ báo một đầu đọc cũng được
+ 
+ 
++def test_parse_barrier_events():
++    assert parse_line("PASS:IN\r\n") == BarrierEvent("in", True)
++    assert parse_line("PASS:OUT") == BarrierEvent("out", True)
++    assert parse_line("NOPASS:IN") == BarrierEvent("in", False)
++    assert parse_line("nopass: out") == BarrierEvent("out", False)               # không phân biệt hoa/thường
++
++
++@pytest.mark.parametrize("line", ["PASS", "PASS:", "PASS:LEFT", "NOPASS:", "NOPASS:AB1992CA", "PASSED:IN"])
++def test_parse_bad_barrier_lines(line):
++    assert parse_line(line) == BadLine(line)
++
++
+ @pytest.mark.parametrize("line", ["", "   \r\n", "# dual_rfid san sang", "#"])
+ def test_parse_ignores_blank_and_comment_lines(line):
+     assert parse_line(line) is None
+@@ -75,7 +87,10 @@ class FakeSerial:
+ 
+ class Recorder:
+     def __init__(self):
+-        self.cards, self.status, self.readers = [], [], []
++        self.cards, self.status, self.readers, self.barriers = [], [], [], []
++
++    def on_barrier(self, gate, passed):
++        self.barriers.append((gate, passed))
+ 
+     def on_card(self, gate, uid):
+         self.cards.append((gate, uid))
+@@ -99,6 +114,7 @@ def run_reader(opens, **kwargs):
+         return FakeSerial(item, clock, lambda: box["reader"].stop())
+ 
+     box["reader"] = ArduinoRfidReader("COM3", 9600, rec.on_card, rec.on_status, rec.on_reader,
++                                      on_barrier=rec.on_barrier,
+                                       serial_factory=factory, clock=clock, sleep=lambda s: None, **kwargs)
+     box["reader"].run()          # chạy thẳng ở luồng này; luồng đọc tự dừng khi hết script
+     return rec
+@@ -111,6 +127,31 @@ def test_cards_are_routed_to_the_right_gate():
+     assert rec.readers == [("in", True), ("out", True)]
+ 
+ 
++def test_barrier_results_are_routed_to_the_right_gate():
++    rec = run_reader([[b"STATUS:IN=1,OUT=1\n", b"IN:AB1992CA\n", b"PASS:IN\n", b"OUT:DB2B11CA\n",
++                       b"NOPASS:OUT\n", b"PASS:IN\n"]])
++    assert rec.barriers == [("in", True), ("out", False), ("in", True)]     # không chống trùng: mỗi dòng là một kết quả
++    assert rec.cards == [("in", "AB1992CA"), ("out", "DB2B11CA")]           # kết quả thanh chắn không lẫn vào thẻ
++    assert rec.status == [(True, "Arduino: đã kết nối COM3")]               # và không làm báo sai định dạng
++
++
++def test_barrier_lines_count_as_a_sign_of_life_and_do_not_trigger_format_alert():
++    rec = run_reader([[b"PASS:IN\n", b"PASS:OUT\n", b"NOPASS:IN\n", b"NOPASS:OUT\n"]])
++    assert rec.status == [(True, "Arduino: đã kết nối COM3")]
++    assert len(rec.barriers) == 4
++
++
++def test_reader_without_barrier_callback_ignores_results():
++    box = {}
++
++    def factory(port, baud, timeout):
++        return FakeSerial([b"PASS:IN\n"], Clock(), lambda: box["reader"].stop())
++
++    box["reader"] = ArduinoRfidReader("COM3", 9600, lambda g, u: None, serial_factory=factory,
++                                      sleep=lambda s: None)
++    box["reader"].run()          # không có on_barrier: không được ném lỗi
++
++
+ def test_debounce_is_per_gate_and_per_card():
+     rec = run_reader([[b"IN:AAAA1111\n", b"IN:AAAA1111\n",          # quẹt trùng ở cùng cổng: bỏ
+                        b"OUT:AAAA1111\n",                           # cùng thẻ nhưng ở CỔNG KHÁC: hợp lệ
+diff --git a/tests/test_ui_smoke.py b/tests/test_ui_smoke.py
+index d685ba2..0a72b6d 100644
+--- a/tests/test_ui_smoke.py
++++ b/tests/test_ui_smoke.py
+@@ -775,3 +775,104 @@ def test_open_barrier_never_breaks_card_handling(root, tmp_path, monkeypatch):
+     app.rfid = Broken()
+     swipe(app, "CARD1")                                       # servo lỗi nhưng xe vẫn được ghi nhận
+     assert len(db.rows) == 1 and "XE VÀO" in app.status_lbl.cget("text")
++
++
++# ---------------------------------------------------------------- cảm biến hồng ngoại: xe đã qua thanh chắn
++def drain_barrier(root, db, count=1):
++    return pump(root, lambda: len(db.passes) >= count)
++
++
++def test_entry_barrier_pass_is_recorded_but_not_shown(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    swipe(app, "CARD1")
++    shown = app.status_lbl.cget("text")
++
++    app.handle_barrier(True)                                   # Arduino báo PASS:IN
++    assert drain_barrier(root, db)
++    assert db.passes[0][:3] == (db.rows[0].id, "in", "PASSED")
++    assert app.status_lbl.cget("text") == shown                # không hiển thị kết quả xe đã qua
++    assert app._barrier_session is None
++
++    app.handle_barrier(True)                                   # kết quả thừa (không còn lượt chờ): bỏ qua
++    pump(root, lambda: False, timeout=0.3)
++    assert len(db.passes) == 1
++
++
++def test_barrier_timeout_is_recorded_with_a_warning(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    swipe(app, "CARD1")
++    app.handle_barrier(False)                                  # NOPASS:IN
++    assert drain_barrier(root, db)
++    assert db.passes[0][:3] == (db.rows[0].id, "in", "TIMEOUT")
++    assert "CẢNH BÁO" in app.status_lbl.cget("text") and "chưa đi qua" in app.status_lbl.cget("text")
++
++
++def test_barrier_timeout_does_not_overwrite_a_pending_message(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    swipe(app, "CARD1")
++    rec.set_script([""])
++    swipe(app, "CARD2")                                        # xe sau chưa đọc được số -> chờ nhân viên
++    assert app.pending is not None
++    pending_text = app.status_lbl.cget("text")
++    app.handle_barrier(False)
++    assert drain_barrier(root, db)
++    assert app.status_lbl.cget("text") == pending_text         # việc đang chờ nhân viên không bị che mất
++
++
++def test_exit_barrier_result_goes_to_the_exit_column(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_exit(root, tmp_path, monkeypatch, ["25888"])
++    swipe(app, "CARD1")                                        # biển khớp -> ra, mở thanh chắn cổng ra
++    app.handle_barrier(True)
++    assert drain_barrier(root, db)
++    assert db.passes[0][:3] == (db.rows[0].id, "out", "PASSED")
++
++
++def test_barrier_not_opened_by_us_has_no_session_to_record(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    swipe(app, "NOPE")                                         # thẻ lạ: thanh chắn không mở
++    app.handle_barrier(True)
++    pump(root, lambda: False, timeout=0.3)
++    assert db.passes == []
++
++
++def test_barrier_results_ignored_when_ir_is_disabled(root, tmp_path, monkeypatch):
++    monkeypatch.setenv("IR_ENABLED", "0")
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
++    swipe(app, "CARD1")
++    app.handle_barrier(False)
++    pump(root, lambda: False, timeout=0.3)
++    assert db.passes == [] and "CẢNH BÁO" not in app.status_lbl.cget("text")
++
++
++def test_staff_confirmed_entry_records_the_pass_on_that_session(root, tmp_path, monkeypatch):
++    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["2588"])
++    swipe(app, "CARD1")                                        # đọc thiếu số -> nhân viên nhập
++    app.plate_var.set("25881")
++    app.save_entry()
++    assert pump(root, lambda: app.pending is None and not app.busy)
++    app.handle_barrier(True)
++    assert drain_barrier(root, db)
++    assert db.passes[0][:3] == (db.rows[0].id, "in", "PASSED")
++
++
++def test_real_reader_routes_pass_lines_to_the_right_gate_and_records_them(root, tmp_path, monkeypatch):
++    """Đường đi thật: dòng PASS:IN / NOPASS:OUT từ cổng COM -> ArduinoRfidReader -> đúng cổng -> SQL."""
++    import main
++    app, db, _ = make_dual(root, tmp_path, monkeypatch)
++    ser = LiveSerialW(["STATUS:IN=1,OUT=1\n", "IN:CARD1\n"])
++    reader = main._make_rfid(config.load_settings("in", {}), {"in": app.entry, "out": app.exit},
++                             serial_factory=lambda port, baud, timeout: ser)
++    app.set_rfid(reader)
++    assert pump(root, lambda: b"SERVOIN:OPEN:3000\n" in ser.sent)
++    ser.lines.append(b"PASS:IN\n")
++    assert drain_barrier(root, db)
++    assert db.passes[0][:3] == (db.rows[0].id, "in", "PASSED")
++
++    ser.lines.append(b"OUT:CARD1\n")
++    assert pump(root, lambda: b"SERVOOUT:OPEN:3000\n" in ser.sent)
++    ser.lines.append(b"NOPASS:OUT\n")
++    assert drain_barrier(root, db, 2)
++    assert db.passes[1][1:3] == ("out", "TIMEOUT")
++    assert "CẢNH BÁO" in app.exit.status_lbl.cget("text")
++    assert "CẢNH BÁO" not in app.entry.status_lbl.cget("text")  # chỉ cổng ra bị cảnh báo
++    app.on_close()
+diff --git a/ui/base_gate_app.py b/ui/base_gate_app.py
+index 15cd161..c841791 100644
+--- a/ui/base_gate_app.py
++++ b/ui/base_gate_app.py
+@@ -20,6 +20,7 @@ from PIL import Image, ImageTk
+ from core.plate_voting import NUMBER_LEN
+ from hardware import camera as cam_state
+ from services.gate_service import Outcome
++from services.gate_service import now as current_time
+ from ui.device_status import ARDUINO, DB, DeviceStatusBar, camera_key, reader_key
+ 
+ COLOR_OK = "#1a7f37"
+@@ -155,6 +156,7 @@ class BaseGateApp:
+         self._history_loading = False
+         self._closing = False
+         self._lcd_job = None        # hẹn giờ đưa LCD về "MOI QUET THE" (xem lcd)
++        self._barrier_session = None    # id lượt gửi xe vừa được mở thanh chắn, chờ cảm biến báo xe đã qua chưa
+ 
+         self.build_ui()
+         self.open_camera(cfg.camera_index)
+@@ -189,10 +191,12 @@ class BaseGateApp:
+         if revert:
+             self._schedule_lcd_revert()
+ 
+-    def open_barrier(self):
++    def open_barrier(self, session_id=None):
+         """Mở thanh chắn (servo) của CỔNG NÀY khi xe được chấp nhận (quẹt thẻ thành công).
+-        Arduino tự đóng lại sau cfg.servo_open_seconds giây. Giống LCD: chưa có Arduino, mất kết nối
+-        hoặc tắt bằng SERVO_ENABLED=0 thì bỏ qua, không bao giờ làm hỏng việc xử lý thẻ.
++        Arduino tự đóng lại sau cfg.servo_open_seconds giây (hoặc ngay khi cảm biến thấy xe đã qua). Giống LCD:
++        chưa có Arduino, mất kết nối hoặc tắt bằng SERVO_ENABLED=0 thì bỏ qua, không bao giờ làm hỏng việc xử lý thẻ.
++
++        session_id: lượt gửi xe của xe này; kết quả cảm biến (đã qua / hết giờ) sẽ được ghi vào lượt đó.
+         Trả về True nếu đã gửi lệnh."""
+         if not getattr(self.cfg, "servo_enabled", True):
+             return False
+@@ -200,9 +204,35 @@ class BaseGateApp:
+         if send is None:
+             return False
+         try:
+-            return bool(send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds))
++            sent = bool(send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds))
+         except Exception:
+             return False
++        if sent:
++            self._barrier_session = session_id
++        return sent
++
++    def handle_barrier(self, passed):
++        """Arduino báo kết quả lần mở thanh chắn của cổng này: passed=True xe đã qua hẳn, False hết giờ mà chưa qua.
++        Gọi được từ luồng nền: chuyển sang luồng GUI."""
++        at = current_time()
++        self.q.put(lambda: self.on_barrier_result(passed, at))
++
++    def on_barrier_result(self, passed, at):
++        """Ghi kết quả vào SQL Server (không hiển thị). Riêng trường hợp bất thường (hết giờ mà xe chưa qua) có
++        một dòng cảnh báo ở thanh trạng thái của cổng, nếu lúc đó không có việc khác đang hiện."""
++        if not getattr(self.cfg, "ir_enabled", True):
++            return                      # chưa gắn cảm biến hồng ngoại
++        session_id, self._barrier_session = self._barrier_session, None
++        if session_id is None:
++            return                      # thanh chắn không do chương trình mở (VD gõ lệnh tay): không có lượt để ghi
++        self._bg(lambda: self.service.record_pass(session_id, passed, at), lambda _: None,
++                 busy=False, on_error=self.on_pass_record_error)
++        if not passed and self.pending is None and not self.busy:
++            self.set_status(f"CẢNH BÁO {self.cfg.label}: hết giờ mở thanh chắn mà xe chưa đi qua "
++                            "(thanh chắn đã hạ).", COLOR_WARN)
++
++    def on_pass_record_error(self, exc):
++        self.devices.set(DB, False, f"SQL Server: LỖI ({str(exc)[:60]})")
+ 
+     def _cancel_lcd_revert(self):
+         job, self._lcd_job = self._lcd_job, None
+diff --git a/ui/entry_app.py b/ui/entry_app.py
+index 0c22c92..2dd7783 100644
+--- a/ui/entry_app.py
++++ b/ui/entry_app.py
+@@ -69,7 +69,7 @@ class EntryApp(BaseGateApp):
+             self.plate_entry.configure(fg=COLOR_OK)
+             self.upsert_row(e)
+             self.lcd_saved(scan.winner)
+-            self.open_barrier()     # tự lưu xong -> mở thanh chắn cổng vào
++            self.open_barrier(e.id)     # tự lưu xong -> mở thanh chắn cổng vào
+             self.set_status(f"XE VÀO | thẻ {uid} | {NUMBER_LEN} số {scan.winner} "
+                             f"({scan.votes}/{scan.scanned} ảnh) | biển {scan.plate_full or '?'} | "
+                             f"{fmt_time(e.time_in)}", COLOR_OK)
+@@ -108,7 +108,7 @@ class EntryApp(BaseGateApp):
+         self.pending = None
+         self.show_offset_warning(False)
+         self.lcd_saved(event.plate_number)
+-        self.open_barrier()         # nhân viên đã xác nhận cho xe vào -> mở thanh chắn cổng vào
++        self.open_barrier(event.id)     # nhân viên đã xác nhận cho xe vào -> mở thanh chắn cổng vào
+         self.upsert_row(event)
+         self.update_action_buttons()
+         self.set_status(f"XE VÀO | thẻ {event.card_uid} | {NUMBER_LEN} số {event.plate_number} | "
+diff --git a/ui/exit_app.py b/ui/exit_app.py
+index e4b81a1..d2ea3fe 100644
+--- a/ui/exit_app.py
++++ b/ui/exit_app.py
+@@ -152,7 +152,7 @@ class ExitApp(BaseGateApp):
+             self.match_lbl.configure(text=f"KHỚP biển lúc vào ({session.plate_number})", fg=COLOR_OK)
+             self.upsert_row(session)
+             self.lcd(lcd_exit_ok(session.fee), revert=True)
+-            self.open_barrier()     # biển khớp, đã đóng lượt -> mở thanh chắn cổng ra
++            self.open_barrier(session.id)   # biển khớp, đã đóng lượt -> mở thanh chắn cổng ra
+             self.set_status(self._exit_text("XE RA", session), COLOR_OK)
+             return
+ 
+@@ -196,7 +196,7 @@ class ExitApp(BaseGateApp):
+         self.pending = None
+         self.upsert_row(event)
+         self.lcd(lcd_exit_ok(event.fee), revert=True)
+-        self.open_barrier()         # nhân viên đã duyệt cho xe ra -> mở thanh chắn cổng ra
++        self.open_barrier(event.id)     # nhân viên đã duyệt cho xe ra -> mở thanh chắn cổng ra
+         self.update_action_buttons()
+         exact = event.match_status == "MATCH"
+         self.match_lbl.configure(

@@ -3,8 +3,8 @@ import pytest
 import serial
 
 from hardware.rfid import (
-    ArduinoRfidReader, BadLine, CardSwipe, ReaderStatus, format_lcd_command, format_servo_command, lcd_text,
-    parse_line,
+    ArduinoRfidReader, BadLine, BarrierEvent, CardSwipe, ReaderStatus, format_lcd_command, format_servo_command,
+    lcd_text, parse_line,
 )
 
 
@@ -20,6 +20,18 @@ def test_parse_card_swipes():
 def test_parse_reader_status():
     assert parse_line("STATUS:IN=1,OUT=0") == ReaderStatus({"in": True, "out": False})
     assert parse_line("status: out=1") == ReaderStatus({"out": True})            # chỉ báo một đầu đọc cũng được
+
+
+def test_parse_barrier_events():
+    assert parse_line("PASS:IN\r\n") == BarrierEvent("in", True)
+    assert parse_line("PASS:OUT") == BarrierEvent("out", True)
+    assert parse_line("NOPASS:IN") == BarrierEvent("in", False)
+    assert parse_line("nopass: out") == BarrierEvent("out", False)               # không phân biệt hoa/thường
+
+
+@pytest.mark.parametrize("line", ["PASS", "PASS:", "PASS:LEFT", "NOPASS:", "NOPASS:AB1992CA", "PASSED:IN"])
+def test_parse_bad_barrier_lines(line):
+    assert parse_line(line) == BadLine(line)
 
 
 @pytest.mark.parametrize("line", ["", "   \r\n", "# dual_rfid san sang", "#"])
@@ -75,7 +87,10 @@ class FakeSerial:
 
 class Recorder:
     def __init__(self):
-        self.cards, self.status, self.readers = [], [], []
+        self.cards, self.status, self.readers, self.barriers = [], [], [], []
+
+    def on_barrier(self, gate, passed):
+        self.barriers.append((gate, passed))
 
     def on_card(self, gate, uid):
         self.cards.append((gate, uid))
@@ -99,6 +114,7 @@ def run_reader(opens, **kwargs):
         return FakeSerial(item, clock, lambda: box["reader"].stop())
 
     box["reader"] = ArduinoRfidReader("COM3", 9600, rec.on_card, rec.on_status, rec.on_reader,
+                                      on_barrier=rec.on_barrier,
                                       serial_factory=factory, clock=clock, sleep=lambda s: None, **kwargs)
     box["reader"].run()          # chạy thẳng ở luồng này; luồng đọc tự dừng khi hết script
     return rec
@@ -109,6 +125,31 @@ def test_cards_are_routed_to_the_right_gate():
     assert rec.cards == [("in", "AB1992CA"), ("out", "DB2B11CA")]
     assert rec.status == [(True, "Arduino: đã kết nối COM3")]
     assert rec.readers == [("in", True), ("out", True)]
+
+
+def test_barrier_results_are_routed_to_the_right_gate():
+    rec = run_reader([[b"STATUS:IN=1,OUT=1\n", b"IN:AB1992CA\n", b"PASS:IN\n", b"OUT:DB2B11CA\n",
+                       b"NOPASS:OUT\n", b"PASS:IN\n"]])
+    assert rec.barriers == [("in", True), ("out", False), ("in", True)]     # không chống trùng: mỗi dòng là một kết quả
+    assert rec.cards == [("in", "AB1992CA"), ("out", "DB2B11CA")]           # kết quả thanh chắn không lẫn vào thẻ
+    assert rec.status == [(True, "Arduino: đã kết nối COM3")]               # và không làm báo sai định dạng
+
+
+def test_barrier_lines_count_as_a_sign_of_life_and_do_not_trigger_format_alert():
+    rec = run_reader([[b"PASS:IN\n", b"PASS:OUT\n", b"NOPASS:IN\n", b"NOPASS:OUT\n"]])
+    assert rec.status == [(True, "Arduino: đã kết nối COM3")]
+    assert len(rec.barriers) == 4
+
+
+def test_reader_without_barrier_callback_ignores_results():
+    box = {}
+
+    def factory(port, baud, timeout):
+        return FakeSerial([b"PASS:IN\n"], Clock(), lambda: box["reader"].stop())
+
+    box["reader"] = ArduinoRfidReader("COM3", 9600, lambda g, u: None, serial_factory=factory,
+                                      sleep=lambda s: None)
+    box["reader"].run()          # không có on_barrier: không được ném lỗi
 
 
 def test_debounce_is_per_gate_and_per_card():

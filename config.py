@@ -124,6 +124,7 @@ class Settings:
     window_pos: str            # VD "+0+0" hoặc "+900+0" để xếp hai cửa sổ cạnh nhau; để trống = mặc định
     servo_enabled: bool = True      # False = không gửi lệnh mở thanh chắn (chưa gắn servo)
     servo_open_seconds: float = 3.0 # giây giữ thanh chắn mở sau khi quẹt thẻ thành công rồi Arduino tự đóng lại
+    ir_enabled: bool = True         # False = chưa gắn cảm biến hồng ngoại: bỏ qua PASS / NOPASS từ Arduino
     lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về "MOI QUET THE"; 0 = giữ đến lần quẹt sau
 
 
@@ -174,6 +175,7 @@ def load_settings(gate, env=None):
         lcd_idle_seconds=_num("LCD_IDLE_SECONDS", "5", float),
         servo_enabled=_env("SERVO_ENABLED", "1") == "1",
         servo_open_seconds=_num("SERVO_OPEN_SECONDS", "3", float),
+        ir_enabled=_env("IR_ENABLED", "1") == "1",
     )
     if s.scan_frames < 1:
         raise ValueError("SCAN_FRAMES phải >= 1")

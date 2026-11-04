@@ -10,6 +10,8 @@
                            khởi động và mỗi 2 giây. Chương trình Python dùng dòng này để báo "đầu đọc nào mất
                            kết nối" và coi Arduino là "không phản hồi" nếu quá RFID_HEARTBEAT_TIMEOUT giây
                            không nhận được dòng nào.
+      PASS:IN              xe đã đi qua hẳn thanh chắn CỔNG VÀO (PASS:OUT cho cổng ra); thanh chắn đã được hạ ngay
+      NOPASS:IN            hết giờ mở mà xe CHƯA đi qua (NOPASS:OUT cho cổng ra); thanh chắn đã được hạ
       # ...                dòng chú thích, Python bỏ qua
     Máy tính -> Arduino:
       LCDIN:dòng 1|dòng 2   hiển thị lên LCD CỔNG VÀO
@@ -42,14 +44,26 @@
     SERVO CỔNG RA  :  tín hiệu -> D7
   LƯU Ý NGUỒN: servo giật dòng lớn khi chạy (có thể > 500 mA mỗi con) nên NÊN cấp 5V riêng (pin/adapter 5V 2A)
   cho hai servo và NỐI CHUNG GND với Arduino; cấp thẳng từ chân 5V của Arduino qua cổng USB dễ làm Arduino reset,
-  LCD nháy hoặc RC522 mất tín hiệu. Chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), còi (D4) hay Serial (D0/D1).
+  LCD nháy hoặc RC522 mất tín hiệu. Chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), cảm biến (D2..D5), còi (A5) hay Serial (D0/D1).
   Góc mở/đóng chỉnh ở SERVO_*_ANGLE bên dưới cho khớp thanh chắn thật.
 
-  Đấu dây CÒI BÍP (MỘT còi dùng chung cho cả hai cổng): chân (+) -> D4,  chân (-) -> GND.
+  Đấu dây CÒI BÍP (MỘT còi dùng chung cho cả hai cổng): chân (+) -> A5,  chân (-) -> GND.
   Mỗi lần quẹt thẻ ở BẤT KỲ cổng nào còi kêu một tiếng bíp ngắn (do Arduino tự làm ngay khi đọc được thẻ,
   không chờ máy tính). Dùng tone() nên chạy được cả còi active lẫn passive; còi nhỏ (< 20 mA) nối thẳng
-  chân D4, còi công suất lớn thì qua transistor. Muốn đổi chân / tần số / độ dài: sửa PIN_BUZZER,
+  chân A5, còi công suất lớn thì qua transistor. Muốn đổi chân / tần số / độ dài: sửa PIN_BUZZER,
   BUZZER_FREQ_HZ, BUZZER_BEEP_MS bên dưới.
+
+  Đấu dây BỐN CẢM BIẾN HỒNG NGOẠI (mỗi cổng hai cái: một ở TRƯỚC, một ở SAU thanh chắn), dùng để biết xe đã
+  đi qua hẳn thanh chắn chưa. Mỗi cảm biến: VCC -> 5V, GND -> GND, ngõ ra (OUT) -> chân số:
+    CỔNG VÀO :  trước -> D2,  sau -> D3
+    CỔNG RA  :  trước -> D4,  sau -> D5
+  Mặc định ngõ ra xuống LOW khi có vật chắn (đa số module E18-D80NK / FC-51); loại ngược lại thì đặt
+  IR_ACTIVE_LOW = false. Chân dùng INPUT_PULLUP nên ngõ ra open-collector cũng chạy được.
+  Cách hoạt động (sau khi thanh chắn MỞ): xe chắn cảm biến trước, rồi chắn cảm biến sau, rồi rời khỏi cả hai
+  -> "đã qua": thanh chắn HẠ NGAY và Arduino gửi PASS:<cổng>. Xe lùi ra (cảm biến sau nhả khi cảm biến trước
+  còn bị chắn) thì không tính là đã qua. Hết giờ giữ mở mà chưa qua thì hạ thanh chắn và gửi NOPASS:<cổng>,
+  NHƯNG nếu lúc đó còn có vật chắn cảm biến (xe đang ở dưới thanh chắn) thì chờ thêm tối đa IR_EXTEND_MAX_MS
+  rồi mới hạ, để thanh chắn không đóng xuống xe.
 
   Thư viện (Arduino IDE: Tools > Manage Libraries):
     - "MFRC522" của GithubCommunity
@@ -82,6 +96,14 @@ const uint8_t SERVO_OPEN_ANGLE = 90;           // thanh chắn nâng (mở)
 const unsigned long SERVO_HOLD_MS = 3000;      // giữ mở mặc định khi lệnh không nêu thời gian
 const unsigned long SERVO_HOLD_MIN_MS = 500;   // chặn lệnh sai: tối thiểu / tối đa
 const unsigned long SERVO_HOLD_MAX_MS = 30000;
+// Cảm biến hồng ngoại: mỗi cổng hai cái, "trước" = phía xe đi tới, "sau" = phía bên kia thanh chắn.
+const uint8_t PIN_IR_IN_BEFORE = 2;
+const uint8_t PIN_IR_IN_AFTER = 3;
+const uint8_t PIN_IR_OUT_BEFORE = 4;
+const uint8_t PIN_IR_OUT_AFTER = 5;
+const bool IR_ACTIVE_LOW = true;               // true: ngõ ra LOW khi có vật chắn; false: HIGH khi có vật chắn
+const unsigned long IR_DEBOUNCE_MS = 30;       // tín hiệu phải ổn định ngần này ms mới được tin (chống nhiễu)
+const unsigned long IR_EXTEND_MAX_MS = 10000;  // hết giờ mà còn vật chắn cảm biến: chờ thêm tối đa ngần này ms
 // Còi bíp: một còi chung, kêu mỗi lần quẹt thẻ (cổng vào hoặc cổng ra).
 const uint8_t PIN_BUZZER = A5;
 const unsigned int BUZZER_FREQ_HZ = 2000;      // passive: đây là cao độ; active: vẫn kêu bình thường
@@ -204,46 +226,139 @@ char rxBuf[RX_MAX + 1];                        // dòng lệnh đang nhận từ
 uint8_t rxLen = 0;
 bool rxOverflow = false;                       // dòng quá dài: bỏ cả dòng
 
+// ------------------------------------------------------------------ Cảm biến hồng ngoại
+// Một cảm biến có chống nhiễu: chỉ đổi trạng thái khi tín hiệu giữ ổn định IR_DEBOUNCE_MS.
+class IrSensor {
+ public:
+  explicit IrSensor(uint8_t pin) : pin_(pin) {}
+
+  void begin() {
+    pinMode(pin_, IR_ACTIVE_LOW ? INPUT_PULLUP : INPUT);   // active-HIGH mà kéo lên thì lúc không cắm sẽ luôn "bị chắn"
+    raw_ = stable_ = read();
+    changedAt_ = millis();
+  }
+
+  void update() {                              // gọi mỗi vòng loop
+    bool now = read();
+    if (now != raw_) {
+      raw_ = now;
+      changedAt_ = millis();
+    } else if (raw_ != stable_ && millis() - changedAt_ >= IR_DEBOUNCE_MS) {
+      stable_ = raw_;
+    }
+  }
+
+  bool blocked() const { return stable_; }
+
+ private:
+  bool read() const {
+    bool high = (digitalRead(pin_) == HIGH);
+    return IR_ACTIVE_LOW ? !high : high;
+  }
+
+  uint8_t pin_;
+  bool raw_ = false, stable_ = false;
+  unsigned long changedAt_ = 0;
+};
+
+// BEGIN PassDetector (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
+// Nhận biết "xe đã đi qua hẳn" từ hai cảm biến (trước / sau thanh chắn):
+//   cảm biến trước bị chắn -> cảm biến sau bị chắn -> cảm biến sau nhả ra khi cảm biến trước cũng đã nhả.
+// Nếu cảm biến sau nhả ra trong lúc cảm biến trước còn bị chắn thì xe đang lùi ra: bỏ lần chắn sau đó.
+class PassDetector {
+ public:
+  void reset() { seenBefore_ = seenAfter_ = false; }
+
+  // before / after: cảm biến tương ứng đang bị chắn. Trả về true đúng một lần khi xe đã qua hẳn.
+  bool update(bool before, bool after) {
+    if (!seenBefore_ && before) seenBefore_ = true;
+    if (seenBefore_ && !seenAfter_ && after) seenAfter_ = true;
+    if (seenAfter_ && !after) {
+      if (!before) {
+        reset();                               // báo đúng một lần
+        return true;
+      }
+      seenAfter_ = false;                      // xe lùi ra
+    }
+    return false;
+  }
+
+ private:
+  bool seenBefore_ = false, seenAfter_ = false;
+};
+// END PassDetector
+
 // ------------------------------------------------------------------ Servo thanh chắn
 // Một thanh chắn: mở theo lệnh rồi TỰ đóng khi hết thời gian giữ (đo bằng millis(), không chặn vòng loop nên
 // việc quét thẻ và nhận lệnh LCD vẫn chạy bình thường trong lúc thanh chắn đang mở).
+// Có hai cảm biến hồng ngoại: xe đã đi qua hẳn thì HẠ NGAY và báo PASS:<cổng>; hết giờ mà chưa qua thì hạ và báo
+// NOPASS:<cổng> (còn vật chắn cảm biến thì chờ thêm tối đa IR_EXTEND_MAX_MS để không hạ xuống xe).
 class Barrier {
  public:
-  explicit Barrier(uint8_t pin) : pin_(pin) {}
+  Barrier(uint8_t servoPin, uint8_t irBeforePin, uint8_t irAfterPin, const char *tag)
+      : pin_(servoPin), before_(irBeforePin), after_(irAfterPin), tag_(tag) {}
 
   void begin() {
     servo_.attach(pin_);
     servo_.write(SERVO_CLOSED_ANGLE);          // khởi động luôn ở vị trí đóng
     open_ = false;
+    before_.begin();
+    after_.begin();
   }
 
   // Mở (hoặc gia hạn nếu đang mở: quẹt thẻ liên tiếp thì thanh chắn không đóng giữa chừng).
   void open(unsigned long holdMs) {
     holdMs = constrain(holdMs, SERVO_HOLD_MIN_MS, SERVO_HOLD_MAX_MS);
-    if (!open_) servo_.write(SERVO_OPEN_ANGLE);
+    if (!open_) {
+      servo_.write(SERVO_OPEN_ANGLE);
+      detector_.reset();                       // lần mở mới: theo dõi xe từ đầu
+    }
     open_ = true;
     openedAt_ = millis();
     holdMs_ = holdMs;
   }
 
+  // Đóng theo lệnh (không báo PASS / NOPASS).
   void close() {
     if (open_) servo_.write(SERVO_CLOSED_ANGLE);
     open_ = false;
   }
 
   void update() {                              // gọi mỗi vòng loop
-    if (open_ && millis() - openedAt_ >= holdMs_) close();
+    before_.update();
+    after_.update();
+    if (!open_) return;
+
+    if (detector_.update(before_.blocked(), after_.blocked())) {
+      close();                                 // xe đã qua hẳn: hạ ngay
+      report(F("PASS:"));
+      return;
+    }
+    unsigned long elapsed = millis() - openedAt_;
+    if (elapsed < holdMs_) return;
+    bool occupied = before_.blocked() || after_.blocked();
+    if (occupied && elapsed < holdMs_ + IR_EXTEND_MAX_MS) return;   // xe đang ở thanh chắn: chưa hạ
+    close();
+    report(F("NOPASS:"));                      // hết giờ mà chưa thấy xe qua
   }
 
  private:
+  void report(const __FlashStringHelper *kind) {
+    Serial.print(kind);
+    Serial.println(tag_);
+  }
+
   uint8_t pin_;
   Servo servo_;
+  IrSensor before_, after_;
+  PassDetector detector_;
+  const char *tag_;                            // "IN" / "OUT" (chuỗi thường: F() không dùng được ở phạm vi toàn cục)
   bool open_ = false;
   unsigned long openedAt_ = 0, holdMs_ = SERVO_HOLD_MS;
 };
 
-Barrier barrierIn(PIN_SERVO_IN);
-Barrier barrierOut(PIN_SERVO_OUT);
+Barrier barrierIn(PIN_SERVO_IN, PIN_IR_IN_BEFORE, PIN_IR_IN_AFTER, "IN");
+Barrier barrierOut(PIN_SERVO_OUT, PIN_IR_OUT_BEFORE, PIN_IR_OUT_AFTER, "OUT");
 
 // ------------------------------------------------------------------ RFID
 // Module có đang nói chuyện được không? Đọc thanh ghi phiên bản: 0x00 hoặc 0xFF = không có tín hiệu.
@@ -409,7 +524,7 @@ void setup() {
   pinMode(PIN_BUZZER, OUTPUT);
   barrierIn.begin();
   barrierOut.begin();
-  Serial.println(F("# dual_rfid san sang (servo: vao=D6, ra=D7, coi=D4)"));
+  Serial.println(F("# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5)"));
   sendStatus();
   lastStatus = millis();
 }

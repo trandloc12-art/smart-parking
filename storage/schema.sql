@@ -58,6 +58,11 @@ IF COL_LENGTH(N'dbo.access_log', N'votes_in')     IS NULL ALTER TABLE dbo.access
 IF COL_LENGTH(N'dbo.access_log', N'votes_out')    IS NULL ALTER TABLE dbo.access_log ADD votes_out    NVARCHAR(100) NULL;
 IF COL_LENGTH(N'dbo.access_log', N'gate_in')      IS NULL ALTER TABLE dbo.access_log ADD gate_in      NVARCHAR(10)  NULL;
 IF COL_LENGTH(N'dbo.access_log', N'gate_out')     IS NULL ALTER TABLE dbo.access_log ADD gate_out     NVARCHAR(10)  NULL;
+-- Cảm biến hồng ngoại: xe đã đi qua thanh chắn chưa (PASSED = đã qua; TIMEOUT = hết giờ mở mà chưa qua)
+IF COL_LENGTH(N'dbo.access_log', N'pass_in_status')  IS NULL ALTER TABLE dbo.access_log ADD pass_in_status  NVARCHAR(10) NULL;
+IF COL_LENGTH(N'dbo.access_log', N'pass_in_at')      IS NULL ALTER TABLE dbo.access_log ADD pass_in_at      DATETIME2(0) NULL;
+IF COL_LENGTH(N'dbo.access_log', N'pass_out_status') IS NULL ALTER TABLE dbo.access_log ADD pass_out_status NVARCHAR(10) NULL;
+IF COL_LENGTH(N'dbo.access_log', N'pass_out_at')     IS NULL ALTER TABLE dbo.access_log ADD pass_out_at     DATETIME2(0) NULL;
 GO
 
 -- 6) Ràng buộc: biển số mới phải đúng 5 chữ số. WITH NOCHECK -> dữ liệu cũ không bị kiểm tra lại.

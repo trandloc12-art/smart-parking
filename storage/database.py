@@ -14,6 +14,7 @@ SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 _COLUMNS = ("id, card_uid, plate_number, plate_full, image_in, time_in, time_out, fee, "
             "plate_out, image_out, match_status, override_note, gate_in, gate_out")
 _OPEN_INDEX = "UX_access_log_open_card"
+_PASS_COLUMNS = {"in": ("pass_in_status", "pass_in_at"), "out": ("pass_out_status", "pass_out_at")}
 
 
 def _to_event(r):
@@ -125,6 +126,18 @@ class Database:
             conn.commit()
         if changed != 1:
             raise SessionAlreadyClosed("Lượt gửi xe này đã được đóng trước đó")
+
+    def record_pass(self, session_id, gate, status, at):
+        """Ghi kết quả thanh chắn của cổng `gate` ('in' / 'out') cho một lượt: status = PASSED / TIMEOUT.
+
+        Mỗi cổng chỉ ghi một lần cho mỗi lượt (không đè kết quả đã có). Trả về True nếu đã ghi."""
+        status_col, at_col = _PASS_COLUMNS[gate]          # tên cột lấy từ bảng cố định, không từ dữ liệu ngoài
+        with self._connect() as conn:
+            changed = conn.execute(
+                f"UPDATE dbo.access_log SET {status_col} = ?, {at_col} = ? "
+                f"WHERE id = ? AND {status_col} IS NULL", status, at, session_id).rowcount
+            conn.commit()
+        return changed == 1
 
     def recent(self, limit=100):
         with self._connect() as conn:

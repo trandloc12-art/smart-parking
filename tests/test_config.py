@@ -224,6 +224,23 @@ def test_servo_open_seconds_must_be_a_number(monkeypatch):
         config.load_settings("in")
 
 
+def test_ir_setting(monkeypatch):
+    monkeypatch.delenv("IR_ENABLED", raising=False)
+    assert config.load_settings("in").ir_enabled is True            # mặc định bật
+    monkeypatch.setenv("IR_ENABLED", "0")
+    assert config.load_settings("out").ir_enabled is False          # chưa gắn cảm biến thì tắt
+    assert config.load_settings("in", {"IR_ENABLED": "1"}).ir_enabled is True
+
+
+def test_ir_default_is_in_env_example(tmp_path):
+    import os
+    example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
+    assert "IR_ENABLED=1" in example
+    (tmp_path / ".env").write_text(example, encoding="utf-8")
+    env, _ = config.gate_env("in", str(tmp_path), environ={})
+    assert config.load_settings("in", env).ir_enabled is True
+
+
 def test_servo_defaults_are_in_env_example(tmp_path):
     import os
     example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
