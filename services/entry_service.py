@@ -5,7 +5,8 @@ Quẹt thẻ:
   - Thẻ đang ở trong bãi      -> từ chối (không cho vào lần nữa).
   - Bãi đã đủ số chỗ          -> từ chối, KHÔNG quét ảnh (không nhận quẹt thẻ cho đến khi có xe ra).
   - Còn lại                   -> quét nhiều khung, bỏ phiếu 5 số.
-        chốt được + AUTO_SAVE -> lưu luôn.
+        chốt được + AUTO_SAVE -> lưu luôn (hoặc, khi defer=True: trả ENTRY_READY, chưa lưu — giao diện chỉ gọi
+                                 save_entry sau khi cảm biến xác nhận xe đã đi qua thanh chắn).
         chưa chốt được        -> chờ nhân viên nhập/xác nhận ĐÚNG 5 số rồi mới lưu.
 """
 from core.plate_voting import NUMBER_LEN
@@ -26,7 +27,7 @@ class EntryService(GateService):
         super().__init__(*args, **kwargs)
         self.auto_save = auto_save
 
-    def handle_card(self, card_uid, get_frame, on_progress=None):
+    def handle_card(self, card_uid, get_frame, on_progress=None, defer=False):
         swiped_at = now()
         if not self.db.is_card_registered(card_uid):
             return CardOutcome(Outcome.UNREGISTERED, card_uid)
@@ -40,6 +41,8 @@ class EntryService(GateService):
 
         scan = self.scan(get_frame, on_progress)
         if self.auto_save and scan.decided:
+            if defer:       # chờ xe đi qua thanh chắn rồi mới lưu (xe không vào thì không lưu gì cả)
+                return CardOutcome(Outcome.ENTRY_READY, card_uid, scan, swiped_at=swiped_at)
             try:
                 event = self.save_entry(card_uid, scan.winner, scan, swiped_at)
             except AlreadyInside:

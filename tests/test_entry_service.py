@@ -88,3 +88,32 @@ def test_duplicate_open_session_blocked_and_no_orphan_image(tmp_path):
     with pytest.raises(AlreadyInside):
         svc.save_entry("CARD1", "25888", o.scan)
     assert set(os.listdir(tmp_path)) == files_before and len(db.rows) == 1
+
+
+def test_defer_decided_scan_returns_ready_and_saves_nothing(tmp_path):
+    """defer=True (có cảm biến): chốt được biển nhưng CHƯA lưu — chờ xe đi qua thanh chắn."""
+    svc, db, rec = make(tmp_path, ["25888"] * 5)
+    o = svc.handle_card("CARD1", frame, defer=True)
+    assert o.kind is Outcome.ENTRY_READY and o.scan.winner == "25888" and o.swiped_at is not None
+    assert db.rows == [] and list(tmp_path.glob("*.jpg")) == []        # không có dòng DB, không có ảnh
+
+
+def test_deferred_entry_is_saved_later_with_the_swipe_time(tmp_path):
+    svc, db, rec = make(tmp_path, ["25888"] * 5)
+    o = svc.handle_card("CARD1", frame, defer=True)
+    e = svc.save_entry("CARD1", o.scan.winner, o.scan, o.swiped_at)    # xe đã qua: lúc này mới lưu
+    assert db.rows == [e] and e.time_in == o.swiped_at and os.path.isfile(tmp_path / e.image_in)
+
+
+def test_defer_does_not_change_other_outcomes(tmp_path):
+    svc, db, rec = make(tmp_path, ["25888", "25883", "25888", "25883", "99999"])
+    assert svc.handle_card("CARD1", frame, defer=True).kind is Outcome.ENTRY_PENDING   # chưa chốt: vẫn chờ nhân viên
+    assert svc.handle_card("LA", frame, defer=True).kind is Outcome.UNREGISTERED
+    svc2, db2, _ = make(tmp_path, ["25888"] * 5)
+    svc2.handle_card("CARD1", frame)                                                   # lưu ngay (không defer)
+    assert svc2.handle_card("CARD1", frame, defer=True).kind is Outcome.ALREADY_INSIDE
+
+
+def test_defer_false_is_still_the_default(tmp_path):
+    svc, db, _ = make(tmp_path, ["25888"] * 5)
+    assert svc.handle_card("CARD1", frame).kind is Outcome.ENTRY_SAVED and len(db.rows) == 1

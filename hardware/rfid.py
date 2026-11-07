@@ -79,10 +79,12 @@ SERVO_PREFIX = {"in": "SERVOIN", "out": "SERVOOUT"}   # mã cổng -> tiền t�
 SERVO_ACTIONS = ("OPEN", "CLOSE")
 
 
-def format_servo_command(gate, action="OPEN", hold_seconds=None):
-    """Một dòng lệnh servo gửi Arduino, VD 'SERVOOUT:OPEN:3000\\n'.
+def format_servo_command(gate, action="OPEN", hold_seconds=None, pass_seconds=None):
+    """Một dòng lệnh servo gửi Arduino, VD 'SERVOOUT:OPEN:3000\\n' hoặc 'SERVOIN:OPEN:3000:3000\\n'.
 
     hold_seconds: giữ mở bao lâu (giây) rồi Arduino tự đóng; None = dùng thời gian mặc định trong firmware.
+    pass_seconds: cửa sổ chờ xe qua: xe đã ở cảm biến trước mà quá ngần này giây chưa tới cảm biến sau thì Arduino
+    hủy (hạ thanh chắn + NOPASS); None = dùng mặc định trong firmware. Cần kèm hold_seconds.
     Chỉ có ý nghĩa với OPEN."""
     try:
         prefix = SERVO_PREFIX[gate]
@@ -94,7 +96,14 @@ def format_servo_command(gate, action="OPEN", hold_seconds=None):
     if action == "OPEN" and hold_seconds is not None:
         if hold_seconds <= 0:
             raise ValueError("hold_seconds phải > 0")
-        return f"{prefix}:OPEN:{int(round(hold_seconds * 1000))}\n"
+        line = f"{prefix}:OPEN:{int(round(hold_seconds * 1000))}"
+        if pass_seconds is not None:
+            if pass_seconds <= 0:
+                raise ValueError("pass_seconds phải > 0")
+            line += f":{int(round(pass_seconds * 1000))}"
+        return line + "\n"
+    if action == "OPEN" and pass_seconds is not None:
+        raise ValueError("pass_seconds cần đi kèm hold_seconds")
     return f"{prefix}:{action}\n"
 
 
@@ -234,11 +243,11 @@ class ArduinoRfidReader(threading.Thread):
         sẽ tự báo MẤT KẾT NỐI và kết nối lại)."""
         return self._write_line(format_lcd_command(line1, line2, gate))   # gate sai là lỗi lập trình: ném ra
 
-    def send_servo(self, gate, action="OPEN", hold_seconds=None):
+    def send_servo(self, gate, action="OPEN", hold_seconds=None, pass_seconds=None):
         """Mở / đóng servo (thanh chắn) của cổng `gate` ('in' / 'out'). Gọi được từ luồng bất kỳ.
 
         Trả về True nếu đã ghi ra cổng COM; False nếu đang mất kết nối hoặc ghi lỗi (không ném ngoại lệ)."""
-        return self._write_line(format_servo_command(gate, action, hold_seconds))
+        return self._write_line(format_servo_command(gate, action, hold_seconds, pass_seconds))
 
     def send_servo_angles(self, gate, closed_angle, open_angle):
         """Đặt góc đóng (vị trí ban đầu) và góc mở cho servo của cổng `gate`. Trả về True nếu đã ghi ra cổng COM."""

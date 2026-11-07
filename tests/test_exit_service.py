@@ -145,3 +145,36 @@ def test_exit_time_is_swipe_time_not_confirm_time(tmp_path):
     # nhân viên xác nhận muộn (giả lập bằng cách chỉ truyền giờ quẹt thẻ): giờ ra phải là giờ QUẸT THẺ
     out = lot.exit.confirm_exit("CARD1", "25888", o.scan, o.swiped_at)
     assert out.time_out == o.swiped_at and out.fee == 5000
+
+
+def test_defer_exact_match_returns_ready_and_keeps_the_session_open(tmp_path):
+    """defer=True (có cảm biến): biển khớp nhưng CHƯA đóng lượt / tính tiền — chờ xe đi qua thanh chắn."""
+    lot = Lot(tmp_path)
+    lot.park()
+    o = lot.exit.handle_card("CARD1", frame, defer=True)
+    assert o.kind is Outcome.EXIT_READY and o.scan.winner == "25888" and o.event.time_out is None
+    assert lot.db.find_open_session("CARD1") is not None and lot.db.rows[0].time_out is None
+    assert list(tmp_path.glob("*_out.jpg")) == []                       # chưa có ảnh lúc ra
+
+
+def test_deferred_exit_is_closed_later_at_the_swipe_time(tmp_path):
+    lot = Lot(tmp_path)
+    lot.park(minutes_ago=90)
+    o = lot.exit.handle_card("CARD1", frame, defer=True)
+    e = lot.exit.confirm_exit("CARD1", o.scan.winner, o.scan, o.swiped_at)   # xe đã qua: lúc này mới đóng lượt
+    assert e.time_out == o.swiped_at and e.fee == 10000 and e.match_status == "MATCH"
+    assert lot.db.find_open_session("CARD1") is None
+
+
+def test_defer_still_sends_mismatches_to_staff(tmp_path):
+    lot = Lot(tmp_path)
+    lot.park()
+    lot.rec_out.set_script(["11111"])
+    o = lot.exit.handle_card("CARD1", frame, defer=True)
+    assert o.kind is Outcome.EXIT_REVIEW and o.reason is ReviewReason.MISMATCH
+
+
+def test_defer_false_is_still_the_default_for_exit(tmp_path):
+    lot = Lot(tmp_path)
+    lot.park()
+    assert lot.exit.handle_card("CARD1", frame).kind is Outcome.EXIT_DONE

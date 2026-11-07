@@ -127,7 +127,8 @@ class Settings:
     servo_open_seconds: float = 3.0 # giây giữ thanh chắn mở sau khi quẹt thẻ thành công rồi Arduino tự đóng lại
     servo_closed_angle: int = 0     # độ: vị trí ban đầu / thanh chắn hạ (gửi cho Arduino mỗi lần nó khởi động)
     servo_open_angle: int = 90      # độ: thanh chắn nâng (mở)
-    ir_enabled: bool = True         # False = chưa gắn cảm biến hồng ngoại: bỏ qua PASS / NOPASS từ Arduino
+    ir_enabled: bool = True         # False = chưa gắn cảm biến hồng ngoại: lưu ngay khi quẹt thẻ (không chờ xe đi qua)
+    ir_pass_timeout_seconds: float = 3.0   # giây: xe đã ở cảm biến trước mà quá ngần này chưa tới cảm biến sau -> hủy phiên quẹt thẻ
     lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về màn hình chờ; 0 = giữ đến lần quẹt sau
     parking_capacity: int = DEFAULT_PARKING_CAPACITY   # số chỗ (slot) của bãi: đủ rồi thì cổng vào không nhận quẹt thẻ
 
@@ -183,6 +184,7 @@ def load_settings(gate, env=None):
         servo_closed_angle=_num("SERVO_CLOSED_ANGLE", "0"),
         servo_open_angle=_num("SERVO_OPEN_ANGLE", "90"),
         ir_enabled=_env("IR_ENABLED", "1") == "1",
+        ir_pass_timeout_seconds=_num("IR_PASS_TIMEOUT_SECONDS", "3", float),
     )
     if s.scan_frames < 1:
         raise ValueError("SCAN_FRAMES phải >= 1")
@@ -194,6 +196,8 @@ def load_settings(gate, env=None):
         raise ValueError("LCD_IDLE_SECONDS phải >= 0 (0 = không tự quay về)")
     if not 0.5 <= s.servo_open_seconds <= 30:
         raise ValueError("SERVO_OPEN_SECONDS phải nằm trong khoảng 0.5..30 giây")
+    if not 0.5 <= s.ir_pass_timeout_seconds <= 30:
+        raise ValueError("IR_PASS_TIMEOUT_SECONDS phải nằm trong khoảng 0.5..30 giây")
     for name, angle in (("SERVO_CLOSED_ANGLE", s.servo_closed_angle), ("SERVO_OPEN_ANGLE", s.servo_open_angle)):
         if not 0 <= angle <= 180:
             raise ValueError(f"{name} phải nằm trong khoảng 0..180 độ")

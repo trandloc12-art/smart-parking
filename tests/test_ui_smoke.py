@@ -8,6 +8,8 @@ import config
 from helpers import FakeCamera, FakeDb, ScriptedRecognizer
 from services.entry_service import EntryService
 from services.exit_service import ExitService
+from services.gate_service import Outcome
+import ui.base_gate_app as base_gate_app
 from ui.device_status import ARDUINO, DB, DeviceStatusBar, camera_key, reader_key
 from ui.dual_app import DualGateApp
 from ui.entry_app import EntryApp
@@ -120,27 +122,32 @@ def test_entry_position_offset_warning(root, tmp_path, monkeypatch):
 class LcdSpy:
     """Giả bộ đọc RFID: chỉ ghi lại các lần gửi lên LCD dưới dạng (cổng, dòng 1, dòng 2)."""
 
-    def __init__(self):
+    def __init__(self, servo_ok=True):
         self.sent = []
         self.servos = []        # (cổng, lệnh, giây giữ mở)
+        self.windows = []       # cửa sổ chờ xe qua (giây) kèm mỗi lệnh mở; None = lệnh không kèm cửa sổ (VD nút Test servo)
+        self.servo_ok = servo_ok    # False: giả lập không gửi được lệnh (Arduino mất kết nối)
 
     def send_lcd(self, line1, line2="", gate="in"):
         self.sent.append((gate, line1, line2))
         return True
 
-    def send_servo(self, gate, action="OPEN", hold_seconds=None):
+    def send_servo(self, gate, action="OPEN", hold_seconds=None, pass_seconds=None):
         self.servos.append((gate, action, hold_seconds))
-        return True
+        self.windows.append(pass_seconds)
+        return self.servo_ok
 
     def stop(self):
         pass
 
 
-def make_entry(root, tmp_path, monkeypatch, script):
+def make_entry(root, tmp_path, monkeypatch, script, ir=False, servo_ok=True):
+    """ir=False (mặc định): chưa có cảm biến -> lưu ngay khi quẹt thẻ (hành vi cũ). ir=True: chờ xe đi qua rồi mới lưu."""
+    monkeypatch.setenv("IR_ENABLED", "1" if ir else "0")
     db, rec = FakeDb(), ScriptedRecognizer(script)
     app = EntryApp(root, EntryService(rec, db, str(tmp_path), sleep=lambda s: None),
                    FakeCamera(), settings("in", tmp_path, monkeypatch))
-    lcd = app.rfid = LcdSpy()
+    lcd = app.rfid = LcdSpy(servo_ok)
     assert pump(root, lambda: idle(app) and app.last_frame is not None)
     return app, db, rec, lcd
 
@@ -188,7 +195,8 @@ def test_entry_lcd_conflicting_candidates_asks_staff(root, tmp_path, monkeypatch
     assert not app.offset_lbl.winfo_ismapped()
 
 
-def make_exit(root, tmp_path, monkeypatch, script, inside=("CARD1", "CARD2")):
+def make_exit(root, tmp_path, monkeypatch, script, inside=("CARD1", "CARD2"), ir=False, servo_ok=True):
+    monkeypatch.setenv("IR_ENABLED", "1" if ir else "0")
     db = FakeDb()
     entry_svc = EntryService(ScriptedRecognizer(["25888"]), db, str(tmp_path), sleep=lambda s: None)
     for uid in inside:                                       # các xe đã vào bãi (biển 25888)
@@ -196,7 +204,7 @@ def make_exit(root, tmp_path, monkeypatch, script, inside=("CARD1", "CARD2")):
     rec = ScriptedRecognizer(script)
     app = ExitApp(root, ExitService(rec, db, str(tmp_path), sleep=lambda s: None), FakeCamera(),
                   settings("out", tmp_path, monkeypatch))
-    lcd = app.rfid = LcdSpy()
+    lcd = app.rfid = LcdSpy(servo_ok)
     assert pump(root, lambda: idle(app) and app.last_frame is not None)
     return app, db, rec, lcd
 
@@ -378,11 +386,11 @@ class BrokenCamera(FakeCamera):
 
 
 def make_dual(root, tmp_path, monkeypatch, entry_script=("25888",), exit_script=("25888",),
-              exit_camera=None, wait=True, capacity=None):
+              exit_camera=None, wait=True, capacity=None, ir=False):
     monkeypatch.setenv("IMG_DIR", str(tmp_path))
     db = FakeDb()
-    cfg_in, cfg_out = config.load_settings("in", {"IMG_DIR": str(tmp_path)}), \
-        config.load_settings("out", {"IMG_DIR": str(tmp_path)})
+    env = {"IMG_DIR": str(tmp_path), "IR_ENABLED": "1" if ir else "0"}
+    cfg_in, cfg_out = config.load_settings("in", env), config.load_settings("out", env)
     rec = ScriptedRecognizer(entry_script)            # MỘT bộ nhận diện dùng chung cho cả hai cổng
     entry_svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
     exit_svc = ExitService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)
@@ -789,21 +797,15 @@ def test_test_servo_button_opens_only_this_gates_barrier(root, tmp_path, monkeyp
     assert db.rows == [] and rfid.sent == lcd_before          # thử servo không tạo lượt gửi xe, không đụng LCD
 
 
-def test_test_servo_result_is_not_recorded_in_the_database(root, tmp_path, monkeypatch):
-    """PASS / NOPASS của lần thử không gắn với lượt gửi xe nào -> bị bỏ qua, và không cướp lượt đang chờ cảm biến."""
-    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
-    swipe(app, "CARD1")                                       # xe thật vào, đang chờ cảm biến báo
-    real_session = app._barrier_session
-    assert real_session is not None
-
+def test_test_servo_result_is_ignored_and_never_recorded(root, tmp_path, monkeypatch):
+    """PASS / NOPASS của lần thử không gắn với phiên nào -> bị bỏ qua, không ghi gì và không hủy gì."""
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
     app.servo_btn.invoke()
-    assert app._barrier_session == real_session               # nút thử không đổi lượt đang chờ
-
+    assert rfid.servos == [("in", "OPEN", 3.0)] and rfid.windows == [None]   # nút thử không kèm cửa sổ chờ xe qua
     app.handle_barrier(True)
-    assert drain_barrier(root, db) and db.passes[0][0] == real_session
-
-    app.handle_barrier(False)                                 # kết quả thứ hai (của lần thử): không còn lượt nào để ghi
-    assert not pump(root, lambda: len(db.passes) > 1, timeout=0.3)
+    app.handle_barrier(False)
+    pump(root, lambda: False, timeout=0.3)
+    assert db.rows == [] and db.passes == [] and app._awaiting is None
 
 
 def test_test_servo_button_is_locked_while_waiting_for_staff(root, tmp_path, monkeypatch):
@@ -882,109 +884,274 @@ def test_real_reader_sends_servo_angles_after_arduino_boots_and_test_button_afte
     app.on_close()
 
 
-# ---------------------------------------------------------------- cảm biến hồng ngoại: xe đã qua thanh chắn
-def drain_barrier(root, db, count=1):
-    return pump(root, lambda: len(db.passes) >= count)
+# ---------------------------------------------------------------- cảm biến hồng ngoại: quẹt thẻ -> chờ xe đi qua -> mới lưu
+def saved_rows(db):
+    return len(db.rows)
 
 
-def test_entry_barrier_pass_is_recorded_but_not_shown(root, tmp_path, monkeypatch):
-    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+def jpgs(tmp_path):
+    return list(tmp_path.glob("*.jpg"))
+
+
+def test_cancel_message_lasts_two_seconds_by_default():
+    assert base_gate_app.BaseGateApp.LCD_CANCEL_SECONDS == 2.0
+
+
+def test_entry_swipe_waits_for_the_vehicle_before_saving_anything(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    outcome = swipe(app, "CARD1")
+    assert outcome.kind is Outcome.ENTRY_READY
+    assert db.rows == [] and jpgs(tmp_path) == []                      # chưa lưu: không dòng DB, không ảnh
+    assert app._awaiting is not None and app.pending is None
+    assert rfid.servos == [("in", "OPEN", 3.0)] and rfid.windows == [3.0]   # mở thanh chắn kèm cửa sổ chờ 3 giây
+    assert rfid.sent[-1] == ("in", "MOI XE VAO", "QUA THANH CHAN")
+    assert "CHƯA lưu" in app.status_lbl.cget("text") and app.plate_var.get() == "25888"
+
+
+def test_entry_is_saved_only_after_the_vehicle_passes(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
     swipe(app, "CARD1")
-    shown = app.status_lbl.cget("text")
-
-    app.handle_barrier(True)                                   # Arduino báo PASS:IN
-    assert drain_barrier(root, db)
-    assert db.passes[0][:3] == (db.rows[0].id, "in", "PASSED")
-    assert app.status_lbl.cget("text") == shown                # không hiển thị kết quả xe đã qua
-    assert app._barrier_session is None
-
-    app.handle_barrier(True)                                   # kết quả thừa (không còn lượt chờ): bỏ qua
-    pump(root, lambda: False, timeout=0.3)
-    assert len(db.passes) == 1
+    app.handle_barrier(True)                                           # Arduino báo PASS:IN
+    assert pump(root, lambda: len(db.rows) == 1 and len(db.passes) == 1)
+    e = db.rows[0]
+    assert (e.card_uid, e.plate_number, e.gate_in) == ("CARD1", "25888", "in")
+    assert db.passes[0][:3] == (e.id, "in", "PASSED")
+    assert (tmp_path / e.image_in).is_file()
+    assert rfid.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25888") and "XE VÀO" in app.status_lbl.cget("text")
+    assert app._awaiting is None and rfid.servos == [("in", "OPEN", 3.0)]     # không mở thanh chắn lần hai
 
 
-def test_barrier_timeout_is_recorded_with_a_warning(root, tmp_path, monkeypatch):
-    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+def test_entry_that_never_enters_is_cancelled_and_nothing_is_saved(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    app.LCD_CANCEL_SECONDS = 0.3                                        # rút ngắn 2 giây cho test chạy nhanh
     swipe(app, "CARD1")
-    app.handle_barrier(False)                                  # NOPASS:IN
-    assert drain_barrier(root, db)
-    assert db.passes[0][:3] == (db.rows[0].id, "in", "TIMEOUT")
-    assert "CẢNH BÁO" in app.status_lbl.cget("text") and "chưa đi qua" in app.status_lbl.cget("text")
+    app.handle_barrier(False)                                          # Arduino báo NOPASS:IN
+    assert pump(root, lambda: app._awaiting is None
+                and rfid.sent[-1] == ("in", "XE CHUA VAO BAI", "HAY QUET LAI THE"))
+    assert db.rows == [] and db.passes == [] and jpgs(tmp_path) == []   # không thẻ, không biển số, không ảnh
+    assert "ĐÃ HỦY" in app.status_lbl.cget("text") and app.plate_var.get() == ""
+    assert pump(root, lambda: rfid.sent[-1] == ("in", "CONG VAO", "MOI QUET THE"), timeout=3)   # tự về màn hình chờ
+
+    rec.set_script(["25888"])
+    assert swipe(app, "CARD1").kind is Outcome.ENTRY_READY            # thẻ KHÔNG bị coi là đã vào bãi: quẹt lại được
 
 
-def test_barrier_timeout_does_not_overwrite_a_pending_message(root, tmp_path, monkeypatch):
-    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+def test_entry_cancel_does_not_change_the_free_slots(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    app.slots.capacity, app.slots.free = 3, 3
     swipe(app, "CARD1")
-    rec.set_script([""])
-    swipe(app, "CARD2")                                        # xe sau chưa đọc được số -> chờ nhân viên
-    assert app.pending is not None
-    pending_text = app.status_lbl.cget("text")
+    assert app.slots.free == 3                                          # chưa lưu thì chưa trừ chỗ
     app.handle_barrier(False)
-    assert drain_barrier(root, db)
-    assert app.status_lbl.cget("text") == pending_text         # việc đang chờ nhân viên không bị che mất
-
-
-def test_exit_barrier_result_goes_to_the_exit_column(root, tmp_path, monkeypatch):
-    app, db, rec, rfid = make_exit(root, tmp_path, monkeypatch, ["25888"])
-    swipe(app, "CARD1")                                        # biển khớp -> ra, mở thanh chắn cổng ra
-    app.handle_barrier(True)
-    assert drain_barrier(root, db)
-    assert db.passes[0][:3] == (db.rows[0].id, "out", "PASSED")
-
-
-def test_barrier_not_opened_by_us_has_no_session_to_record(root, tmp_path, monkeypatch):
-    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
-    swipe(app, "NOPE")                                         # thẻ lạ: thanh chắn không mở
-    app.handle_barrier(True)
-    pump(root, lambda: False, timeout=0.3)
-    assert db.passes == []
-
-
-def test_barrier_results_ignored_when_ir_is_disabled(root, tmp_path, monkeypatch):
-    monkeypatch.setenv("IR_ENABLED", "0")
-    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"])
+    assert pump(root, lambda: app._awaiting is None) and app.slots.free == 3
     swipe(app, "CARD1")
+    app.handle_barrier(True)
+    assert pump(root, lambda: len(db.rows) == 1 and app.slots.free == 2)      # trừ chỗ sau khi ghi xong (luồng GUI)
+
+
+def test_swipes_are_ignored_while_waiting_for_the_vehicle(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    swipe(app, "CARD1")
+    calls = rec.calls
+    app.on_card("CARD2")                                               # thẻ khác quẹt giữa chừng
+    assert "Đang chờ xe của thẻ CARD1" in app.status_lbl.cget("text")
+    assert rec.calls == calls and len(rfid.servos) == 1                # không quét ảnh, không mở thanh chắn lần nữa
+    app.handle_barrier(True)
+    assert pump(root, lambda: len(db.rows) == 1) and db.rows[0].card_uid == "CARD1"
+
+
+def test_test_servo_and_trials_are_locked_while_waiting_for_the_vehicle(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    swipe(app, "CARD1")
+    assert pump(root, lambda: str(app.servo_btn.cget("state")) == "disabled")
+    assert str(app.capture_btn.cget("state")) == "disabled"
+    assert app.test_servo() is False and len(rfid.servos) == 1
+    app.handle_barrier(False)
+    assert pump(root, lambda: str(app.servo_btn.cget("state")) == "normal" and app._awaiting is None)
+
+
+def test_barrier_results_without_a_waiting_session_are_ignored(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    swipe(app, "NOPE")                                                 # thẻ lạ: thanh chắn không mở
+    app.handle_barrier(True)
     app.handle_barrier(False)
     pump(root, lambda: False, timeout=0.3)
-    assert db.passes == [] and "CẢNH BÁO" not in app.status_lbl.cget("text")
+    assert db.rows == [] and db.passes == [] and "ĐÃ HỦY" not in app.status_lbl.cget("text")
 
 
-def test_staff_confirmed_entry_records_the_pass_on_that_session(root, tmp_path, monkeypatch):
-    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["2588"])
-    swipe(app, "CARD1")                                        # đọc thiếu số -> nhân viên nhập
+def test_second_result_after_the_first_is_ignored(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    swipe(app, "CARD1")
+    app.handle_barrier(True)
+    app.handle_barrier(False)                                          # kết quả thừa không được hủy phiên đã lưu
+    assert pump(root, lambda: len(db.rows) == 1 and len(db.passes) == 1)
+    pump(root, lambda: False, timeout=0.3)
+    assert len(db.rows) == 1 and db.passes[0][2] == "PASSED"
+
+
+def test_staff_confirmed_entry_waits_for_the_vehicle_too(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["2588"], ir=True)
+    swipe(app, "CARD1")                                                # đọc thiếu số -> nhân viên nhập
+    assert app.pending is not None and rfid.servos == []
+    app.plate_var.set("25881")
+    app.save_entry()                                                   # nhân viên xác nhận: mở thanh chắn, CHƯA lưu
+    assert app.pending is None and app._awaiting is not None and db.rows == []
+    assert rfid.servos == [("in", "OPEN", 3.0)] and rfid.windows == [3.0]
+    app.handle_barrier(True)
+    assert pump(root, lambda: len(db.rows) == 1 and len(db.passes) == 1)
+    assert db.rows[0].plate_number == "25881" and db.passes[0][:3] == (db.rows[0].id, "in", "PASSED")
+
+
+def test_staff_confirmed_entry_is_dropped_when_the_vehicle_does_not_pass(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["2588"], ir=True)
+    swipe(app, "CARD1")
     app.plate_var.set("25881")
     app.save_entry()
-    assert pump(root, lambda: app.pending is None and not app.busy)
+    app.handle_barrier(False)
+    assert pump(root, lambda: app._awaiting is None)
+    assert db.rows == [] and db.passes == [] and "ĐÃ HỦY" in app.status_lbl.cget("text")
+
+
+def test_exit_waits_for_the_vehicle_then_closes_the_session(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_exit(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    outcome = swipe(app, "CARD1")
+    assert outcome.kind is Outcome.EXIT_READY
+    assert db.find_open_session("CARD1") is not None and db.rows[0].time_out is None   # chưa đóng lượt, chưa tính tiền
+    assert rfid.servos == [("out", "OPEN", 3.0)] and rfid.windows == [3.0]
+    assert rfid.sent[-1] == ("out", "MOI XE RA", "QUA THANH CHAN")
+    app.handle_barrier(True)                                           # PASS:OUT
+    assert pump(root, lambda: db.find_open_session("CARD1") is None and len(db.passes) == 1)
+    e = db.rows[0]
+    assert (e.fee, e.match_status, e.gate_out) == (5000, "MATCH", "out")
+    assert db.passes[0][:3] == (e.id, "out", "PASSED")
+    assert rfid.sent[-1] == ("out", "XE RA OK", "TIEN 5.000 D") and "XE RA" in app.status_lbl.cget("text")
+
+
+def test_exit_that_never_leaves_keeps_the_session_open(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_exit(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    app.LCD_CANCEL_SECONDS = 0.3
+    swipe(app, "CARD1")
+    app.handle_barrier(False)                                          # NOPASS:OUT
+    assert pump(root, lambda: app._awaiting is None
+                and rfid.sent[-1] == ("out", "XE CHUA RA BAI", "HAY QUET LAI THE"))
+    assert db.find_open_session("CARD1") is not None and db.passes == []   # lượt vào vẫn mở như trước khi quẹt
+    assert "ĐÃ HỦY" in app.status_lbl.cget("text") and app.plate_var.get() == ""
+    assert pump(root, lambda: rfid.sent[-1] == ("out", "CONG RA", "MOI QUET THE"), timeout=3)
+    assert swipe(app, "CARD1").kind is Outcome.EXIT_READY             # quẹt lại được
+
+
+def test_exit_staff_approval_waits_for_the_vehicle_too(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_exit(root, tmp_path, monkeypatch, ["25889"], ir=True)   # lệch 1 số
+    swipe(app, "CARD1")
+    assert app.pending is not None and rfid.servos == []
+    app.note_var.set("Chu xe co giay to")
+    app.confirm_exit()
+    assert app.pending is None and app._awaiting is not None
+    assert db.find_open_session("CARD1") is not None                   # nhân viên đã duyệt nhưng xe chưa ra
+    assert rfid.servos == [("out", "OPEN", 3.0)] and rfid.windows == [3.0]
     app.handle_barrier(True)
-    assert drain_barrier(root, db)
-    assert db.passes[0][:3] == (db.rows[0].id, "in", "PASSED")
+    assert pump(root, lambda: db.find_open_session("CARD1") is None and len(db.passes) == 1)
+    assert db.rows[0].match_status == "APPROVED_CLOSE" and db.rows[0].override_note == "Chu xe co giay to"
 
 
-def test_real_reader_routes_pass_lines_to_the_right_gate_and_records_them(root, tmp_path, monkeypatch):
-    """Đường đi thật: dòng PASS:IN / NOPASS:OUT từ cổng COM -> ArduinoRfidReader -> đúng cổng -> SQL."""
+def test_exit_staff_approval_is_dropped_when_the_vehicle_does_not_leave(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_exit(root, tmp_path, monkeypatch, ["25889"], ir=True)
+    swipe(app, "CARD1")
+    app.note_var.set("Chu xe co giay to")
+    app.confirm_exit()
+    app.handle_barrier(False)
+    assert pump(root, lambda: app._awaiting is None)
+    assert db.find_open_session("CARD1") is not None and db.passes == []
+    assert app.note_var.get() == ""
+
+
+def test_swipe_is_saved_immediately_when_the_barrier_command_cannot_be_sent(root, tmp_path, monkeypatch):
+    """Không gửi được lệnh mở thanh chắn (Arduino mất kết nối) thì không có gì để chờ: lưu ngay như bản cũ."""
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True, servo_ok=False)
+    swipe(app, "CARD1")
+    assert pump(root, lambda: len(db.rows) == 1 and not app.busy)
+    assert app._awaiting is None and db.passes == [] and "XE VÀO" in app.status_lbl.cget("text")
+
+
+def test_ir_disabled_saves_immediately_and_opens_without_a_pass_window(root, tmp_path, monkeypatch):
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=False)
+    assert swipe(app, "CARD1").kind is Outcome.ENTRY_SAVED
+    assert len(db.rows) == 1 and rfid.servos == [("in", "OPEN", 3.0)] and rfid.windows == [None]
+    app.handle_barrier(False)                                          # chưa gắn cảm biến: bỏ qua PASS / NOPASS
+    pump(root, lambda: False, timeout=0.3)
+    assert len(db.rows) == 1 and db.passes == [] and "ĐÃ HỦY" not in app.status_lbl.cget("text")
+
+
+def test_servo_disabled_saves_immediately_even_with_ir_enabled(root, tmp_path, monkeypatch):
+    monkeypatch.setenv("SERVO_ENABLED", "0")
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    assert swipe(app, "CARD1").kind is Outcome.ENTRY_SAVED
+    assert len(db.rows) == 1 and rfid.servos == []
+
+
+def test_no_answer_from_arduino_cancels_the_session_after_the_safety_timeout(root, tmp_path, monkeypatch):
+    """Arduino mất kết nối / reset giữa chừng nên không bao giờ báo PASS hay NOPASS: không được treo cổng."""
+    monkeypatch.setenv("SERVO_OPEN_SECONDS", "0.5")
+    monkeypatch.setattr(base_gate_app, "PASS_WAIT_MARGIN_SECONDS", 0.2)
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    swipe(app, "CARD1")
+    assert app._awaiting is not None
+    assert pump(root, lambda: app._awaiting is None, timeout=3)
+    assert db.rows == [] and db.passes == [] and "ĐÃ HỦY" in app.status_lbl.cget("text")
+    assert rfid.sent[-1] == ("in", "XE CHUA VAO BAI", "HAY QUET LAI THE")
+
+
+def test_pass_window_follows_ir_pass_timeout_seconds(root, tmp_path, monkeypatch):
+    monkeypatch.setenv("IR_PASS_TIMEOUT_SECONDS", "4.5")
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    swipe(app, "CARD1")
+    assert rfid.windows == [4.5]
+
+
+def test_dual_each_gate_waits_and_cancels_on_its_own(root, tmp_path, monkeypatch):
+    app, db, rec = make_dual(root, tmp_path, monkeypatch, ir=True)
+    rfid = app.entry.rfid = app.exit.rfid = LcdSpy()
+    swipe(app.entry, "CARD1")
+    app.entry.handle_barrier(True)                                     # PASS:IN: xe vào
+    assert pump(root, lambda: len(db.rows) == 1 and len(db.passes) == 1)
+    swipe(app.exit, "CARD1")
+    app.exit.handle_barrier(False)                                     # NOPASS:OUT: xe không ra
+    assert pump(root, lambda: app.exit._awaiting is None)
+    assert db.rows[0].time_out is None and len(db.passes) == 1         # lượt vào còn mở, không ghi thêm gì
+    assert "ĐÃ HỦY" in app.exit.status_lbl.cget("text") and "ĐÃ HỦY" not in app.entry.status_lbl.cget("text")
+    assert [s[0] for s in rfid.servos] == ["in", "out"]
+
+
+def test_real_reader_saves_on_pass_and_cancels_on_nopass(root, tmp_path, monkeypatch):
+    """Đường đi thật: dòng IN:/OUT:/PASS:/NOPASS: từ cổng COM -> ArduinoRfidReader -> đúng cổng -> lưu hoặc hủy."""
     import main
-    app, db, _ = make_dual(root, tmp_path, monkeypatch)
+    app, db, _ = make_dual(root, tmp_path, monkeypatch, ir=True)
     ser = LiveSerialW(["STATUS:IN=1,OUT=1\n", "IN:CARD1\n"])
     reader = main._make_rfid(config.load_settings("in", {}), {"in": app.entry, "out": app.exit},
                              serial_factory=lambda port, baud, timeout: ser)
     app.set_rfid(reader)
-    assert pump(root, lambda: b"SERVOIN:OPEN:3000\n" in ser.sent)
+    assert pump(root, lambda: b"SERVOIN:OPEN:3000:3000\n" in ser.sent)   # mở thanh chắn kèm cửa sổ chờ xe qua
+    assert pump(root, lambda: b"LCDIN:MOI XE VAO|QUA THANH CHAN\n" in ser.sent)
+    assert db.rows == []                                                 # xe chưa qua: chưa lưu
+
     ser.lines.append(b"PASS:IN\n")
-    assert drain_barrier(root, db)
+    assert pump(root, lambda: len(db.rows) == 1 and len(db.passes) == 1)
     assert db.passes[0][:3] == (db.rows[0].id, "in", "PASSED")
+    assert pump(root, lambda: b"LCDIN:XE VAO OK|BIEN SO 25888\n" in ser.sent)
 
     ser.lines.append(b"OUT:CARD1\n")
-    assert pump(root, lambda: b"SERVOOUT:OPEN:3000\n" in ser.sent)
+    assert pump(root, lambda: b"SERVOOUT:OPEN:3000:3000\n" in ser.sent)
+    assert db.rows[0].time_out is None                                   # chưa đóng lượt
     ser.lines.append(b"NOPASS:OUT\n")
-    assert drain_barrier(root, db, 2)
-    assert db.passes[1][1:3] == ("out", "TIMEOUT")
-    assert "CẢNH BÁO" in app.exit.status_lbl.cget("text")
-    assert "CẢNH BÁO" not in app.entry.status_lbl.cget("text")  # chỉ cổng ra bị cảnh báo
+    assert pump(root, lambda: b"LCDOUT:XE CHUA RA BAI|HAY QUET LAI THE\n" in ser.sent)
+    assert pump(root, lambda: "ĐÃ HỦY" in app.exit.status_lbl.cget("text"))
+    assert db.rows[0].time_out is None and len(db.passes) == 1           # lượt vào vẫn mở, không ghi thêm gì
+    assert "ĐÃ HỦY" not in app.entry.status_lbl.cget("text")             # chỉ cổng ra bị hủy phiên
     app.on_close()
 
 
 # ---------------------------------------------------------------- số chỗ (slot) còn trống trên LCD, đầy thì không nhận quẹt thẻ
 def make_entry_slots(root, tmp_path, monkeypatch, script, capacity=3):
+    monkeypatch.setenv("IR_ENABLED", "0")
     monkeypatch.setenv("LCD_IDLE_SECONDS", "0.3")
     db, rec = FakeDb(cards=("CARD1", "CARD2", "CARD3", "CARD4")), ScriptedRecognizer(script)
     svc = EntryService(rec, db, str(tmp_path), sleep=lambda s: None, capacity=capacity)

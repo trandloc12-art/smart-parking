@@ -4,7 +4,8 @@ Quẹt thẻ:
   - Thẻ chưa đăng ký          -> từ chối.
   - Thẻ chưa có lượt vào      -> từ chối (xe chưa vào bãi).
   - Còn lại                   -> quét nhiều khung, bỏ phiếu 5 số, ĐỐI CHIẾU với 5 số lúc vào.
-        khớp hoàn toàn        -> đóng lượt, tính tiền, cho ra.
+        khớp hoàn toàn        -> đóng lượt, tính tiền, cho ra (hoặc, khi defer=True: trả EXIT_READY, chưa đóng —
+                                 giao diện chỉ gọi confirm_exit sau khi cảm biến xác nhận xe đã qua thanh chắn).
         lệch 1 số             -> chờ nhân viên xác nhận (kèm lý do).
         lệch nhiều / không đọc được đủ 5 số -> chặn, nhân viên xử lý (nhập lại số hoặc cho qua kèm lý do).
 Giờ ra tính tại thời điểm QUẸT THẺ, không phải lúc nhân viên bấm xác nhận.
@@ -36,7 +37,7 @@ class ExitService(GateService):
         self.price_per_block = price_per_block
         self.block_minutes = block_minutes
 
-    def handle_card(self, card_uid, get_frame, on_progress=None):
+    def handle_card(self, card_uid, get_frame, on_progress=None, defer=False):
         swiped_at = now()
         if not self.db.is_card_registered(card_uid):
             return CardOutcome(Outcome.UNREGISTERED, card_uid)
@@ -55,6 +56,8 @@ class ExitService(GateService):
 
         match = compare_numbers(session.plate_number, scan.winner)
         if match.level is MatchLevel.EXACT:
+            if defer:       # chờ xe đi qua thanh chắn rồi mới đóng lượt (xe không ra thì lượt vẫn mở)
+                return CardOutcome(Outcome.EXIT_READY, card_uid, scan, session, match, swiped_at=swiped_at)
             event = self._close(session, scan.winner, scan, swiped_at, MatchLevel.EXACT, "")
             return CardOutcome(Outcome.EXIT_DONE, card_uid, scan, event, match, swiped_at=swiped_at)
 

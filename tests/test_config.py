@@ -316,3 +316,42 @@ def test_parking_capacity_default_is_in_env_example(tmp_path):
     env, _ = config.gate_env("in", str(tmp_path), environ={})
     assert env["PARKING_CAPACITY"] == "3"
     assert config.load_settings("in", env).parking_capacity == 3
+
+
+def test_ir_pass_timeout_default_and_override(monkeypatch):
+    monkeypatch.delenv("IR_PASS_TIMEOUT_SECONDS", raising=False)
+    assert config.load_settings("in").ir_pass_timeout_seconds == 3.0        # mặc định 3 giây
+    monkeypatch.setenv("IR_PASS_TIMEOUT_SECONDS", "4.5")
+    assert config.load_settings("out").ir_pass_timeout_seconds == 4.5
+    assert config.load_settings("in", {"IR_PASS_TIMEOUT_SECONDS": "6"}).ir_pass_timeout_seconds == 6.0
+
+
+@pytest.mark.parametrize("value", ["0", "0.2", "31", "-1"])
+def test_ir_pass_timeout_out_of_range_is_rejected(monkeypatch, value):
+    monkeypatch.setenv("IR_PASS_TIMEOUT_SECONDS", value)
+    with pytest.raises(ValueError, match="IR_PASS_TIMEOUT_SECONDS"):
+        config.load_settings("in")
+
+
+def test_ir_pass_timeout_must_be_a_number(monkeypatch):
+    monkeypatch.setenv("IR_PASS_TIMEOUT_SECONDS", "ba")
+    with pytest.raises(ValueError, match="IR_PASS_TIMEOUT_SECONDS phải là số"):
+        config.load_settings("in")
+
+
+def test_ir_pass_timeout_default_is_in_env_example(tmp_path):
+    import os
+    example = open(os.path.join(config.BASE_DIR, ".env.example"), encoding="utf-8").read()
+    assert "IR_PASS_TIMEOUT_SECONDS=3" in example
+    (tmp_path / ".env").write_text(example, encoding="utf-8")
+    env, _ = config.gate_env("in", str(tmp_path), environ={})
+    assert config.load_settings("in", env).ir_pass_timeout_seconds == 3.0
+
+
+def test_ir_pass_timeout_can_differ_per_gate(tmp_path):
+    (tmp_path / ".env").write_text("IR_PASS_TIMEOUT_SECONDS=3\n", encoding="utf-8")
+    (tmp_path / ".env.out").write_text("CAMERA_INDEX=1\nIR_PASS_TIMEOUT_SECONDS=5\n", encoding="utf-8")
+    env_in, _ = config.gate_env("in", str(tmp_path), environ={})
+    env_out, _ = config.gate_env("out", str(tmp_path), environ={})
+    assert config.load_settings("in", env_in).ir_pass_timeout_seconds == 3.0
+    assert config.load_settings("out", env_out).ir_pass_timeout_seconds == 5.0

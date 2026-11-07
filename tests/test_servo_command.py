@@ -18,8 +18,9 @@ DRIVER = r"""
 #include <iostream>
 #include <string>
 const unsigned long SERVO_HOLD_MS = 3000;
+const unsigned long PASS_WINDOW_MS = 3000;
 struct Barrier {                      // chỉ ghi lại lời gọi; setAngles kẹp 180 giống bản thật
-  void open(unsigned long h) { std::printf("open %%lu\n", h); }
+  void open(unsigned long h, unsigned long w) { std::printf("open %%lu %%lu\n", h, w); }
   void close() { std::printf("close\n"); }
   void setAngles(uint8_t c, uint8_t o) { std::printf("angles %%d %%d\n", c > 180 ? 180 : c, o > 180 ? 180 : o); }
 };
@@ -87,4 +88,15 @@ def test_bad_angle_commands_are_ignored_entirely(servo_cmd, cmd):
 
 def test_open_and_close_commands_still_work(servo_cmd):
     assert servo_cmd("OPEN", "OPEN:2500", "OPEN:abc", "OPEN:0", "CLOSE", "NOPE") == [
-        ["open 3000"], ["open 2500"], ["open 3000"], ["open 3000"], ["close"], []]
+        ["open 3000 3000"], ["open 2500 3000"], ["open 3000 3000"], ["open 3000 3000"], ["close"], []]
+
+
+def test_open_command_carries_the_pass_window(servo_cmd):
+    """OPEN:<giữ mở ms>:<cửa sổ chờ xe qua ms> — phần thứ ba là hạn chót để cảm biến sau thấy xe."""
+    assert servo_cmd("OPEN:3000:4500", "OPEN:2500:1000", "OPEN:3000:0", "OPEN:3000:abc", "OPEN:3000:") == [
+        ["open 3000 4500"], ["open 2500 1000"], ["open 3000 3000"], ["open 3000 3000"], ["open 3000 3000"]]
+
+
+def test_bad_hold_does_not_break_the_pass_window_default(servo_cmd):
+    # "OPEN:abc:4000": số giữ mở hỏng -> dùng mặc định; không đoán cửa sổ chờ từ phần sau
+    assert servo_cmd("OPEN:abc:4000") == [["open 3000 3000"]]

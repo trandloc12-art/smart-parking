@@ -8,8 +8,8 @@ from services.exit_service import MIN_NOTE_LEN
 from services.gate_service import NoteRequired, Outcome, ReviewReason
 from storage.errors import SessionAlreadyClosed
 from ui.base_gate_app import (
-    COLOR_ERR, COLOR_OK, COLOR_WARN, BaseGateApp, fmt_duration, fmt_money, fmt_time, plate_position_offset,
-    to_photo,
+    COLOR_ERR, COLOR_OK, COLOR_WARN, BaseGateApp, PassTicket, fmt_duration, fmt_money, fmt_time,
+    plate_position_offset, to_photo,
 )
 
 
@@ -39,6 +39,8 @@ class ExitApp(BaseGateApp):
     LCD_MISMATCH = ("BIEN KHONG KHOP", "GOI NHAN VIEN")
     LCD_DENIED = ("XE CHUA DUOC RA", "GOI NHAN VIEN")
     LCD_SESSION_CLOSED = ("LUOT DA DONG", "GOI NHAN VIEN")
+    LCD_WAIT_PASS = ("MOI XE RA", "QUA THANH CHAN")
+    LCD_PASS_CANCELLED = ("XE CHUA RA BAI", "HAY QUET LAI THE")
 
     # ---------- Bố cục ----------
     def build_result_panel(self, parent):
@@ -145,16 +147,19 @@ class ExitApp(BaseGateApp):
         self.show_image(scan.image if scan.image is not None else self.last_frame)
         self.show_entry_image(self.service.load_image(session.image_in))
 
-        if outcome.kind is Outcome.EXIT_DONE:
+        if outcome.kind in (Outcome.EXIT_DONE, Outcome.EXIT_READY):
             self.pending = None
             self.plate_var.set(scan.winner)
             self.plate_entry.configure(fg=COLOR_OK)
             self.match_lbl.configure(text=f"KHỚP biển lúc vào ({session.plate_number})", fg=COLOR_OK)
-            self.upsert_row(session)
-            self.lcd(lcd_exit_ok(session.fee), revert=True)
-            self.open_barrier(session.id)   # biển khớp, đã đóng lượt -> mở thanh chắn cổng ra
-            self.slots.adjust(+1)           # xe ra: trả lại một chỗ (sau lcd: màn "XE RA OK" không bị đè)
-            self.set_status(self._exit_text("XE RA", session), COLOR_OK)
+            if outcome.kind is Outcome.EXIT_DONE:       # chưa có cảm biến / servo: đã đóng lượt như cũ
+                self.finish_exit(session)
+                return
+            swiped_at = outcome.swiped_at               # biển khớp nhưng CHƯA đóng lượt: chờ xe đi qua thanh chắn
+            self.wait_for_pass(PassTicket(
+                uid, scan.winner,
+                commit=lambda: self.service.confirm_exit(uid, scan.winner, scan, swiped_at),
+                on_committed=lambda e: self.finish_exit(e, open_barrier=False)))
             return
 
         # EXIT_REVIEW
@@ -188,16 +193,36 @@ class ExitApp(BaseGateApp):
         number = self.plate_var.get()
         if o is None or len(number) != NUMBER_LEN:
             return
-        self.set_status("Đang ghi giờ ra...", COLOR_WARN)
         note = self.note_var.get()
-        self._bg(lambda: self.service.confirm_exit(o.card_uid, number, o.scan, o.swiped_at, note),
-                 self.on_exit_confirmed)
+        commit = lambda: self.service.confirm_exit(o.card_uid, number, o.scan, o.swiped_at, note)  # noqa: E731
+        if self.pass_gated():           # nhân viên đã duyệt: mở thanh chắn, xe đi qua rồi mới đóng lượt
+            self.pending = None
+            self.wait_for_pass(PassTicket(o.card_uid, number, commit=commit,
+                                          on_committed=lambda e: self.on_exit_confirmed(e, open_barrier=False)))
+            self.update_action_buttons()
+            return
+        self.set_status("Đang ghi giờ ra...", COLOR_WARN)
+        self._bg(commit, self.on_exit_confirmed)
 
-    def on_exit_confirmed(self, event):
+    def finish_exit(self, session, open_barrier=True):
+        """Đã đóng lượt (biển khớp hoàn toàn). open_barrier=False khi thanh chắn đã mở từ trước."""
+        self.upsert_row(session)
+        self.lcd(lcd_exit_ok(session.fee), revert=True)
+        if open_barrier:
+            self.open_barrier()         # chưa có cảm biến: đóng lượt xong thì mở thanh chắn cổng ra
+        self.slots.adjust(+1)           # xe ra: trả lại một chỗ (sau lcd: màn "XE RA OK" không bị đè)
+        self.set_status(self._exit_text("XE RA", session), COLOR_OK)
+
+    def on_pass_cancelled(self, ticket):
+        self.note_var.set("")
+        self.match_lbl.configure(text="")
+
+    def on_exit_confirmed(self, event, open_barrier=True):
         self.pending = None
         self.upsert_row(event)
         self.lcd(lcd_exit_ok(event.fee), revert=True)
-        self.open_barrier(event.id)     # nhân viên đã duyệt cho xe ra -> mở thanh chắn cổng ra
+        if open_barrier:
+            self.open_barrier()         # chưa có cảm biến: nhân viên duyệt xong thì mở thanh chắn cổng ra
         self.slots.adjust(+1)
         self.update_action_buttons()
         exact = event.match_status == "MATCH"

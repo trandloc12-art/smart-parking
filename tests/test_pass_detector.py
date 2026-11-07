@@ -85,3 +85,107 @@ def test_idle_sensors_never_report(detector):
 def test_reports_once_and_can_track_the_next_vehicle(detector):
     one = [(1, 0), (1, 1), (0, 1), (0, 0)]
     assert detector(one + [(0, 0), (0, 0)] + one) == "...P" + ".." + "...P"
+
+
+# ======================================================================================================
+# PassWindow + PassDetector chạy cùng nhau đúng thứ tự như Barrier::update:
+#   1) detector.update  -> 'P' (xe đã qua hẳn: hạ thanh chắn + PASS)
+#   2) window.expired   -> 'X' (xe ở cảm biến trước mà quá hạn chưa tới cảm biến sau: hạ thanh chắn + NOPASS)
+# Sau P / X thanh chắn đã đóng nên các dòng tiếp theo không còn theo dõi ('-').
+# ======================================================================================================
+WINDOW_DRIVER = r"""
+#include <cstdio>
+#include <iostream>
+#include <string>
+%s
+%s
+int main() {
+  PassDetector d;
+  PassWindow w;
+  const unsigned long WINDOW = %d;
+  bool open = true;
+  unsigned long t;
+  std::string b, a;
+  while (std::cin >> t >> b >> a) {
+    if (!open) { std::putchar('-'); continue; }
+    if (d.update(b == "1", a == "1")) { open = false; std::putchar('P'); continue; }
+    if (w.expired(d.seenBefore(), d.seenAfter(), t, WINDOW)) { open = false; std::putchar('X'); continue; }
+    std::putchar('.');
+  }
+  std::putchar('\n');
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def barrier_sim(tmp_path_factory):
+    gxx = shutil.which("g++")
+    if gxx is None:
+        pytest.skip("không có g++ để biên dịch thử PassWindow")
+    det = INO[INO.index("// BEGIN PassDetector"):INO.index("// END PassDetector")]
+    win = INO[INO.index("// BEGIN PassWindow"):INO.index("// END PassWindow")]
+    d = tmp_path_factory.mktemp("pass_window")
+    (d / "main.cpp").write_text(WINDOW_DRIVER % (det, win, 3000), encoding="utf-8")
+    subprocess.run([gxx, "-std=c++11", "-Wall", "-Werror", str(d / "main.cpp"), "-o", str(d / "run")], check=True)
+
+    def run(steps):
+        """steps: (thời điểm ms, trước, sau) với 1 = bị chắn. Trả về 'P' = xe qua, 'X' = hủy (NOPASS), '.' = chưa gì,
+        '-' = thanh chắn đã đóng."""
+        text = "\n".join(f"{t} {b} {a}" for t, b, a in steps)
+        out = subprocess.run([str(d / "run")], input=text, capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+
+    return run
+
+
+def test_vehicle_waits_at_front_sensor_and_never_reaches_rear_is_cancelled_after_the_window(barrier_sim):
+    steps = [(0, 1, 0), (1000, 1, 0), (2999, 1, 0), (3000, 1, 0), (3500, 1, 0)]
+    assert barrier_sim(steps) == "...X-"            # đúng 3000 ms kể từ lúc thấy xe ở cảm biến trước, không sớm hơn
+
+
+def test_rear_sensor_just_in_time_cancels_nothing(barrier_sim):
+    # cảm biến sau thấy xe ở mốc 2900 (< 3000) -> không hủy; xe đi hết thì PASS
+    steps = [(0, 1, 0), (2900, 1, 1), (3000, 1, 1), (4000, 0, 1), (5000, 0, 0)]
+    assert barrier_sim(steps) == "....P"
+
+
+def test_rear_sensor_at_the_same_tick_as_the_deadline_wins(barrier_sim):
+    # cùng một vòng lặp: cảm biến sau vừa thấy xe đúng mốc hết hạn -> coi là kịp (detector chạy trước window)
+    assert barrier_sim([(0, 1, 0), (3000, 1, 1)]) == ".."
+
+
+def test_window_counts_from_the_moment_the_front_sensor_sees_the_vehicle(barrier_sim):
+    # thanh chắn mở từ t=0 nhưng xe tới cảm biến trước lúc t=1000 -> hạn chót là 4000, không phải 3000
+    steps = [(0, 0, 0), (1000, 1, 0), (3000, 1, 0), (3999, 1, 0), (4000, 1, 0)]
+    assert barrier_sim(steps) == "....X"
+
+
+def test_no_vehicle_at_the_front_sensor_never_triggers_the_window(barrier_sim):
+    assert barrier_sim([(t, 0, 0) for t in (0, 3000, 6000, 20000)]) == "...."   # hạn chót chung của lần mở lo việc này
+
+
+def test_vehicle_that_backs_out_after_touching_the_rear_sensor_is_cancelled(barrier_sim):
+    steps = [(0, 1, 0), (1000, 1, 1), (1500, 1, 0), (2999, 1, 0), (3000, 1, 0)]
+    assert barrier_sim(steps) == "....X"
+
+
+def test_short_vehicle_clearing_the_front_sensor_before_reaching_the_rear_still_passes(barrier_sim):
+    # xe ngắn: trước bật -> trước tắt -> sau bật -> sau tắt, tất cả trong cửa sổ
+    assert barrier_sim([(0, 1, 0), (500, 0, 0), (1000, 0, 1), (1500, 0, 0)]) == "...P"
+
+
+def test_front_sensor_off_then_rear_never_seen_is_still_cancelled(barrier_sim):
+    # xe thấy ở cảm biến trước rồi biến mất (lùi đi) mà cảm biến sau không bao giờ thấy -> hủy khi hết hạn
+    assert barrier_sim([(0, 1, 0), (500, 0, 0), (2999, 0, 0), (3000, 0, 0)]) == "...X"
+
+
+def test_sensors_in_the_requested_order_rear_on_then_front_off_then_rear_off_is_a_pass(barrier_sim):
+    # đúng chuỗi bạn mô tả: cảm biến 1 -> cảm biến 2 chắn -> cảm biến 1 tắt -> cảm biến 2 tắt = đã qua
+    steps = [(0, 0, 0), (200, 1, 0), (900, 1, 1), (1500, 0, 1), (2000, 0, 0)]
+    assert barrier_sim(steps) == "....P"
+
+
+def test_front_off_before_rear_off_is_not_yet_a_pass(barrier_sim):
+    # cảm biến sau còn chắn -> chưa hạ thanh chắn (xe còn nằm dưới thanh chắn)
+    steps = [(0, 1, 0), (900, 1, 1), (1500, 0, 1), (2500, 0, 1)]
+    assert barrier_sim(steps) == "...."

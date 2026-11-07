@@ -6,7 +6,7 @@ from core.plate_voting import NUMBER_LEN
 from services.gate_service import Outcome
 from storage.errors import AlreadyInside, ParkingFull
 from ui.base_gate_app import (   # noqa: F401  (plate_position_offset được import lại để nơi khác dùng qua ui.entry_app)
-    COLOR_ERR, COLOR_OK, COLOR_WARN, LCD_FULL, BaseGateApp, fmt_time, plate_position_offset,
+    COLOR_ERR, COLOR_OK, COLOR_WARN, LCD_FULL, BaseGateApp, PassTicket, fmt_time, plate_position_offset,
 )
 
 
@@ -19,6 +19,8 @@ class EntryApp(BaseGateApp):
     LCD_UNREGISTERED = ("THE CHUA DANG KY", "KHONG CHO VAO")
     LCD_ALREADY_INSIDE = ("THE DA VAO BAI", "KHONG CHO VAO")
     LCD_NEED_STAFF = ("CHO NHAN VIEN", "XAC NHAN BIEN SO")
+    LCD_WAIT_PASS = ("MOI XE VAO", "QUA THANH CHAN")
+    LCD_PASS_CANCELLED = ("XE CHUA VAO BAI", "HAY QUET LAI THE")
 
     OFFSET_TEXT = (f"⚠ BIỂN SỐ LỆCH VỊ TRÍ\n"
                    f"Chưa đọc đủ {NUMBER_LEN} số. Hãy chỉnh xe vào đúng vị trí trước camera rồi quẹt thẻ lại.")
@@ -86,19 +88,23 @@ class EntryApp(BaseGateApp):
         scan, uid = outcome.scan, outcome.card_uid
         self.show_image(scan.image if scan.image is not None else self.last_frame)
 
-        if outcome.kind is Outcome.ENTRY_SAVED:
-            self.show_offset_warning(False)
-            e = outcome.event
+        if outcome.kind is Outcome.ENTRY_SAVED:        # chưa có cảm biến / servo: lưu ngay như cũ
             self.pending = None
             self.plate_var.set(scan.winner)
             self.plate_entry.configure(fg=COLOR_OK)
-            self.upsert_row(e)
-            self.lcd_saved(scan.winner)
-            self.open_barrier(e.id)     # tự lưu xong -> mở thanh chắn cổng vào
-            self.slots.adjust(-1)       # sau lcd_saved: màn "XE VAO OK" không bị đè, lần về màn hình chờ sau dùng số mới
-            self.set_status(f"XE VÀO | thẻ {uid} | {NUMBER_LEN} số {scan.winner} "
-                            f"({scan.votes}/{scan.scanned} ảnh) | biển {scan.plate_full or '?'} | "
-                            f"{fmt_time(e.time_in)}", COLOR_OK)
+            self.on_saved(outcome.event, scan=scan)
+            return
+
+        if outcome.kind is Outcome.ENTRY_READY:        # đã chốt 5 số nhưng CHƯA lưu: chờ xe đi qua thanh chắn
+            self.show_offset_warning(False)
+            self.pending = None
+            self.plate_var.set(scan.winner)
+            self.plate_entry.configure(fg=COLOR_OK)
+            swiped_at = outcome.swiped_at
+            self.wait_for_pass(PassTicket(
+                uid, scan.winner,
+                commit=lambda: self.service.save_entry(uid, scan.winner, scan, swiped_at),
+                on_committed=lambda e: self.on_saved(e, open_barrier=False, scan=scan)))
             return
 
         # ENTRY_PENDING: chưa chốt được -> nhân viên nhập/xác nhận
@@ -126,20 +132,33 @@ class EntryApp(BaseGateApp):
         number = self.plate_var.get()
         if o is None or len(number) != NUMBER_LEN:
             return
+        commit = lambda: self.service.save_entry(o.card_uid, number, o.scan, o.swiped_at)  # noqa: E731
+        if self.pass_gated():           # nhân viên đã xác nhận: mở thanh chắn, xe đi qua rồi mới lưu
+            self.pending = None
+            self.show_offset_warning(False)
+            self.wait_for_pass(PassTicket(o.card_uid, number, commit=commit,
+                                          on_committed=lambda e: self.on_saved(e, open_barrier=False)))
+            self.update_action_buttons()
+            return
         self.set_status("Đang lưu...", COLOR_WARN)
-        self._bg(lambda: self.service.save_entry(o.card_uid, number, o.scan, o.swiped_at),
-                 self.on_saved)
+        self._bg(commit, self.on_saved)
 
-    def on_saved(self, event):
+    def on_saved(self, event, open_barrier=True, scan=None):
+        """Đã lưu xong lượt vào. open_barrier=False khi thanh chắn đã mở từ trước (đã chờ cảm biến xác nhận xe qua)."""
         self.pending = None
         self.show_offset_warning(False)
         self.lcd_saved(event.plate_number)
-        self.open_barrier(event.id)     # nhân viên đã xác nhận cho xe vào -> mở thanh chắn cổng vào
-        self.slots.adjust(-1)
+        if open_barrier:
+            self.open_barrier()         # chưa có cảm biến: lưu xong thì mở thanh chắn cổng vào
+        self.slots.adjust(-1)           # sau lcd_saved: màn "XE VAO OK" không bị đè, lần về màn hình chờ sau dùng số mới
         self.upsert_row(event)
         self.update_action_buttons()
-        self.set_status(f"XE VÀO | thẻ {event.card_uid} | {NUMBER_LEN} số {event.plate_number} | "
+        extra = (f" ({scan.votes}/{scan.scanned} ảnh) | biển {scan.plate_full or '?'}" if scan is not None else "")
+        self.set_status(f"XE VÀO | thẻ {event.card_uid} | {NUMBER_LEN} số {event.plate_number}{extra} | "
                         f"{fmt_time(event.time_in)}", COLOR_OK)
+
+    def on_pass_cancelled(self, ticket):
+        self.show_offset_warning(False)
 
     def cancel_pending(self):
         self.pending = None

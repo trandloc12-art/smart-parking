@@ -11,6 +11,8 @@ Hai cách dùng:
 import queue
 import threading
 import tkinter as tk
+from dataclasses import dataclass
+from typing import Any, Callable
 from tkinter import filedialog, messagebox, ttk
 
 import cv2
@@ -29,6 +31,19 @@ COLOR_WARN = "#b35900"
 COLOR_ERR = "#c62828"
 HISTORY_REFRESH_MS = 5000       # làm mới lịch sử để thấy cả lượt do cổng kia ghi
 CAMERA_CHECK_MS = 1000          # kiểm tra camera còn có hình không
+
+PASS_WAIT_MARGIN_SECONDS = 15.0  # chờ thêm ngần này giây (ngoài SERVO_OPEN_SECONDS) mà Arduino vẫn im thì coi như xe KHÔNG qua
+
+
+@dataclass
+class PassTicket:
+    """Một phiên quẹt thẻ đã được chấp nhận nhưng CHƯA ghi vào SQL Server: chờ cảm biến hồng ngoại xác nhận xe đã đi
+    qua thanh chắn. Xe qua -> commit() ghi vào CSDL; xe không qua -> bỏ phiên, không lưu gì."""
+    card_uid: str
+    number: str                         # 5 số biển (để hiển thị)
+    commit: Callable[[], Any]           # chạy ở luồng nền: ghi vào SQL Server, trả về AccessEvent
+    on_committed: Callable[[Any], None] # chạy ở luồng GUI sau khi ghi xong
+
 
 MATCH_TEXT = {"MATCH": "Khớp", "APPROVED_CLOSE": "Lệch 1 số (đã duyệt)",
               "APPROVED_MISMATCH": "Không khớp (đã duyệt)"}
@@ -127,6 +142,9 @@ class BaseGateApp:
     LCD_NOT_INSIDE = ("THE CHUA VAO BAI", "")
     LCD_OFFSET = ("XE LECH VI TRI", "HAY CHINH XE")        # không đọc được số nào: xe lệch vị trí so với camera
     LCD_NEED_STAFF = ("CHO NHAN VIEN", "KIEM TRA BIEN SO")  # có ứng viên đủ 5 số nhưng chưa chốt được
+    LCD_WAIT_PASS = ("MOI XE DI QUA", "THANH CHAN")         # đã mở thanh chắn, chờ cảm biến báo xe đã qua
+    LCD_PASS_CANCELLED = ("XE CHUA QUA", "HAY QUET LAI THE")  # xe không đi qua: hủy phiên quẹt thẻ
+    LCD_CANCEL_SECONDS = 2.0        # giây: thông báo hủy hiện ngần này rồi LCD về màn hình chờ
 
     def __init__(self, root, service, camera, cfg, container=None, history=None, devices=None, slots=None):
         """root: cửa sổ Tk (dùng cho after/bind). container: khung để dựng giao diện vào
@@ -159,7 +177,8 @@ class BaseGateApp:
         self._history_loading = False
         self._closing = False
         self._lcd_job = None        # hẹn giờ đưa LCD về "MOI QUET THE" (xem lcd)
-        self._barrier_session = None    # id lượt gửi xe vừa được mở thanh chắn, chờ cảm biến báo xe đã qua chưa
+        self._awaiting = None           # PassTicket: phiên quẹt thẻ đã mở thanh chắn, chờ cảm biến báo xe đã qua (chưa lưu)
+        self._pass_job = None           # hẹn giờ dự phòng khi Arduino không báo PASS / NOPASS
         self._servo_btn_state = "normal"    # trạng thái hiện tại của nút Test servo (xem sync_servo_button)
         self.slots = slots if slots is not None else SlotCounter(getattr(service, "capacity", None))
         self.slots.subscribe(self.on_slots_changed)
@@ -182,7 +201,7 @@ class BaseGateApp:
         if start:
             reader.start()
 
-    def lcd(self, message, revert=False):
+    def lcd(self, message, revert=False, revert_seconds=None):
         """Hiển thị (dòng 1, dòng 2) lên màn LCD của CỔNG NÀY (cfg.gate: 'in' / 'out') qua Arduino.
         Chưa có Arduino, Arduino không có LCD hay đang mất kết nối thì bỏ qua: LCD chỉ là phần phụ,
         không bao giờ được làm hỏng việc xử lý thẻ.
@@ -198,7 +217,7 @@ class BaseGateApp:
             except Exception:
                 pass
         if revert:
-            self._schedule_lcd_revert()
+            self._schedule_lcd_revert(revert_seconds)
 
     # ---------- Số chỗ (slot) còn trống ----------
     def idle_message(self):
@@ -220,7 +239,8 @@ class BaseGateApp:
     def on_slots_changed(self):
         """Số chỗ trống vừa đổi (xe vào / ra ở cổng nào cũng được). Chỉ đổi LCD khi nó đang ở màn hình chờ;
         thông báo khác (xe vào OK, chờ nhân viên...) giữ nguyên, lần về màn hình chờ sau sẽ dùng số mới."""
-        if self._idle_shown and not self._closing and not self.busy and self.pending is None:
+        if (self._idle_shown and not self._closing and not self.busy and self.pending is None
+                and self._awaiting is None):
             self.show_idle()
 
     def refresh_slots(self):
@@ -244,33 +264,101 @@ class BaseGateApp:
         để chặn khi bãi đầy."""
         return False
 
-    def open_barrier(self, session_id=None):
+    def pass_gated(self):
+        """True khi việc GHI (lưu xe vào / đóng lượt ra) phải CHỜ cảm biến hồng ngoại xác nhận xe đã đi qua thanh chắn.
+        Cần cảm biến bật (IR_ENABLED), servo bật (SERVO_ENABLED) và có Arduino để gửi lệnh; thiếu một trong ba thì
+        giữ cách cũ: ghi ngay khi quẹt thẻ thành công."""
+        return (bool(getattr(self.cfg, "ir_enabled", True)) and bool(getattr(self.cfg, "servo_enabled", True))
+                and callable(getattr(self.rfid, "send_servo", None)))
+
+    def open_barrier(self, wait_pass=False):
         """Mở thanh chắn (servo) của CỔNG NÀY khi xe được chấp nhận (quẹt thẻ thành công).
         Arduino tự đóng lại sau cfg.servo_open_seconds giây (hoặc ngay khi cảm biến thấy xe đã qua). Giống LCD:
         chưa có Arduino, mất kết nối hoặc tắt bằng SERVO_ENABLED=0 thì bỏ qua, không bao giờ làm hỏng việc xử lý thẻ.
 
-        session_id: lượt gửi xe của xe này; kết quả cảm biến (đã qua / hết giờ) sẽ được ghi vào lượt đó.
-        Trả về True nếu đã gửi lệnh."""
+        wait_pass=True: kèm cửa sổ chờ xe qua (cfg.ir_pass_timeout_seconds): xe đã ở cảm biến trước mà quá ngần đó
+        chưa tới cảm biến sau thì Arduino hủy (hạ thanh chắn + NOPASS). Trả về True nếu đã gửi lệnh."""
         if not getattr(self.cfg, "servo_enabled", True):
             return False
         send = getattr(self.rfid, "send_servo", None)
         if send is None:
             return False
         try:
-            sent = bool(send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds))
+            if wait_pass:
+                sent = send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds, self.cfg.ir_pass_timeout_seconds)
+            else:
+                sent = send(self.cfg.gate, "OPEN", self.cfg.servo_open_seconds)
         except Exception:
             return False
-        if sent:
-            self._barrier_session = session_id
-        return sent
+        return bool(sent)
+
+    # ---------- Chờ xe đi qua thanh chắn rồi mới lưu ----------
+    def wait_for_pass(self, ticket):
+        """Mở thanh chắn rồi CHỜ cảm biến báo xe đã qua hẳn: PASS -> ghi vào SQL Server (ticket.commit); NOPASS (xe ở
+        cảm biến trước mà không tới cảm biến sau trong IR_PASS_TIMEOUT_SECONDS, hoặc hết giờ mở thanh chắn) -> HỦY phiên,
+        không lưu gì. Không gửi được lệnh mở thanh chắn thì không có gì để chờ: ghi ngay như khi chưa có cảm biến."""
+        self.lcd(self.LCD_WAIT_PASS)
+        if not self.open_barrier(wait_pass=True):
+            self._commit_ticket(ticket, None)
+            return
+        self._awaiting = ticket
+        self._schedule_pass_timeout()
+        self.set_status(f"Thẻ {ticket.card_uid}: biển {ticket.number}. Mời xe đi qua thanh chắn. CHƯA lưu vào hệ thống; "
+                        "xe không đi qua thì phiên quẹt thẻ này sẽ bị hủy.", COLOR_WARN)
+        self.refresh_buttons()
+
+    def _schedule_pass_timeout(self):
+        self._cancel_pass_timer()
+        ms = int((self.cfg.servo_open_seconds + PASS_WAIT_MARGIN_SECONDS) * 1000)
+        try:
+            self._pass_job = self.root.after(ms, self._pass_timed_out)
+        except Exception:
+            self._pass_job = None
+
+    def _cancel_pass_timer(self):
+        job, self._pass_job = self._pass_job, None
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+
+    def _pass_timed_out(self):
+        """Arduino không báo gì (mất kết nối / reset giữa chừng): coi như xe KHÔNG qua, hủy phiên."""
+        self._pass_job = None
+        if self._awaiting is not None and not self._closing:
+            self.on_barrier_result(False, current_time())
+
+    def _commit_ticket(self, ticket, at):
+        """Ghi phiên vào SQL Server (ở luồng nền). at: lúc cảm biến báo xe qua (None = không có cảm biến để ghi)."""
+        def done(event):
+            ticket.on_committed(event)
+            if at is not None:
+                self._bg(lambda: self.service.record_pass(event.id, True, at), lambda _: None,
+                         busy=False, on_error=self.on_pass_record_error)
+        self._bg(ticket.commit, done)
+
+    def _cancel_ticket(self, ticket):
+        """Xe không đi qua thanh chắn: bỏ phiên quẹt thẻ, KHÔNG ghi gì (không lượt vào/ra, không biển số, không ảnh)."""
+        self.lcd(self.LCD_PASS_CANCELLED, revert=True, revert_seconds=self.LCD_CANCEL_SECONDS)
+        self.plate_var.set("")
+        self.set_card(None)
+        self.on_pass_cancelled(ticket)
+        self.set_status(f"ĐÃ HỦY phiên quẹt thẻ {ticket.card_uid} (biển {ticket.number}): xe không đi qua thanh chắn "
+                        "trong thời gian chờ. Không lưu gì vào hệ thống. Hãy quẹt lại thẻ khi xe vào đúng vị trí.",
+                        COLOR_WARN)
+        self.refresh_buttons()
+
+    def on_pass_cancelled(self, ticket):
+        """Hook: dọn phần giao diện riêng của cổng khi phiên bị hủy."""
 
     def test_servo(self):
         """Nút "Test servo": mở thanh chắn của CỔNG NÀY để kiểm tra servo / góc quay, rồi Arduino tự đóng lại sau
         cfg.servo_open_seconds giây. Không gắn với lượt gửi xe nào nên kết quả cảm biến (PASS / NOPASS) của lần thử
         bị bỏ qua, không ghi vào SQL Server. Trả về True nếu đã gửi lệnh."""
         label = self.cfg.label
-        if self.busy or self.pending is not None:
-            return False                # đang xử lý một lần quẹt thẻ / chờ nhân viên: không mở thanh chắn lúc này
+        if self.busy or self.pending is not None or self._awaiting is not None:
+            return False                # đang xử lý một lần quẹt thẻ / chờ nhân viên / chờ xe qua: không mở thanh chắn lúc này
         if not getattr(self.cfg, "servo_enabled", True):
             self.set_status(f"Servo {label} đang tắt (SERVO_ENABLED=0 trong .env). Đặt thành 1 rồi chạy lại để thử.",
                             COLOR_WARN)
@@ -297,18 +385,18 @@ class BaseGateApp:
         self.q.put(lambda: self.on_barrier_result(passed, at))
 
     def on_barrier_result(self, passed, at):
-        """Ghi kết quả vào SQL Server (không hiển thị). Riêng trường hợp bất thường (hết giờ mà xe chưa qua) có
-        một dòng cảnh báo ở thanh trạng thái của cổng, nếu lúc đó không có việc khác đang hiện."""
+        """Kết quả lần mở thanh chắn của phiên đang chờ: xe qua hẳn -> ghi vào SQL Server; không qua -> hủy phiên.
+        Không có phiên nào đang chờ (VD nút Test servo, hoặc lệnh gõ tay) thì bỏ qua."""
         if not getattr(self.cfg, "ir_enabled", True):
             return                      # chưa gắn cảm biến hồng ngoại
-        session_id, self._barrier_session = self._barrier_session, None
-        if session_id is None:
-            return                      # thanh chắn không do chương trình mở (VD gõ lệnh tay): không có lượt để ghi
-        self._bg(lambda: self.service.record_pass(session_id, passed, at), lambda _: None,
-                 busy=False, on_error=self.on_pass_record_error)
-        if not passed and self.pending is None and not self.busy:
-            self.set_status(f"CẢNH BÁO {self.cfg.label}: hết giờ mở thanh chắn mà xe chưa đi qua "
-                            "(thanh chắn đã hạ).", COLOR_WARN)
+        ticket, self._awaiting = self._awaiting, None
+        if ticket is None:
+            return
+        self._cancel_pass_timer()
+        if passed:
+            self._commit_ticket(ticket, at)
+        else:
+            self._cancel_ticket(ticket)
 
     def on_pass_record_error(self, exc):
         self.devices.set(DB, False, f"SQL Server: LỖI ({str(exc)[:60]})")
@@ -321,8 +409,9 @@ class BaseGateApp:
             except Exception:
                 pass
 
-    def _schedule_lcd_revert(self):
-        seconds = self.cfg.lcd_idle_seconds
+    def _schedule_lcd_revert(self, seconds=None):
+        if seconds is None:
+            seconds = self.cfg.lcd_idle_seconds
         if seconds <= 0 or self._closing:
             return
         try:
@@ -332,8 +421,8 @@ class BaseGateApp:
 
     def _lcd_back_to_idle(self):
         self._lcd_job = None
-        if self._closing or self.pending is not None:
-            return                      # đang chờ nhân viên: màn hình phải giữ thông báo hiện tại
+        if self._closing or self.pending is not None or self._awaiting is not None:
+            return                      # đang chờ nhân viên / chờ xe qua: màn hình phải giữ thông báo hiện tại
         if self.busy:
             self._schedule_lcd_revert() # đang xử lý việc khác: thử lại sau
             return
@@ -495,7 +584,7 @@ class BaseGateApp:
         self.result_lbl.image = photo
 
     def refresh_buttons(self):
-        can_trial = self.service.ready and not self.busy and self.pending is None
+        can_trial = self.service.ready and not self.busy and self.pending is None and self._awaiting is None
         for b in (self.capture_btn, self.open_btn):
             b.configure(state="normal" if can_trial else "disabled")
         self.sync_servo_button()
@@ -505,7 +594,7 @@ class BaseGateApp:
         """Test servo không cần OCR nạp xong; chỉ khóa khi đang xử lý một lần quẹt thẻ / chờ nhân viên (khỏi mở
         thanh chắn nhầm giữa chừng và khỏi đè dòng trạng thái đang cần nhân viên đọc). `pending` đổi ở nhiều chỗ
         trong lớp con nên được gọi cả từ update_loop; chỉ đụng tới nút khi trạng thái thật sự đổi."""
-        state = "normal" if not self.busy and self.pending is None else "disabled"
+        state = "normal" if not self.busy and self.pending is None and self._awaiting is None else "disabled"
         if state != self._servo_btn_state:
             self._servo_btn_state = state
             self.servo_btn.configure(state=state)
@@ -605,6 +694,10 @@ class BaseGateApp:
             self.lcd(LCD_LOADING)
             self.set_status(f"Thẻ {uid}: mô hình OCR chưa sẵn sàng, quẹt lại sau.", COLOR_WARN)
             return
+        if self._awaiting is not None:
+            self.set_status(f"Đang chờ xe của thẻ {self._awaiting.card_uid} đi qua thanh chắn. "
+                            f"Thẻ {uid}: quẹt lại sau.", COLOR_WARN)
+            return
         if self.busy:
             self.set_status(f"Thẻ {uid}: đang xử lý, quẹt lại sau.", COLOR_WARN)
             return
@@ -629,8 +722,11 @@ class BaseGateApp:
             self.q.put(lambda: self.set_status(
                 f"Thẻ {uid}: đang quét ảnh {done}/{total}...", COLOR_WARN))
 
-        self._bg(lambda: self.service.handle_card(uid, self.get_frame, progress),
-                 self.on_card_outcome)
+        if self.pass_gated():       # chốt được xe thì CHƯA lưu: chờ cảm biến báo xe đã đi qua thanh chắn
+            run = lambda: self.service.handle_card(uid, self.get_frame, progress, defer=True)  # noqa: E731
+        else:
+            run = lambda: self.service.handle_card(uid, self.get_frame, progress)              # noqa: E731
+        self._bg(run, self.on_card_outcome)
 
     def on_card_outcome(self, outcome):
         uid, event, kind = outcome.card_uid, outcome.event, outcome.kind
@@ -649,7 +745,7 @@ class BaseGateApp:
 
     # ---------- Chế độ thử (không có thẻ -> không lưu) ----------
     def capture(self):
-        if self.busy or not self.service.ready or self.pending is not None:
+        if self.busy or not self.service.ready or self.pending is not None or self._awaiting is not None:
             return
         if self.last_frame is None:
             self.set_status("Chưa có hình từ camera.", COLOR_ERR)
@@ -657,7 +753,7 @@ class BaseGateApp:
         self.run_trial(self.last_frame.copy())
 
     def open_image(self):
-        if self.busy or not self.service.ready or self.pending is not None:
+        if self.busy or not self.service.ready or self.pending is not None or self._awaiting is not None:
             return
         path = filedialog.askopenfilename(
             title="Chọn ảnh xe",
@@ -711,6 +807,7 @@ class BaseGateApp:
         """Dừng RFID + camera của cổng này (không đóng cửa sổ)."""
         self._closing = True
         self._cancel_lcd_revert()
+        self._cancel_pass_timer()
         if self.rfid is not None:
             self.rfid.stop()
         self.camera.release()

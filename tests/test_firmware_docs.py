@@ -157,3 +157,36 @@ def test_led_is_off_at_boot_and_updated_every_loop_without_blocking():
     loop = INO[INO.index("void loop()"):]
     assert "entryLed.update(millis())" in loop
     assert "delay(" not in loop
+
+
+def test_pass_window_default_agrees_between_sketch_env_example_and_readme():
+    """Cửa sổ chờ xe qua mặc định 3 giây ở cả firmware (PASS_WINDOW_MS), .env.example và README."""
+    ms = int(re.search(r"const unsigned long PASS_WINDOW_MS\s*=\s*(\d+);", INO).group(1))
+    assert ms == 3000
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert re.search(rf"^IR_PASS_TIMEOUT_SECONDS={ms // 1000}\b", example, re.M)
+    assert f"| `IR_PASS_TIMEOUT_SECONDS` | `{ms // 1000}` |" in README
+    from config import Settings
+    assert Settings.__dataclass_fields__["ir_pass_timeout_seconds"].default == ms / 1000
+
+
+def test_open_command_with_pass_window_is_documented_and_implemented_on_both_sides():
+    assert "`SERVOIN:OPEN:3000:3000`" in README and "SERVOIN:OPEN:3000:3000" in INO
+    from hardware.rfid import format_servo_command
+    assert format_servo_command("in", "OPEN", 3, 3) == "SERVOIN:OPEN:3000:3000\n"
+    assert format_servo_command("out", "OPEN", 3, 3) == "SERVOOUT:OPEN:3000:3000\n"
+
+
+def test_barrier_checks_pass_before_the_window_and_cancels_with_nopass():
+    """Thứ tự trong Barrier::update: PASS (xe qua hẳn) được xét trước, rồi mới tới cửa sổ chờ; hết hạn thì hạ thanh chắn
+    và báo NOPASS (không bật LED). Đây là thứ tự mà tests/test_pass_detector.py mô phỏng."""
+    body = INO[INO.index("class Barrier"):INO.index("Barrier barrierIn(")]
+    update = body[body.index("void update()"):]
+    detector_at = update.index("detector_.update(")
+    window_at = update.index("window_.expired(")
+    hold_at = update.index("elapsed < holdMs_")
+    assert detector_at < window_at < hold_at
+    expired_branch = update[window_at:hold_at]
+    assert "close();" in expired_branch and 'report(F("NOPASS:"))' in expired_branch
+    assert "led_->trigger(" not in expired_branch               # hủy phiên thì đèn không sáng
+    assert "window_.reset()" in body[body.index("void open("):body.index("void close()")]   # mỗi lần mở: đếm lại từ đầu

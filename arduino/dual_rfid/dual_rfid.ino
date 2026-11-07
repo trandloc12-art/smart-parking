@@ -11,7 +11,9 @@
                            kết nối" và coi Arduino là "không phản hồi" nếu quá RFID_HEARTBEAT_TIMEOUT giây
                            không nhận được dòng nào.
       PASS:IN              xe đã đi qua hẳn thanh chắn CỔNG VÀO (PASS:OUT cho cổng ra); thanh chắn đã được hạ ngay
-      NOPASS:IN            hết giờ mở mà xe CHƯA đi qua (NOPASS:OUT cho cổng ra); thanh chắn đã được hạ
+      NOPASS:IN            xe KHÔNG đi qua (NOPASS:OUT cho cổng ra): xe đã ở cảm biến trước mà quá PASS_WINDOW chưa tới cảm
+                           biến sau, hoặc hết giờ mở mà chưa qua; thanh chắn đã được hạ. Máy tính HỦY phiên quẹt thẻ
+                           (chỉ lưu khi nhận PASS)
       # ...                dòng chú thích, Python bỏ qua
     Máy tính -> Arduino:
       LCDIN:dòng 1|dòng 2   hiển thị lên LCD CỔNG VÀO
@@ -22,7 +24,9 @@
                             LCD tương ứng không có thì bỏ qua lệnh đó (LCD còn lại vẫn chạy).
       SERVOIN:OPEN          mở servo (thanh chắn) CỔNG VÀO, giữ SERVO_HOLD_MS mặc định rồi TỰ đóng lại
       SERVOIN:OPEN:3000     như trên nhưng giữ 3000 ms (giới hạn SERVO_HOLD_MIN_MS..SERVO_HOLD_MAX_MS)
-      SERVOOUT:OPEN[:ms]    như trên cho servo CỔNG RA
+      SERVOIN:OPEN:3000:3000  như trên, thêm CỬA SỔ CHỜ XE QUA (ms, giới hạn PASS_WINDOW_MIN_MS..PASS_WINDOW_MAX_MS): xe đã
+                            ở cảm biến trước mà quá ngần này chưa tới cảm biến sau thì hạ thanh chắn + NOPASS
+      SERVOOUT:OPEN[:ms[:ms]]  như trên cho servo CỔNG RA
       SERVOIN:CLOSE         đóng ngay (SERVOOUT:CLOSE cho cổng ra)
       SERVOIN:ANGLE:0:90    đặt GÓC ĐÓNG (vị trí ban đầu) và GÓC MỞ của servo CỔNG VÀO, 0..180 độ (SERVOOUT:ANGLE:... cho
                             cổng ra). Servo chạy tới góc mới ngay. Máy tính gửi lệnh này mỗi khi Arduino khởi động; chưa nhận
@@ -62,6 +66,8 @@
     CỔNG RA  :  trước -> D4,  sau -> D5
   Mặc định ngõ ra xuống LOW khi có vật chắn (đa số module E18-D80NK / FC-51); loại ngược lại thì đặt
   IR_ACTIVE_LOW = false. Chân dùng INPUT_PULLUP nên ngõ ra open-collector cũng chạy được.
+  Cửa sổ chờ xe qua: đồng hồ bắt đầu từ lúc cảm biến TRƯỚC thấy xe (xe đã vào đúng vị trí); quá PASS_WINDOW_MS (hoặc số ms
+  trong lệnh OPEN) mà cảm biến SAU chưa thấy xe thì hạ thanh chắn và báo NOPASS (xe không vào).
   Cách hoạt động (sau khi thanh chắn MỞ): xe chắn cảm biến trước, rồi chắn cảm biến sau, rồi rời khỏi cả hai
   -> "đã qua": thanh chắn HẠ NGAY và Arduino gửi PASS:<cổng>. Xe lùi ra (cảm biến sau nhả khi cảm biến trước
   còn bị chắn) thì không tính là đã qua. Hết giờ giữ mở mà chưa qua thì hạ thanh chắn và gửi NOPASS:<cổng>,
@@ -113,6 +119,9 @@ const uint8_t PIN_IR_OUT_AFTER = 5;
 const bool IR_ACTIVE_LOW = true;               // true: ngõ ra LOW khi có vật chắn; false: HIGH khi có vật chắn
 const unsigned long IR_DEBOUNCE_MS = 30;       // tín hiệu phải ổn định ngần này ms mới được tin (chống nhiễu)
 const unsigned long IR_EXTEND_MAX_MS = 10000;  // hết giờ mà còn vật chắn cảm biến: chờ thêm tối đa ngần này ms
+const unsigned long PASS_WINDOW_MS = 3000;        // đã thấy xe ở cảm biến TRƯỚC mà quá ngần này ms vẫn chưa thấy cảm biến SAU -> hủy (NOPASS); máy tính ghi đè trong lệnh OPEN
+const unsigned long PASS_WINDOW_MIN_MS = 500;    // chặn lệnh sai: tối thiểu / tối đa
+const unsigned long PASS_WINDOW_MAX_MS = 30000;
 // Còi bíp: một còi chung, kêu mỗi lần quẹt thẻ (cổng vào hoặc cổng ra).
 const uint8_t PIN_BUZZER = A5;
 const unsigned int BUZZER_FREQ_HZ = 2000;      // passive: đây là cao độ; active: vẫn kêu bình thường
@@ -295,10 +304,39 @@ class PassDetector {
     return false;
   }
 
+  bool seenBefore() const { return seenBefore_; }   // xe đã tới cảm biến trước (đúng vị trí) trong lần mở này
+  bool seenAfter() const { return seenAfter_; }     // xe đang / đã ở cảm biến sau
+
  private:
   bool seenBefore_ = false, seenAfter_ = false;
 };
 // END PassDetector
+
+// BEGIN PassWindow (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
+// Cửa sổ chờ: tính từ lúc xe được thấy ở cảm biến TRƯỚC (xe đã vào đúng vị trí sau khi quẹt thẻ); nếu quá `windowMs`
+// mà cảm biến SAU vẫn chưa thấy xe thì expired() trả về true (Barrier hủy: hạ thanh chắn + NOPASS).
+// Chưa thấy xe ở cảm biến trước thì chưa đếm (đã có hạn chót chung của lần mở thanh chắn lo việc đó).
+class PassWindow {
+ public:
+  void reset() { started_ = false; }
+
+  bool expired(bool seenBefore, bool seenAfter, unsigned long nowMs, unsigned long windowMs) {
+    if (!seenBefore) {
+      started_ = false;
+      return false;
+    }
+    if (!started_) {
+      started_ = true;
+      startedAt_ = nowMs;
+    }
+    return !seenAfter && nowMs - startedAt_ >= windowMs;
+  }
+
+ private:
+  bool started_ = false;
+  unsigned long startedAt_ = 0;
+};
+// END PassWindow
 
 // BEGIN LedTimer (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
 // Hẹn giờ đèn: trigger() bật đèn và bắt đầu đếm; hết `durationMs` thì tự tắt. trigger() khi đèn đang sáng thì đếm lại
@@ -349,15 +387,18 @@ class Barrier {
   }
 
   // Mở (hoặc gia hạn nếu đang mở: quẹt thẻ liên tiếp thì thanh chắn không đóng giữa chừng).
-  void open(unsigned long holdMs) {
+  void open(unsigned long holdMs, unsigned long passMs = PASS_WINDOW_MS) {
     holdMs = constrain(holdMs, SERVO_HOLD_MIN_MS, SERVO_HOLD_MAX_MS);
+    passMs = constrain(passMs, PASS_WINDOW_MIN_MS, PASS_WINDOW_MAX_MS);
     if (!open_) {
       servo_.write(openAngle_);
       detector_.reset();                       // lần mở mới: theo dõi xe từ đầu
+      window_.reset();
     }
     open_ = true;
     openedAt_ = millis();
     holdMs_ = holdMs;
+    passMs_ = passMs;
   }
 
   // Đóng theo lệnh (không báo PASS / NOPASS).
@@ -384,6 +425,12 @@ class Barrier {
       report(F("PASS:"));
       return;
     }
+    // Xe đã tới cảm biến trước (đúng vị trí) mà quá passMs_ vẫn chưa thấy ở cảm biến sau: xe không đi vào -> hủy.
+    if (window_.expired(detector_.seenBefore(), detector_.seenAfter(), millis(), passMs_)) {
+      close();
+      report(F("NOPASS:"));
+      return;
+    }
     unsigned long elapsed = millis() - openedAt_;
     if (elapsed < holdMs_) return;
     bool occupied = before_.blocked() || after_.blocked();
@@ -402,11 +449,12 @@ class Barrier {
   Servo servo_;
   IrSensor before_, after_;
   PassDetector detector_;
+  PassWindow window_;
   const char *tag_;                            // "IN" / "OUT" (chuỗi thường: F() không dùng được ở phạm vi toàn cục)
   LedTimer *led_;                              // đèn báo xe qua thanh chắn; nullptr = không có
   bool open_ = false;
   uint8_t closedAngle_ = SERVO_CLOSED_ANGLE, openAngle_ = SERVO_OPEN_ANGLE;   // mặc định; máy tính ghi đè bằng ANGLE
-  unsigned long openedAt_ = 0, holdMs_ = SERVO_HOLD_MS;
+  unsigned long openedAt_ = 0, holdMs_ = SERVO_HOLD_MS, passMs_ = PASS_WINDOW_MS;
 };
 
 Barrier barrierIn(PIN_SERVO_IN, PIN_IR_IN_BEFORE, PIN_IR_IN_AFTER, "IN", &entryLed);
@@ -506,15 +554,20 @@ char *afterPrefix(char *cmd, const char *prefix) {
   return strncmp(cmd, prefix, n) == 0 ? cmd + n : nullptr;
 }
 
-// Lệnh servo: `args` là phần sau "SERVOIN:" / "SERVOOUT:", dạng "OPEN", "OPEN:3000" hoặc "CLOSE".
+// Lệnh servo: `args` là phần sau "SERVOIN:" / "SERVOOUT:", dạng "OPEN", "OPEN:3000", "OPEN:3000:3000" hoặc "CLOSE".
 void handleServo(Barrier &barrier, char *args) {
   if (strncmp(args, "OPEN", 4) == 0) {
-    unsigned long holdMs = SERVO_HOLD_MS;
+    unsigned long holdMs = SERVO_HOLD_MS, passMs = PASS_WINDOW_MS;
     if (args[4] == ':') {
-      unsigned long v = strtoul(args + 5, nullptr, 10);
+      char *end = nullptr;
+      unsigned long v = strtoul(args + 5, &end, 10);
       if (v > 0) holdMs = v;                   // số hỏng / bằng 0 -> dùng thời gian mặc định
+      if (end != nullptr && *end == ':') {     // "OPEN:<giữ mở ms>:<cửa sổ chờ xe qua ms>"
+        unsigned long w = strtoul(end + 1, nullptr, 10);
+        if (w > 0) passMs = w;
+      }
     }
-    barrier.open(holdMs);
+    barrier.open(holdMs, passMs);
   } else if (strncmp(args, "CLOSE", 5) == 0) {
     barrier.close();
   } else if (strncmp(args, "ANGLE:", 6) == 0) {           // "ANGLE:<góc đóng>:<góc mở>", mỗi góc 0..180

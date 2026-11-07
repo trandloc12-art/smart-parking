@@ -23,8 +23,10 @@ class Outcome(Enum):
     LOT_FULL = "lot_full"             # cổng vào: bãi đã đủ số chỗ, không nhận thêm xe
     NOT_INSIDE = "not_inside"         # cổng ra: thẻ chưa có lượt vào
     ENTRY_SAVED = "entry_saved"       # xe vào, đã lưu
+    ENTRY_READY = "entry_ready"       # xe vào, đã chốt 5 số nhưng CHƯA lưu: chờ cảm biến xác nhận xe đã qua thanh chắn
     ENTRY_PENDING = "entry_pending"   # xe vào, chờ nhân viên xác nhận 5 số
     EXIT_DONE = "exit_done"           # xe ra, biển khớp, đã đóng lượt + tính tiền
+    EXIT_READY = "exit_ready"         # xe ra, biển khớp nhưng CHƯA đóng lượt: chờ cảm biến xác nhận xe đã qua thanh chắn
     EXIT_REVIEW = "exit_review"       # xe ra, chờ nhân viên (không đọc đủ / lệch / không khớp)
 
 

@@ -337,6 +337,18 @@ def test_format_servo_command():
     assert format_servo_command("in", "CLOSE", 3) == "SERVOIN:CLOSE\n"         # CLOSE bỏ qua thời gian giữ
 
 
+def test_format_servo_command_with_pass_window():
+    assert format_servo_command("in", "OPEN", 3, 3) == "SERVOIN:OPEN:3000:3000\n"        # giữ mở + cửa sổ chờ xe qua
+    assert format_servo_command("out", "OPEN", 5, 2.5) == "SERVOOUT:OPEN:5000:2500\n"
+    assert format_servo_command("in", "CLOSE", 3, 3) == "SERVOIN:CLOSE\n"                # CLOSE bỏ qua cả hai thời gian
+
+
+@pytest.mark.parametrize("args", [("in", "OPEN", 3, 0), ("in", "OPEN", 3, -1), ("in", "OPEN", None, 3)])
+def test_format_servo_command_rejects_bad_pass_window(args):
+    with pytest.raises(ValueError):
+        format_servo_command(*args)
+
+
 @pytest.mark.parametrize("args", [("left",), ("in", "TOGGLE"), ("in", ""), ("in", "OPEN", 0), ("in", "OPEN", -1)])
 def test_format_servo_command_rejects_bad_input(args):
     with pytest.raises(ValueError):
