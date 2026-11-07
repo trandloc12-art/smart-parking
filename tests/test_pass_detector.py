@@ -90,7 +90,8 @@ def test_reports_once_and_can_track_the_next_vehicle(detector):
 # ======================================================================================================
 # PassWindow + PassDetector chạy cùng nhau đúng thứ tự như Barrier::update:
 #   1) detector.update  -> 'P' (xe đã qua hẳn: hạ thanh chắn + PASS)
-#   2) window.expired   -> 'X' (xe ở cảm biến trước mà quá hạn chưa tới cảm biến sau: hạ thanh chắn + NOPASS)
+#   2) window.expired   -> 'X' (cảm biến trước đã thấy xe rồi MẤT tín hiệu quá ân hạn mà cảm biến sau chưa thấy xe:
+#                          xe rời đi, hạ thanh chắn + NOPASS; cảm biến trước còn tín hiệu thì KHÔNG hủy)
 # Sau P / X thanh chắn đã đóng nên các dòng tiếp theo không còn theo dõi ('-').
 # ======================================================================================================
 WINDOW_DRIVER = r"""
@@ -109,7 +110,7 @@ int main() {
   while (std::cin >> t >> b >> a) {
     if (!open) { std::putchar('-'); continue; }
     if (d.update(b == "1", a == "1")) { open = false; std::putchar('P'); continue; }
-    if (w.expired(d.seenBefore(), d.seenAfter(), t, WINDOW)) { open = false; std::putchar('X'); continue; }
+    if (w.expired(d.seenBefore(), d.seenAfter(), b == "1", t, WINDOW)) { open = false; std::putchar('X'); continue; }
     std::putchar('.');
   }
   std::putchar('\n');
@@ -138,9 +139,16 @@ def barrier_sim(tmp_path_factory):
     return run
 
 
-def test_vehicle_waits_at_front_sensor_and_never_reaches_rear_is_cancelled_after_the_window(barrier_sim):
-    steps = [(0, 1, 0), (1000, 1, 0), (2999, 1, 0), (3000, 1, 0), (3500, 1, 0)]
-    assert barrier_sim(steps) == "...X-"            # đúng 3000 ms kể từ lúc thấy xe ở cảm biến trước, không sớm hơn
+def test_vehicle_waiting_at_front_sensor_is_never_cancelled_while_the_signal_stays(barrier_sim):
+    # xe đứng chờ ở cảm biến trước (còn tín hiệu): không hủy dù quá ân hạn bao lâu
+    steps = [(0, 1, 0), (3000, 1, 0), (10000, 1, 0), (60000, 1, 0)]
+    assert barrier_sim(steps) == "...."
+
+
+def test_vehicle_leaving_after_front_sensor_loses_signal_is_cancelled_after_the_grace(barrier_sim):
+    # cảm biến trước mất tín hiệu lúc 1000, cảm biến sau không thấy xe: hủy đúng 3000 ms sau đó, không sớm hơn
+    steps = [(0, 1, 0), (1000, 0, 0), (3999, 0, 0), (4000, 0, 0), (5000, 0, 0)]
+    assert barrier_sim(steps) == "...X-"
 
 
 def test_rear_sensor_just_in_time_cancels_nothing(barrier_sim):
@@ -154,19 +162,26 @@ def test_rear_sensor_at_the_same_tick_as_the_deadline_wins(barrier_sim):
     assert barrier_sim([(0, 1, 0), (3000, 1, 1)]) == ".."
 
 
-def test_window_counts_from_the_moment_the_front_sensor_sees_the_vehicle(barrier_sim):
-    # thanh chắn mở từ t=0 nhưng xe tới cảm biến trước lúc t=1000 -> hạn chót là 4000, không phải 3000
-    steps = [(0, 0, 0), (1000, 1, 0), (3000, 1, 0), (3999, 1, 0), (4000, 1, 0)]
-    assert barrier_sim(steps) == "....X"
+def test_grace_counts_from_the_moment_the_front_sensor_loses_the_signal_not_from_when_it_saw_the_vehicle(barrier_sim):
+    # thấy xe lúc 1000, xe đứng tới 5000 rồi đi: hạn chót là 8000 (5000 + 3000)
+    steps = [(0, 0, 0), (1000, 1, 0), (5000, 1, 0), (5001, 0, 0), (8000, 0, 0), (8001, 0, 0)]
+    assert barrier_sim(steps) == ".....X"
+
+
+def test_front_sensor_blocked_again_during_the_grace_restarts_it(barrier_sim):
+    # nhả lúc 1000, bị chắn lại lúc 2000 (xe quay lại), nhả lần nữa lúc 3500: hạn chót mới là 6500
+    steps = [(0, 1, 0), (1000, 0, 0), (2000, 1, 0), (3500, 0, 0), (6499, 0, 0), (6500, 0, 0)]
+    assert barrier_sim(steps) == ".....X"
 
 
 def test_no_vehicle_at_the_front_sensor_never_triggers_the_window(barrier_sim):
     assert barrier_sim([(t, 0, 0) for t in (0, 3000, 6000, 20000)]) == "...."   # hạn chót chung của lần mở lo việc này
 
 
-def test_vehicle_that_backs_out_after_touching_the_rear_sensor_is_cancelled(barrier_sim):
-    steps = [(0, 1, 0), (1000, 1, 1), (1500, 1, 0), (2999, 1, 0), (3000, 1, 0)]
-    assert barrier_sim(steps) == "....X"
+def test_vehicle_that_backs_out_after_touching_the_rear_sensor_is_cancelled_once_the_front_sensor_clears(barrier_sim):
+    # chạm cảm biến sau rồi lùi ra, vẫn còn ở cảm biến trước (không hủy); cảm biến trước nhả lúc 6000 -> hủy lúc 9000
+    steps = [(0, 1, 0), (1000, 1, 1), (1500, 1, 0), (5000, 1, 0), (6000, 0, 0), (8999, 0, 0), (9000, 0, 0)]
+    assert barrier_sim(steps) == "......X"
 
 
 def test_short_vehicle_clearing_the_front_sensor_before_reaching_the_rear_still_passes(barrier_sim):
@@ -174,9 +189,9 @@ def test_short_vehicle_clearing_the_front_sensor_before_reaching_the_rear_still_
     assert barrier_sim([(0, 1, 0), (500, 0, 0), (1000, 0, 1), (1500, 0, 0)]) == "...P"
 
 
-def test_front_sensor_off_then_rear_never_seen_is_still_cancelled(barrier_sim):
-    # xe thấy ở cảm biến trước rồi biến mất (lùi đi) mà cảm biến sau không bao giờ thấy -> hủy khi hết hạn
-    assert barrier_sim([(0, 1, 0), (500, 0, 0), (2999, 0, 0), (3000, 0, 0)]) == "...X"
+def test_front_sensor_off_then_rear_never_seen_is_cancelled_after_the_grace(barrier_sim):
+    # xe thấy ở cảm biến trước lúc 0, mất tín hiệu lúc 500 (xe đi mất), cảm biến sau không thấy: hủy lúc 3500
+    assert barrier_sim([(0, 1, 0), (500, 0, 0), (3499, 0, 0), (3500, 0, 0)]) == "...X"
 
 
 def test_sensors_in_the_requested_order_rear_on_then_front_off_then_rear_off_is_a_pass(barrier_sim):

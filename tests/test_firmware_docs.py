@@ -190,3 +190,15 @@ def test_barrier_checks_pass_before_the_window_and_cancels_with_nopass():
     assert "close();" in expired_branch and 'report(F("NOPASS:"))' in expired_branch
     assert "led_->trigger(" not in expired_branch               # hủy phiên thì đèn không sáng
     assert "window_.reset()" in body[body.index("void open("):body.index("void close()")]   # mỗi lần mở: đếm lại từ đầu
+
+
+def test_barrier_does_not_lower_onto_a_vehicle_still_at_the_front_sensor():
+    """Hết giờ mở mà xe đã tới cảm biến trước chưa tới cảm biến sau (kể cả đang nằm giữa hai cảm biến): không hạ thanh chắn,
+    chờ PASS hoặc hết ân hạn."""
+    body = INO[INO.index("class Barrier"):INO.index("Barrier barrierIn(")]
+    update = body[body.index("void update()"):]
+    hold_at = update.index("elapsed < holdMs_")
+    front_at = update.index("detector_.seenBefore() && !detector_.seenAfter()")
+    extend_at = update.index("IR_EXTEND_MAX_MS")
+    assert hold_at < front_at < extend_at
+    assert "before_.blocked(), millis(), passMs_" in update          # PassWindow nhận trạng thái cảm biến trước

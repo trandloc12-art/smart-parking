@@ -1100,6 +1100,30 @@ def test_no_answer_from_arduino_cancels_the_session_after_the_safety_timeout(roo
     assert rfid.sent[-1] == ("in", "XE CHUA VAO BAI", "HAY QUET LAI THE")
 
 
+def test_arduino_alive_keeps_waiting_while_the_vehicle_stands_at_the_front_sensor(root, tmp_path, monkeypatch):
+    """Arduino còn nhịp tim nhưng chưa báo gì (xe đang đứng ở cảm biến trước): không hủy; sau đó PASS thì mới lưu."""
+    monkeypatch.setenv("SERVO_OPEN_SECONDS", "0.5")
+    monkeypatch.setattr(base_gate_app, "PASS_WAIT_MARGIN_SECONDS", 0.2)
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    app.devices.set(base_gate_app.ARDUINO, True, "Arduino: hoạt động")
+    swipe(app, "CARD1")
+    pump(root, lambda: False, timeout=2)              # quá hạn dự phòng nhiều lần
+    assert app._awaiting is not None and db.rows == [] and "ĐÃ HỦY" not in app.status_lbl.cget("text")
+    app.handle_barrier(True)                          # xe tiến vào: PASS
+    assert pump(root, lambda: len(db.rows) == 1 and len(db.passes) == 1)
+
+
+def test_arduino_alive_wait_is_capped(root, tmp_path, monkeypatch):
+    monkeypatch.setenv("SERVO_OPEN_SECONDS", "0.5")
+    monkeypatch.setattr(base_gate_app, "PASS_WAIT_MARGIN_SECONDS", 0.2)
+    monkeypatch.setattr(base_gate_app, "PASS_WAIT_MAX_SECONDS", 1.0)
+    app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)
+    app.devices.set(base_gate_app.ARDUINO, True, "Arduino: hoạt động")
+    swipe(app, "CARD1")
+    assert pump(root, lambda: app._awaiting is None, timeout=4)
+    assert db.rows == [] and "ĐÃ HỦY" in app.status_lbl.cget("text")
+
+
 def test_pass_window_follows_ir_pass_timeout_seconds(root, tmp_path, monkeypatch):
     monkeypatch.setenv("IR_PASS_TIMEOUT_SECONDS", "4.5")
     app, db, rec, rfid = make_entry(root, tmp_path, monkeypatch, ["25888"], ir=True)

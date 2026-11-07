@@ -83,8 +83,8 @@ def format_servo_command(gate, action="OPEN", hold_seconds=None, pass_seconds=No
     """Một dòng lệnh servo gửi Arduino, VD 'SERVOOUT:OPEN:3000\\n' hoặc 'SERVOIN:OPEN:3000:3000\\n'.
 
     hold_seconds: giữ mở bao lâu (giây) rồi Arduino tự đóng; None = dùng thời gian mặc định trong firmware.
-    pass_seconds: cửa sổ chờ xe qua: xe đã ở cảm biến trước mà quá ngần này giây chưa tới cảm biến sau thì Arduino
-    hủy (hạ thanh chắn + NOPASS); None = dùng mặc định trong firmware. Cần kèm hold_seconds.
+    pass_seconds: ân hạn khi xe rời đi: cảm biến trước mất tín hiệu quá ngần này giây mà cảm biến sau chưa thấy xe thì
+    Arduino hủy (hạ thanh chắn + NOPASS); cảm biến trước còn tín hiệu thì không hủy; None = dùng mặc định trong firmware. Cần kèm hold_seconds.
     Chỉ có ý nghĩa với OPEN."""
     try:
         prefix = SERVO_PREFIX[gate]

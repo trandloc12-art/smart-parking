@@ -128,7 +128,7 @@ class Settings:
     servo_closed_angle: int = 0     # độ: vị trí ban đầu / thanh chắn hạ (gửi cho Arduino mỗi lần nó khởi động)
     servo_open_angle: int = 90      # độ: thanh chắn nâng (mở)
     ir_enabled: bool = True         # False = chưa gắn cảm biến hồng ngoại: lưu ngay khi quẹt thẻ (không chờ xe đi qua)
-    ir_pass_timeout_seconds: float = 3.0   # giây: xe đã ở cảm biến trước mà quá ngần này chưa tới cảm biến sau -> hủy phiên quẹt thẻ
+    ir_pass_timeout_seconds: float = 3.0   # giây: cảm biến trước mất tín hiệu quá ngần này mà cảm biến sau chưa thấy xe -> hủy phiên quẹt thẻ (trước còn tín hiệu: không hủy)
     lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về màn hình chờ; 0 = giữ đến lần quẹt sau
     parking_capacity: int = DEFAULT_PARKING_CAPACITY   # số chỗ (slot) của bãi: đủ rồi thì cổng vào không nhận quẹt thẻ
 

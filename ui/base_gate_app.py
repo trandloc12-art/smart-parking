@@ -9,6 +9,7 @@ Hai cách dùng:
     devices=<DeviceStatusBar> và slots=<SlotCounter> (dùng chung cho cả hai cổng).
 """
 import queue
+import time
 import threading
 import tkinter as tk
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ HISTORY_REFRESH_MS = 5000       # làm mới lịch sử để thấy cả lư�
 CAMERA_CHECK_MS = 1000          # kiểm tra camera còn có hình không
 
 PASS_WAIT_MARGIN_SECONDS = 15.0  # chờ thêm ngần này giây (ngoài SERVO_OPEN_SECONDS) mà Arduino vẫn im thì coi như xe KHÔNG qua
+PASS_WAIT_MAX_SECONDS = 300.0    # Arduino còn kết nối (còn nhịp tim) thì xe đang đứng ở cảm biến trước được chờ tiếp, tối đa ngần này giây
 
 
 @dataclass
@@ -179,6 +181,7 @@ class BaseGateApp:
         self._lcd_job = None        # hẹn giờ đưa LCD về "MOI QUET THE" (xem lcd)
         self._awaiting = None           # PassTicket: phiên quẹt thẻ đã mở thanh chắn, chờ cảm biến báo xe đã qua (chưa lưu)
         self._pass_job = None           # hẹn giờ dự phòng khi Arduino không báo PASS / NOPASS
+        self._pass_started = None       # lúc bắt đầu chờ xe qua (time.monotonic), để giới hạn tổng thời gian chờ
         self._servo_btn_state = "normal"    # trạng thái hiện tại của nút Test servo (xem sync_servo_button)
         self.slots = slots if slots is not None else SlotCounter(getattr(service, "capacity", None))
         self.slots.subscribe(self.on_slots_changed)
@@ -276,7 +279,7 @@ class BaseGateApp:
         Arduino tự đóng lại sau cfg.servo_open_seconds giây (hoặc ngay khi cảm biến thấy xe đã qua). Giống LCD:
         chưa có Arduino, mất kết nối hoặc tắt bằng SERVO_ENABLED=0 thì bỏ qua, không bao giờ làm hỏng việc xử lý thẻ.
 
-        wait_pass=True: kèm cửa sổ chờ xe qua (cfg.ir_pass_timeout_seconds): xe đã ở cảm biến trước mà quá ngần đó
+        wait_pass=True: kèm ân hạn khi xe rời đi (cfg.ir_pass_timeout_seconds): cảm biến trước mất tín hiệu quá ngần đó
         chưa tới cảm biến sau thì Arduino hủy (hạ thanh chắn + NOPASS). Trả về True nếu đã gửi lệnh."""
         if not getattr(self.cfg, "servo_enabled", True):
             return False
@@ -295,7 +298,7 @@ class BaseGateApp:
     # ---------- Chờ xe đi qua thanh chắn rồi mới lưu ----------
     def wait_for_pass(self, ticket):
         """Mở thanh chắn rồi CHỜ cảm biến báo xe đã qua hẳn: PASS -> ghi vào SQL Server (ticket.commit); NOPASS (xe ở
-        cảm biến trước mà không tới cảm biến sau trong IR_PASS_TIMEOUT_SECONDS, hoặc hết giờ mở thanh chắn) -> HỦY phiên,
+        cảm biến trước mất tín hiệu mà cảm biến sau không thấy xe trong IR_PASS_TIMEOUT_SECONDS, hoặc hết giờ mở) -> HỦY phiên,
         không lưu gì. Không gửi được lệnh mở thanh chắn thì không có gì để chờ: ghi ngay như khi chưa có cảm biến."""
         self.lcd(self.LCD_WAIT_PASS)
         if not self.open_barrier(wait_pass=True):
@@ -307,8 +310,10 @@ class BaseGateApp:
                         "xe không đi qua thì phiên quẹt thẻ này sẽ bị hủy.", COLOR_WARN)
         self.refresh_buttons()
 
-    def _schedule_pass_timeout(self):
+    def _schedule_pass_timeout(self, extend=False):
         self._cancel_pass_timer()
+        if not extend:
+            self._pass_started = time.monotonic()
         ms = int((self.cfg.servo_open_seconds + PASS_WAIT_MARGIN_SECONDS) * 1000)
         try:
             self._pass_job = self.root.after(ms, self._pass_timed_out)
@@ -324,10 +329,22 @@ class BaseGateApp:
                 pass
 
     def _pass_timed_out(self):
-        """Arduino không báo gì (mất kết nối / reset giữa chừng): coi như xe KHÔNG qua, hủy phiên."""
+        """Đồng hồ dự phòng đã hết mà Arduino chưa báo PASS / NOPASS.
+
+        Arduino còn kết nối (còn nhịp tim) thì không hủy: cảm biến trước còn tín hiệu (xe đang đứng chờ) nên Arduino
+        chủ động chưa hạ thanh chắn; nó sẽ tự báo PASS khi xe vào, hoặc NOPASS khi xe rời đi. Chờ tiếp, nhưng không
+        quá PASS_WAIT_MAX_SECONDS để một sự cố (Arduino reset giữa chừng...) không treo cổng mãi.
+        Arduino mất kết nối / không phản hồi (hoặc quá hạn tối đa): coi như xe KHÔNG qua, hủy phiên."""
         self._pass_job = None
-        if self._awaiting is not None and not self._closing:
-            self.on_barrier_result(False, current_time())
+        if self._awaiting is None or self._closing:
+            return
+        started = self._pass_started
+        waited = (time.monotonic() - started) if started is not None else None
+        arduino_alive = self.devices.state.get(ARDUINO, (None, ""))[0] is True
+        if arduino_alive and waited is not None and waited < PASS_WAIT_MAX_SECONDS:
+            self._schedule_pass_timeout(extend=True)
+            return
+        self.on_barrier_result(False, current_time())
 
     def _commit_ticket(self, ticket, at):
         """Ghi phiên vào SQL Server (ở luồng nền). at: lúc cảm biến báo xe qua (None = không có cảm biến để ghi)."""
@@ -344,8 +361,8 @@ class BaseGateApp:
         self.plate_var.set("")
         self.set_card(None)
         self.on_pass_cancelled(ticket)
-        self.set_status(f"ĐÃ HỦY phiên quẹt thẻ {ticket.card_uid} (biển {ticket.number}): xe không đi qua thanh chắn "
-                        "trong thời gian chờ. Không lưu gì vào hệ thống. Hãy quẹt lại thẻ khi xe vào đúng vị trí.",
+        self.set_status(f"ĐÃ HỦY phiên quẹt thẻ {ticket.card_uid} (biển {ticket.number}): xe rời đi mà không vào "
+                        "(cảm biến trước mất tín hiệu, cảm biến sau không thấy xe). Không lưu gì vào hệ thống. Hãy quẹt lại thẻ khi xe vào đúng vị trí.",
                         COLOR_WARN)
         self.refresh_buttons()
 

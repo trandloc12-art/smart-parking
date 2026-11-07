@@ -78,7 +78,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
 | `SERVO_CLOSED_ANGLE`, `SERVO_OPEN_ANGLE` | `0`, `90` | **Góc ban đầu** (thanh chắn hạ) và góc thanh chắn nâng của servo, `0`..`180` độ. Gửi cho Arduino mỗi lần nó khởi động. Servo quay ngược thì đảo hai giá trị; hai cổng gắn khác nhau thì đặt riêng trong `.env.in` / `.env.out` |
 | `IR_ENABLED` | `1` | `1` = quẹt thẻ xong **chờ cảm biến xác nhận xe đã đi qua thanh chắn rồi mới lưu** (không qua thì hủy phiên); `0` = chưa gắn cảm biến thì tắt đi (lưu ngay khi quẹt thẻ như bản cũ, bỏ qua `PASS` / `NOPASS` từ Arduino). Chỉ chờ khi `SERVO_ENABLED=1` và có Arduino để gửi lệnh mở thanh chắn |
-| `IR_PASS_TIMEOUT_SECONDS` | `3` | Xe đã ở **cảm biến trước** (đúng vị trí) mà quá ngần này giây (`0.5`..`30`) vẫn chưa tới **cảm biến sau** thì **hủy phiên quẹt thẻ**. Hai cổng khác nhau thì đặt riêng trong `.env.in` / `.env.out` |
+| `IR_PASS_TIMEOUT_SECONDS` | `3` | **Ân hạn** (`0.5`..`30` giây) tính từ lúc **cảm biến trước mất tín hiệu** mà **cảm biến sau** chưa từng thấy xe thì xe được coi là rời đi và **hủy phiên quẹt thẻ**. Cảm biến trước còn tín hiệu (xe đang đứng chờ) thì **không hủy**. Đặt `0.5` để hủy gần như ngay khi cảm biến trước mất tín hiệu. Hai cổng khác nhau thì đặt riêng trong `.env.in` / `.env.out` |
 | `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
 
 ## Xử lý sự cố
@@ -100,7 +100,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | Cổng vào luôn báo "BÃI ĐÃ ĐẦY" dù bãi trống | Còn lượt cũ chưa đóng (xe đã đi mà thẻ chưa quẹt ra) chiếm chỗ: đóng bằng câu SQL ở dưới, hoặc tăng `PARKING_CAPACITY` |
 | Thẻ báo "đang ở trong bãi" dù xe đã đi | Lượt cũ chưa đóng: đóng bằng câu SQL ở trên |
 | Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
-| Quẹt thẻ xong luôn bị "ĐÃ HỦY phiên quẹt thẻ" (LCD `HAY QUET LAI THE`), xe không được lưu | Cảm biến hồng ngoại chưa gắn / sai dây / sai mức tín hiệu (`IR_ACTIVE_LOW`), xe không chắn đủ hai cảm biến theo thứ tự trước -> sau, hoặc xe đi chậm hơn `IR_PASS_TIMEOUT_SECONDS` (tăng giá trị này). Chưa gắn cảm biến thì đặt `IR_ENABLED=0` |
+| Quẹt thẻ xong luôn bị "ĐÃ HỦY phiên quẹt thẻ" (LCD `HAY QUET LAI THE`), xe không được lưu | Cảm biến hồng ngoại chưa gắn / sai dây / sai mức tín hiệu (`IR_ACTIVE_LOW`), xe không chắn đủ hai cảm biến theo thứ tự trước -> sau, hoặc xe là xe ngắn: cảm biến trước nhả ra lâu hơn `IR_PASS_TIMEOUT_SECONDS` rồi cảm biến sau mới thấy xe (tăng giá trị này). Chưa gắn cảm biến thì đặt `IR_ENABLED=0` |
 | Thanh chắn không hạ xuống dù xe đã đi qua | Cảm biến sau còn bị chắn (lệch hướng, vật chắn cố định): thanh chắn vẫn tự hạ sau `SERVO_OPEN_SECONDS` + tối đa 10 giây, và phiên bị hủy nếu cảm biến chưa báo xe qua hẳn |
 
 ## Giao thức với Arduino
@@ -112,14 +112,14 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `OUT:DB2B11CA` | Thẻ quẹt ở đầu đọc **cổng ra** |
 | `STATUS:IN=1,OUT=0` | Tình trạng từng đầu đọc (`1` = hoạt động, `0` = không nói chuyện được với module). Gửi lúc khởi động và mỗi ~2 giây; cũng là "nhịp tim" để phát hiện Arduino treo |
 | `PASS:IN` / `PASS:OUT` | Xe đã **đi qua hẳn** thanh chắn cổng vào / cổng ra (cảm biến hồng ngoại); Arduino đã hạ thanh chắn. Máy tính chỉ **lưu** phiên quẹt thẻ khi nhận dòng này. `PASS:IN` còn làm **đèn LED cổng vào sáng 20 giây** (Arduino tự làm) |
-| `NOPASS:IN` / `NOPASS:OUT` | Xe **không đi qua**: xe đã ở cảm biến trước mà quá `IR_PASS_TIMEOUT_SECONDS` chưa tới cảm biến sau, hoặc hết giờ mở thanh chắn mà chưa qua; Arduino đã hạ thanh chắn. Máy tính **hủy** phiên quẹt thẻ (không lưu gì) |
+| `NOPASS:IN` / `NOPASS:OUT` | Xe **không đi qua** (xe rời đi): cảm biến trước đã thấy xe rồi mất tín hiệu quá `IR_PASS_TIMEOUT_SECONDS` mà cảm biến sau chưa thấy xe, hoặc hết giờ mở thanh chắn mà xe chưa tới cảm biến trước; Arduino đã hạ thanh chắn. Máy tính **hủy** phiên quẹt thẻ (không lưu gì) |
 | `# ...` | Chú thích / log, bị bỏ qua |
 | `LCDIN:dòng 1\|dòng 2` | **Chiều ngược lại (máy tính -> Arduino)**: hiển thị lên LCD **cổng vào**. Mỗi dòng tối đa 16 ký tự ASCII không dấu. Arduino không có LCD đó hoặc còn firmware cũ thì bỏ qua |
 | `LCDOUT:dòng 1\|dòng 2` | Như trên nhưng cho LCD **cổng ra** |
 | `LCD:dòng 1\|dòng 2` | Lệnh cũ, Arduino coi như `LCDIN:` (giữ lại cho tương thích) |
 | `SERVOIN:OPEN` / `SERVOOUT:OPEN` | Mở servo **cổng vào** / **cổng ra**, giữ thời gian mặc định (3 giây) rồi Arduino **tự đóng** |
 | `SERVOIN:OPEN:3000` | Như trên nhưng giữ 3000 ms (Arduino kẹp trong khoảng 500..30000 ms). Python gửi dạng này theo `SERVO_OPEN_SECONDS` |
-| `SERVOIN:OPEN:3000:3000` | Như trên, thêm **cửa sổ chờ xe qua** (ms, kẹp 500..30000): xe đã ở cảm biến trước mà quá ngần này chưa tới cảm biến sau thì Arduino hạ thanh chắn và gửi `NOPASS`. Python gửi dạng này theo `SERVO_OPEN_SECONDS` và `IR_PASS_TIMEOUT_SECONDS` khi chờ xe qua |
+| `SERVOIN:OPEN:3000:3000` | Như trên, thêm **ân hạn khi xe rời đi** (ms, kẹp 500..30000): cảm biến trước mất tín hiệu quá ngần này mà cảm biến sau chưa thấy xe thì Arduino hạ thanh chắn và gửi `NOPASS`. Python gửi dạng này theo `SERVO_OPEN_SECONDS` và `IR_PASS_TIMEOUT_SECONDS` khi chờ xe qua |
 | `SERVOIN:CLOSE` / `SERVOOUT:CLOSE` | Đóng ngay (dự phòng) |
 | `SERVOIN:ANGLE:0:90` | Đặt **góc đóng (vị trí ban đầu)** rồi **góc mở** (`0`..`180` độ) cho servo cổng vào (`SERVOOUT:ANGLE:...` cho cổng ra); servo chạy tới góc mới ngay. Lệnh sai định dạng hoặc ngoài `0`..`180` bị bỏ qua cả lệnh. Python gửi lệnh này theo `SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` mỗi khi Arduino khởi động |
 
@@ -227,9 +227,9 @@ Mặc định ngõ ra xuống LOW khi có vật chắn (đa số module E18-D80N
 
 **Cách hoạt động** (Arduino tự đo, tính từ lúc thanh chắn MỞ): xe chắn cảm biến trước (xe đã ở **đúng vị trí**), rồi chắn cảm biến sau, rồi rời khỏi cả hai theo thứ tự đó thì Arduino coi là **đã qua**: **hạ thanh chắn ngay** (không chờ hết `SERVO_OPEN_SECONDS`) và gửi `PASS:<cổng>`. Xe lùi ra (cảm biến sau nhả khi cảm biến trước còn bị chắn) thì không tính là đã qua. Vật chỉ chắn cảm biến sau mà chưa từng chắn cảm biến trước (VD người đi ngược chiều) cũng bị bỏ qua. Tín hiệu được chống nhiễu `IR_DEBOUNCE_MS` (30 ms).
 
-**Cửa sổ chờ xe qua** (`IR_PASS_TIMEOUT_SECONDS`, mặc định 3 giây): đồng hồ bắt đầu **từ lúc cảm biến trước thấy xe** (sau khi thanh chắn mở). Nếu quá ngần đó mà cảm biến sau vẫn chưa thấy xe (xe đứng yên, lùi ra, hoặc đổi ý không vào) thì Arduino hạ thanh chắn và gửi `NOPASS:<cổng>`. Cảm biến sau thấy xe kịp lúc (kể cả đúng mốc hết hạn) thì không hủy. Cảm biến trước chưa từng thấy xe thì không có đồng hồ này, chỉ có hạn chót chung của lần mở thanh chắn (`SERVO_OPEN_SECONDS`).
+**Hủy phiên khi xe rời đi** (`IR_PASS_TIMEOUT_SECONDS`, mặc định 3 giây): **cảm biến trước còn tín hiệu thì KHÔNG hủy** (xe đang đứng chờ, bao lâu cũng được). Chỉ khi cảm biến trước đã thấy xe rồi **mất tín hiệu** mà cảm biến sau chưa từng thấy xe thì Arduino mới bắt đầu đếm ân hạn; hết ân hạn mà cảm biến sau vẫn chưa thấy xe (xe lùi ra hoặc đổi ý không vào) thì hạ thanh chắn và gửi `NOPASS:<cổng>`. Ân hạn giúp xe ngắn kịp chạy từ cảm biến trước sang cảm biến sau; cảm biến trước bị chắn lại trong lúc đếm thì đếm lại từ đầu; cảm biến sau thấy xe kịp lúc thì không hủy. Cảm biến trước chưa từng thấy xe thì không có đồng hồ này, chỉ có hạn chót chung của lần mở thanh chắn (`SERVO_OPEN_SECONDS`).
 
-**Hết giờ mở thanh chắn mà xe chưa qua:** Arduino hạ thanh chắn rồi gửi `NOPASS:<cổng>`. Nhưng nếu lúc hết giờ **vẫn còn vật chắn cảm biến** (xe đang đứng ở thanh chắn) thì Arduino chờ thêm, tối đa `IR_EXTEND_MAX_MS` (10 giây), để thanh chắn không hạ xuống xe (cửa sổ chờ xe qua ở trên vẫn có hiệu lực trong lúc chờ thêm). Đây là việc của Arduino, không cần máy tính.
+**Hết giờ mở thanh chắn mà xe chưa qua:** Arduino hạ thanh chắn rồi gửi `NOPASS:<cổng>`. Nhưng nếu lúc hết giờ **xe đã tới cảm biến trước mà chưa tới cảm biến sau** thì Arduino **không hạ thanh chắn**: chờ cho tới khi xe tiến vào (`PASS`) hoặc xe rời đi (cảm biến trước mất tín hiệu và **hết ân hạn** -> `NOPASS` như trên; còn tín hiệu thì chờ không giới hạn). Nhờ vậy xe ngắn đang nằm giữa hai cảm biến (cả hai cùng không thấy xe) cũng không bị thanh chắn hạ xuống. Nếu còn vật chắn ở cảm biến khác (xe đã ở cảm biến sau) thì chờ thêm tối đa `IR_EXTEND_MAX_MS` (10 giây). Phía máy tính, đồng hồ dự phòng (`SERVO_OPEN_SECONDS` + 15 giây) **không hủy phiên khi Arduino còn kết nối** (còn nhịp tim), mà chờ tiếp tối đa 5 phút (`PASS_WAIT_MAX_SECONDS` trong `ui/base_gate_app.py`); Arduino mất kết nối thì hủy như cũ.
 
 **Ghi nhận:** chỉ phiên có xe **đi qua** mới vào `access_log`, kèm cột `pass_in_status` / `pass_in_at` (cổng vào) hoặc `pass_out_status` / `pass_out_at` (cổng ra) = `PASSED`. Phiên bị hủy **không để lại dòng nào** (nên không còn trạng thái `TIMEOUT` cho phiên mới; dữ liệu cũ giữ nguyên). Khi hủy, thanh trạng thái của cổng đó hiện cảnh báo vàng "ĐÃ HỦY phiên quẹt thẻ ...". Xem nhanh:
 ```sql

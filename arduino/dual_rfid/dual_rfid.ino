@@ -11,8 +11,8 @@
                            kết nối" và coi Arduino là "không phản hồi" nếu quá RFID_HEARTBEAT_TIMEOUT giây
                            không nhận được dòng nào.
       PASS:IN              xe đã đi qua hẳn thanh chắn CỔNG VÀO (PASS:OUT cho cổng ra); thanh chắn đã được hạ ngay
-      NOPASS:IN            xe KHÔNG đi qua (NOPASS:OUT cho cổng ra): xe đã ở cảm biến trước mà quá PASS_WINDOW chưa tới cảm
-                           biến sau, hoặc hết giờ mở mà chưa qua; thanh chắn đã được hạ. Máy tính HỦY phiên quẹt thẻ
+      NOPASS:IN            xe KHÔNG đi qua (NOPASS:OUT cho cổng ra): xe đã rời cảm biến trước (mất tín hiệu) quá PASS_WINDOW mà
+                           cảm biến sau chưa thấy xe, hoặc hết giờ mở mà xe chưa tới cảm biến trước; thanh chắn đã được hạ. Máy tính HỦY phiên quẹt thẻ
                            (chỉ lưu khi nhận PASS)
       # ...                dòng chú thích, Python bỏ qua
     Máy tính -> Arduino:
@@ -24,8 +24,8 @@
                             LCD tương ứng không có thì bỏ qua lệnh đó (LCD còn lại vẫn chạy).
       SERVOIN:OPEN          mở servo (thanh chắn) CỔNG VÀO, giữ SERVO_HOLD_MS mặc định rồi TỰ đóng lại
       SERVOIN:OPEN:3000     như trên nhưng giữ 3000 ms (giới hạn SERVO_HOLD_MIN_MS..SERVO_HOLD_MAX_MS)
-      SERVOIN:OPEN:3000:3000  như trên, thêm CỬA SỔ CHỜ XE QUA (ms, giới hạn PASS_WINDOW_MIN_MS..PASS_WINDOW_MAX_MS): xe đã
-                            ở cảm biến trước mà quá ngần này chưa tới cảm biến sau thì hạ thanh chắn + NOPASS
+      SERVOIN:OPEN:3000:3000  như trên, thêm CỬA SỔ CHỜ XE QUA (ms, giới hạn PASS_WINDOW_MIN_MS..PASS_WINDOW_MAX_MS): cảm
+                            biến trước mất tín hiệu quá ngần này mà cảm biến sau chưa thấy xe thì hạ thanh chắn + NOPASS
       SERVOOUT:OPEN[:ms[:ms]]  như trên cho servo CỔNG RA
       SERVOIN:CLOSE         đóng ngay (SERVOOUT:CLOSE cho cổng ra)
       SERVOIN:ANGLE:0:90    đặt GÓC ĐÓNG (vị trí ban đầu) và GÓC MỞ của servo CỔNG VÀO, 0..180 độ (SERVOOUT:ANGLE:... cho
@@ -66,13 +66,15 @@
     CỔNG RA  :  trước -> D4,  sau -> D5
   Mặc định ngõ ra xuống LOW khi có vật chắn (đa số module E18-D80NK / FC-51); loại ngược lại thì đặt
   IR_ACTIVE_LOW = false. Chân dùng INPUT_PULLUP nên ngõ ra open-collector cũng chạy được.
-  Cửa sổ chờ xe qua: đồng hồ bắt đầu từ lúc cảm biến TRƯỚC thấy xe (xe đã vào đúng vị trí); quá PASS_WINDOW_MS (hoặc số ms
-  trong lệnh OPEN) mà cảm biến SAU chưa thấy xe thì hạ thanh chắn và báo NOPASS (xe không vào).
+  Hủy khi xe rời đi: cảm biến TRƯỚC còn tín hiệu (xe đang đứng chờ) thì KHÔNG hủy. Chỉ khi cảm biến TRƯỚC đã thấy xe rồi
+  MẤT tín hiệu mà cảm biến SAU chưa thấy xe sau PASS_WINDOW_MS (ân hạn; hoặc số ms trong lệnh OPEN) thì hạ thanh chắn và
+  báo NOPASS (xe rời đi, không vào).
   Cách hoạt động (sau khi thanh chắn MỞ): xe chắn cảm biến trước, rồi chắn cảm biến sau, rồi rời khỏi cả hai
   -> "đã qua": thanh chắn HẠ NGAY và Arduino gửi PASS:<cổng>. Xe lùi ra (cảm biến sau nhả khi cảm biến trước
   còn bị chắn) thì không tính là đã qua. Hết giờ giữ mở mà chưa qua thì hạ thanh chắn và gửi NOPASS:<cổng>,
-  NHƯNG nếu lúc đó còn có vật chắn cảm biến (xe đang ở dưới thanh chắn) thì chờ thêm tối đa IR_EXTEND_MAX_MS
-  rồi mới hạ, để thanh chắn không đóng xuống xe.
+  NHƯNG nếu lúc đó xe đã tới cảm biến TRƯỚC mà chưa tới cảm biến SAU thì chờ cho tới khi xe tiến vào (PASS) hoặc
+  rời đi (cảm biến trước mất tín hiệu và hết ân hạn -> NOPASS; còn tín hiệu thì chờ không giới hạn); còn vật chắn ở cảm biến khác thì chờ thêm tối đa IR_EXTEND_MAX_MS rồi mới hạ, để thanh chắn
+  không đóng xuống xe.
 
   Đấu dây ĐÈN LED BÁO XE VÀO (chỉ cổng vào): chân dương (anode, chân dài) -> điện trở 220 ohm -> A4,  chân âm -> GND.
   Khi cảm biến xác nhận xe đã ĐI QUA HẲN thanh chắn cổng vào (cùng lúc gửi PASS:IN) đèn sáng và giữ LED_ON_MS
@@ -119,7 +121,7 @@ const uint8_t PIN_IR_OUT_AFTER = 5;
 const bool IR_ACTIVE_LOW = true;               // true: ngõ ra LOW khi có vật chắn; false: HIGH khi có vật chắn
 const unsigned long IR_DEBOUNCE_MS = 30;       // tín hiệu phải ổn định ngần này ms mới được tin (chống nhiễu)
 const unsigned long IR_EXTEND_MAX_MS = 10000;  // hết giờ mà còn vật chắn cảm biến: chờ thêm tối đa ngần này ms
-const unsigned long PASS_WINDOW_MS = 3000;        // đã thấy xe ở cảm biến TRƯỚC mà quá ngần này ms vẫn chưa thấy cảm biến SAU -> hủy (NOPASS); máy tính ghi đè trong lệnh OPEN
+const unsigned long PASS_WINDOW_MS = 3000;        // ân hạn: cảm biến TRƯỚC đã thấy xe rồi MẤT tín hiệu quá ngần này ms mà cảm biến SAU chưa thấy xe -> hủy (NOPASS); máy tính ghi đè trong lệnh OPEN
 const unsigned long PASS_WINDOW_MIN_MS = 500;    // chặn lệnh sai: tối thiểu / tối đa
 const unsigned long PASS_WINDOW_MAX_MS = 30000;
 // Còi bíp: một còi chung, kêu mỗi lần quẹt thẻ (cổng vào hoặc cổng ra).
@@ -313,23 +315,26 @@ class PassDetector {
 // END PassDetector
 
 // BEGIN PassWindow (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
-// Cửa sổ chờ: tính từ lúc xe được thấy ở cảm biến TRƯỚC (xe đã vào đúng vị trí sau khi quẹt thẻ); nếu quá `windowMs`
-// mà cảm biến SAU vẫn chưa thấy xe thì expired() trả về true (Barrier hủy: hạ thanh chắn + NOPASS).
-// Chưa thấy xe ở cảm biến trước thì chưa đếm (đã có hạn chót chung của lần mở thanh chắn lo việc đó).
+// Hủy phiên khi xe RỜI ĐI mà không vào: cảm biến TRƯỚC đã thấy xe rồi MẤT tín hiệu mà cảm biến SAU chưa từng thấy xe.
+//   - Cảm biến trước còn đang bị chắn (xe đang đứng chờ ở đó): KHÔNG hủy, không đếm giờ.
+//   - Cảm biến trước vừa nhả ra mà cảm biến sau chưa thấy xe: bắt đầu đếm `windowMs` (thời gian ân hạn, để xe ngắn
+//     kịp chạy từ cảm biến trước sang cảm biến sau). Hết ân hạn mà cảm biến sau vẫn chưa thấy xe -> expired() = true
+//     (Barrier hủy: hạ thanh chắn + NOPASS). Trong lúc đếm mà cảm biến trước bị chắn lại thì đếm lại từ đầu.
+// Chưa thấy xe ở cảm biến trước thì không đếm (đã có hạn chót chung của lần mở thanh chắn lo việc đó).
 class PassWindow {
  public:
   void reset() { started_ = false; }
 
-  bool expired(bool seenBefore, bool seenAfter, unsigned long nowMs, unsigned long windowMs) {
-    if (!seenBefore) {
+  bool expired(bool seenBefore, bool seenAfter, bool beforeBlocked, unsigned long nowMs, unsigned long windowMs) {
+    if (!seenBefore || seenAfter || beforeBlocked) {
       started_ = false;
       return false;
     }
     if (!started_) {
       started_ = true;
-      startedAt_ = nowMs;
+      startedAt_ = nowMs;                      // cảm biến trước vừa mất tín hiệu
     }
-    return !seenAfter && nowMs - startedAt_ >= windowMs;
+    return nowMs - startedAt_ >= windowMs;
   }
 
  private:
@@ -425,14 +430,18 @@ class Barrier {
       report(F("PASS:"));
       return;
     }
-    // Xe đã tới cảm biến trước (đúng vị trí) mà quá passMs_ vẫn chưa thấy ở cảm biến sau: xe không đi vào -> hủy.
-    if (window_.expired(detector_.seenBefore(), detector_.seenAfter(), millis(), passMs_)) {
+    // Cảm biến trước đã thấy xe rồi MẤT tín hiệu (quá passMs_ ân hạn) mà cảm biến sau chưa thấy xe: xe rời đi, không
+    // vào -> hủy. Cảm biến trước còn tín hiệu (xe đang đứng chờ) thì không hủy.
+    if (window_.expired(detector_.seenBefore(), detector_.seenAfter(), before_.blocked(), millis(), passMs_)) {
       close();
       report(F("NOPASS:"));
       return;
     }
     unsigned long elapsed = millis() - openedAt_;
     if (elapsed < holdMs_) return;
+    // Hết giờ mở nhưng xe đã tới cảm biến trước mà chưa tới cảm biến sau: không hạ thanh chắn (kể cả khi cảm biến trước
+    // vừa mất tín hiệu, xe ngắn đang nằm giữa hai cảm biến). Chờ tới khi xe tiến vào (PASS) hoặc ân hạn hết (NOPASS ở trên).
+    if (detector_.seenBefore() && !detector_.seenAfter()) return;
     bool occupied = before_.blocked() || after_.blocked();
     if (occupied && elapsed < holdMs_ + IR_EXTEND_MAX_MS) return;   // xe đang ở thanh chắn: chưa hạ
     close();
