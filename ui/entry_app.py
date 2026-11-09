@@ -65,6 +65,14 @@ class EntryApp(BaseGateApp):
     def reset_view(self):
         self.show_offset_warning(False)
 
+    def can_rescan(self, uid):
+        """Không đọc đủ 5 số (không có số nào, hoặc chỉ 1..4 số: xe thường đứng lệch vị trí) -> chưa có gì để nhân
+        viên xác nhận, cho CHÍNH thẻ đó quẹt lại để quét lại, không cần bấm Hủy trên máy. Có ứng viên đủ 5 số
+        (hòa phiếu, hoặc AUTO_SAVE=0 chờ xác nhận) thì vẫn phải do nhân viên xử lý."""
+        o = self.pending
+        return (o is not None and o.kind is Outcome.ENTRY_PENDING and o.card_uid == uid
+                and plate_position_offset(o.scan))
+
     def build_buttons(self, parent):
         self.save_btn = ttk.Button(parent, text="💾 Lưu xe vào", command=self.save_entry,
                                    state="disabled")

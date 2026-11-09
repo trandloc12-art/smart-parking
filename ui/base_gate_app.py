@@ -267,6 +267,11 @@ class BaseGateApp:
         để chặn khi bãi đầy."""
         return False
 
+    def can_rescan(self, uid):
+        """Hook: True nếu lần quẹt thẻ `uid` được phép THAY ca đang chờ nhân viên (self.pending) để quét lại.
+        Mặc định không cho: phải xử lý hoặc Hủy trước. Cổng ra ghi đè cho trường hợp không đọc đủ 5 số."""
+        return False
+
     def pass_gated(self):
         """True khi việc GHI (lưu xe vào / đóng lượt ra) phải CHỜ cảm biến hồng ngoại xác nhận xe đã đi qua thanh chắn.
         Cần cảm biến bật (IR_ENABLED), servo bật (SERVO_ENABLED) và có Arduino để gửi lệnh; thiếu một trong ba thì
@@ -719,9 +724,14 @@ class BaseGateApp:
             self.set_status(f"Thẻ {uid}: đang xử lý, quẹt lại sau.", COLOR_WARN)
             return
         if self.pending is not None:
-            self.set_status(f"Còn thẻ {self.pending.card_uid} chờ xác nhận. "
-                            "Hãy xử lý hoặc Hủy trước khi quẹt thẻ mới.", COLOR_WARN)
-            return
+            if not self.can_rescan(uid):
+                self.set_status(f"Còn thẻ {self.pending.card_uid} chờ xác nhận. "
+                                "Hãy xử lý hoặc Hủy trước khi quẹt thẻ mới.", COLOR_WARN)
+                return
+            self.pending = None         # chưa ghi gì vào DB nên bỏ ca cũ rồi quét lại bình thường
+            self.plate_var.set("")
+            self.reset_view()           # ẩn cảnh báo / xóa phần hiển thị của ca cũ (kể cả khi lần quẹt này bị từ chối ngay sau đó)
+            self.update_action_buttons()
         if self.last_frame is None:
             self.lcd(LCD_NO_CAMERA)
             self.set_status(f"Thẻ {uid}: chưa có hình từ camera.", COLOR_ERR)

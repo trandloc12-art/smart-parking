@@ -187,6 +187,14 @@ class ExitApp(BaseGateApp):
             self.lcd(self.LCD_MISMATCH)
         self.set_status(msg, color)
 
+    def can_rescan(self, uid):
+        """Không đọc đủ 5 số (không có số nào, hoặc chỉ 1..4 số: xe thường đứng lệch vị trí) -> chưa có gì để nhân
+        viên xác nhận, cho CHÍNH thẻ đó quẹt lại để quét lại, không cần bấm Hủy trên máy. Có ứng viên đủ 5 số
+        (hòa phiếu), lệch biển hoặc không khớp thì vẫn phải do nhân viên xử lý."""
+        o = self.pending
+        return (o is not None and o.kind is Outcome.EXIT_REVIEW and o.reason is ReviewReason.NEED_NUMBER
+                and o.card_uid == uid and plate_position_offset(o.scan))
+
     # ---------- Nhân viên chốt / từ chối ----------
     def confirm_exit(self):
         o = self.pending

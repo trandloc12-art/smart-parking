@@ -195,6 +195,77 @@ def test_entry_lcd_conflicting_candidates_asks_staff(root, tmp_path, monkeypatch
     assert not app.offset_lbl.winfo_ismapped()
 
 
+def test_entry_rescan_allowed_when_not_enough_digits(root, tmp_path, monkeypatch):
+    # không đọc được số nào, hoặc chỉ đọc được 1..4 số -> quẹt lại CHÍNH thẻ đó là quét lại, không cần bấm Hủy
+    for first_script in ([""], ["258"], ["2588", "258", ""]):
+        app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, first_script)
+        swipe(app, "CARD1")
+        assert app.pending is not None and not app.pending.scan.tally and app.offset_lbl.winfo_ismapped()
+        assert lcd.sent[-1] == ("in", "XE LECH VI TRI", "HAY CHINH XE")
+
+        rec.set_script(["25888"])                            # xe đã chỉnh lại vị trí
+        out = swipe(app, "CARD1")
+        root.update()
+        assert out.kind is Outcome.ENTRY_SAVED and app.pending is None
+        assert not app.offset_lbl.winfo_ismapped()
+        assert len(db.rows) == 1 and db.rows[0].plate_number == "25888"
+        assert lcd.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25888")
+
+
+def test_entry_rescan_can_fail_again_and_repeat(root, tmp_path, monkeypatch):
+    app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, [""])
+    swipe(app, "CARD1")
+    swipe(app, "CARD1")                                      # vẫn không đọc được -> lại chờ, quẹt lại tiếp được
+    assert app.pending is not None and lcd.sent[-1] == ("in", "XE LECH VI TRI", "HAY CHINH XE")
+    assert db.rows == []                                     # chưa ghi gì
+    rec.set_script(["25888"])
+    assert swipe(app, "CARD1").kind is Outcome.ENTRY_SAVED
+
+
+def test_entry_rescan_blocked_for_other_card_tie_and_auto_save_off(root, tmp_path, monkeypatch):
+    app, db, rec, lcd = make_entry(root, tmp_path, monkeypatch, [""])
+    swipe(app, "CARD1")
+    before = app.pending
+    app.handle_card("CARD2")                                 # thẻ KHÁC khi đang chờ: vẫn chặn
+    pump(root, lambda: "chờ xác nhận" in app.status_lbl.cget("text"))
+    assert app.pending is before and not app.busy
+    app.cancel_pending()
+
+    rec.set_script(["25888", "25883", "25888", "25883", ""])     # hòa phiếu, đã có ứng viên đủ 5 số -> nhân viên xử lý
+    swipe(app, "CARD1")
+    held = app.pending
+    assert held is not None and held.scan.tally
+    app.handle_card("CARD1")
+    pump(root, lambda: "chờ xác nhận" in app.status_lbl.cget("text"))
+    assert app.pending is held
+    app.cancel_pending()
+
+    monkeypatch.setenv("IR_ENABLED", "0")                    # AUTO_SAVE tắt: luôn chờ xác nhận dù đọc rõ -> không phải lỗi lệch vị trí
+    db2, rec2 = FakeDb(), ScriptedRecognizer(["25888"])
+    app2 = EntryApp(root, EntryService(rec2, db2, str(tmp_path), auto_save=False, sleep=lambda s: None),
+                    FakeCamera(), settings("in", tmp_path, monkeypatch))
+    app2.rfid = LcdSpy()
+    assert pump(root, lambda: idle(app2) and app2.last_frame is not None)
+    swipe(app2, "CARD1")
+    held = app2.pending
+    assert held is not None and held.scan.decided
+    app2.handle_card("CARD1")
+    pump(root, lambda: "chờ xác nhận" in app2.status_lbl.cget("text"))
+    assert app2.pending is held and db2.rows == []
+
+
+def test_entry_rescan_when_lot_became_full_clears_stale_warning(root, tmp_path, monkeypatch):
+    app, db, rec, lcd = make_entry_slots(root, tmp_path, monkeypatch, [""])
+    swipe(app, "CARD1")
+    assert app.pending is not None and app.offset_lbl.winfo_ismapped()
+    app.slots.force(0)                                       # bãi vừa đầy trong lúc xe chờ chỉnh vị trí
+    app.handle_card("CARD1")
+    assert pump(root, lambda: app.pending is None and "ĐẦY" in app.status_lbl.cget("text"))
+    root.update()
+    assert not app.offset_lbl.winfo_ismapped() and app.plate_var.get() == ""   # không còn dải đỏ / số cũ
+    assert db.rows == []
+
+
 def make_exit(root, tmp_path, monkeypatch, script, inside=("CARD1", "CARD2"), ir=False, servo_ok=True):
     monkeypatch.setenv("IR_ENABLED", "1" if ir else "0")
     db = FakeDb()
@@ -252,6 +323,58 @@ def test_exit_lcd_position_offset_and_tie(root, tmp_path, monkeypatch):
     swipe(app, "CARD1")
     assert app.pending is not None and app.pending.scan.tally and not app.pending.scan.decided
     assert lcd.sent[-1] == ("out", "CHO NHAN VIEN", "KIEM TRA BIEN SO")
+
+
+def test_exit_rescan_allowed_when_not_enough_digits(root, tmp_path, monkeypatch):
+    # không đọc được số nào, hoặc chỉ đọc được 1..4 số -> quẹt lại CHÍNH thẻ đó là quét lại, không cần bấm Hủy
+    for first_script in ([""], ["258"], ["2588", "258", ""]):
+        app, db, rec, lcd = make_exit(root, tmp_path, monkeypatch, first_script, inside=("CARD1",))
+        swipe(app, "CARD1")
+        assert app.pending is not None and not app.pending.scan.tally
+        assert lcd.sent[-1] == ("out", "XE LECH VI TRI", "HAY CHINH XE")
+
+        rec.set_script(["25888"])                            # xe đã chỉnh lại vị trí
+        out = swipe(app, "CARD1")
+        assert out.kind is Outcome.EXIT_DONE and app.pending is None
+        assert db.find_open_session("CARD1") is None
+        assert lcd.sent[-1][1] == "XE RA OK"
+
+
+def test_exit_rescan_can_fail_again_and_repeat(root, tmp_path, monkeypatch):
+    app, db, rec, lcd = make_exit(root, tmp_path, monkeypatch, [""], inside=("CARD1",))
+    swipe(app, "CARD1")
+    swipe(app, "CARD1")                                      # vẫn không đọc được -> lại chờ, quẹt lại tiếp được
+    assert app.pending is not None and lcd.sent[-1] == ("out", "XE LECH VI TRI", "HAY CHINH XE")
+    assert db.find_open_session("CARD1") is not None         # chưa ghi gì, lượt vào vẫn mở
+    rec.set_script(["25888"])
+    assert swipe(app, "CARD1").kind is Outcome.EXIT_DONE
+
+
+def test_exit_rescan_blocked_for_other_card_tie_and_mismatch(root, tmp_path, monkeypatch):
+    app, db, rec, lcd = make_exit(root, tmp_path, monkeypatch, [""], inside=("CARD1", "CARD2"))
+    swipe(app, "CARD1")
+    before = app.pending
+    app.handle_card("CARD2")                                 # thẻ KHÁC khi đang chờ: vẫn chặn
+    pump(root, lambda: "chờ xác nhận" in app.status_lbl.cget("text"))
+    assert app.pending is before and not app.busy
+    app.cancel_pending()
+
+    rec.set_script(["25888", "25883", "25888", "25883", ""])     # hòa phiếu, đã có ứng viên đủ 5 số -> nhân viên xử lý
+    swipe(app, "CARD1")
+    held = app.pending
+    assert held is not None and held.scan.tally
+    app.handle_card("CARD1")
+    pump(root, lambda: "chờ xác nhận" in app.status_lbl.cget("text"))
+    assert app.pending is held
+    app.cancel_pending()
+
+    rec.set_script(["25883"])                                # lệch 1 số -> nhân viên xử lý
+    swipe(app, "CARD1")
+    held = app.pending
+    assert held is not None
+    app.handle_card("CARD1")
+    pump(root, lambda: "chờ xác nhận" in app.status_lbl.cget("text"))
+    assert app.pending is held
 
 
 def test_lcd_exit_ok_formats_money_within_16_columns():
