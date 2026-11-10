@@ -77,6 +77,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `SERVO_ENABLED` | `1` | `1` = quẹt thẻ thành công thì mở servo thanh chắn; `0` = chưa gắn servo thì tắt đi (không gửi lệnh nào) |
 | `SERVO_OPEN_SECONDS` | `3` | Số giây giữ thanh chắn mở rồi Arduino tự đóng lại (`0.5`..`30`) |
 | `SERVO_CLOSED_ANGLE`, `SERVO_OPEN_ANGLE` | `0`, `90` | **Góc ban đầu** (thanh chắn hạ) và góc thanh chắn nâng của servo, `0`..`180` độ. Gửi cho Arduino mỗi lần nó khởi động. Servo quay ngược thì đảo hai giá trị; hai cổng gắn khác nhau thì đặt riêng trong `.env.in` / `.env.out` |
+| `BUZZER_FREQ_HZ` | `2000` | Cao độ tiếng còi, `100`..`8000` Hz, trong `.env` (xem *Còi bíp*). Còi active không đổi được tần số |
+| `BUZZER_BEEP_MS` | `120` | Độ dài một tiếng bíp, `20`..`2000` ms, trong `.env` |
 | `IR_ENABLED` | `1` | `1` = quẹt thẻ xong **chờ cảm biến xác nhận xe đã đi qua thanh chắn rồi mới lưu** (không qua thì hủy phiên); `0` = chưa gắn cảm biến thì tắt đi (lưu ngay khi quẹt thẻ như bản cũ, bỏ qua `PASS` / `NOPASS` từ Arduino). Chỉ chờ khi `SERVO_ENABLED=1` và có Arduino để gửi lệnh mở thanh chắn |
 | `IR_PASS_TIMEOUT_SECONDS` | `3` | **Ân hạn** (`0.5`..`30` giây) tính từ lúc **cảm biến trước mất tín hiệu** mà **cảm biến sau** chưa từng thấy xe thì xe được coi là rời đi và **hủy phiên quẹt thẻ**. Cảm biến trước còn tín hiệu (xe đang đứng chờ) thì **không hủy**. Đặt `0.5` để hủy gần như ngay khi cảm biến trước mất tín hiệu. Hai cổng khác nhau thì đặt riêng trong `.env.in` / `.env.out` |
 | `IMG_DIR` | `anh_chup/` trong project | Thư mục ảnh, hai cổng dùng chung |
@@ -120,6 +122,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `SERVOIN:OPEN` / `SERVOOUT:OPEN` | Mở servo **cổng vào** / **cổng ra**, giữ thời gian mặc định (3 giây) rồi Arduino **tự đóng** |
 | `SERVOIN:OPEN:3000` | Như trên nhưng giữ 3000 ms (Arduino kẹp trong khoảng 500..30000 ms). Python gửi dạng này theo `SERVO_OPEN_SECONDS` |
 | `SERVOIN:OPEN:3000:3000` | Như trên, thêm **ân hạn khi xe rời đi** (ms, kẹp 500..30000): cảm biến trước mất tín hiệu quá ngần này mà cảm biến sau chưa thấy xe thì Arduino hạ thanh chắn và gửi `NOPASS`. Python gửi dạng này theo `SERVO_OPEN_SECONDS` và `IR_PASS_TIMEOUT_SECONDS` khi chờ xe qua |
+| `BUZZER:TONE:2000:120` | Đặt **âm thanh còi**: tần số (`100`..`8000` Hz) rồi độ dài một tiếng bíp (`20`..`2000` ms). Lệnh sai định dạng hoặc ngoài khoảng bị bỏ qua cả lệnh. Python gửi lệnh này theo `BUZZER_FREQ_HZ` / `BUZZER_BEEP_MS` mỗi khi Arduino khởi động |
+| `BUZZER:BEEP` | Kêu thử một tiếng bíp với âm thanh hiện tại |
 | `SERVOIN:CLOSE` / `SERVOOUT:CLOSE` | Đóng ngay (dự phòng) |
 | `SERVOIN:ANGLE:0:90` | Đặt **góc đóng (vị trí ban đầu)** rồi **góc mở** (`0`..`180` độ) cho servo cổng vào (`SERVOOUT:ANGLE:...` cho cổng ra); servo chạy tới góc mới ngay. Lệnh sai định dạng hoặc ngoài `0`..`180` bị bỏ qua cả lệnh. Python gửi lệnh này theo `SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` mỗi khi Arduino khởi động |
 
@@ -194,7 +198,7 @@ Hai chân D6/D7 không trùng SPI (D8..D13), LCD (A0..A3), cảm biến hồng n
 **An toàn:** Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo hay rút cáp USB thì thanh chắn cũng không kẹt ở trạng thái mở; khởi động / reset luôn về vị trí đóng. Quẹt thẻ liên tiếp khi thanh chắn đang mở thì gia hạn thời gian, không đóng giữa chừng. Việc mở servo không bao giờ làm hỏng việc xử lý thẻ (mất kết nối, chưa gắn servo hay `SERVO_ENABLED=0` đều chỉ bỏ qua lệnh). Mở Serial Monitor (9600) sẽ thấy `# dual_rfid san sang (servo: vao=D6, ra=D7, coi=A5, ir: vao=D2/D3, ra=D4/D5, led=A4)`; gõ thử `SERVOIN:OPEN` hoặc `SERVOOUT:OPEN` để kiểm tra từng servo (hoặc `SERVOIN:ANGLE:0:90` để đặt góc).
 
 ## Còi bíp (tùy chọn: MỘT còi dùng chung cho cả hai cổng)
-Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi kêu **một tiếng bíp ngắn** (mặc định 2000 Hz, 120 ms) để người quẹt biết thẻ đã được đọc. Còi do **Arduino tự điều khiển** ngay khi đọc được thẻ, không cần chờ máy tính, nên vẫn kêu khi chương trình Python chưa chạy; bíp kêu cho mọi thẻ đọc được, kể cả thẻ chưa đăng ký. Không có lệnh nào từ máy tính để điều khiển còi, và không có biến cấu hình trong `.env`.
+Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi kêu **một tiếng bíp ngắn** (mặc định 2000 Hz, 120 ms) để người quẹt biết thẻ đã được đọc. Còi do **Arduino tự điều khiển** ngay khi đọc được thẻ, không cần chờ máy tính, nên vẫn kêu khi chương trình Python chưa chạy; bíp kêu cho mọi thẻ đọc được, kể cả thẻ chưa đăng ký. Âm thanh của tiếng bíp (cao độ và độ dài) chỉnh bằng hai biến `BUZZER_FREQ_HZ` / `BUZZER_BEEP_MS` trong `.env` (xem *Chỉnh âm thanh còi* bên dưới); việc **kêu** vẫn do Arduino tự làm.
 
 **Đấu dây:**
 
@@ -203,7 +207,18 @@ Mỗi lần quẹt thẻ ở **bất kỳ cổng nào** (vào hoặc ra), còi k
 | Chân dương (+) | **A5** |
 | Chân âm (-) | GND |
 
-A5 không trùng SPI (D8..D13), servo (D6/D7), cảm biến hồng ngoại (D2..D5), LCD (A0..A3) hay Serial. Sketch dùng `tone()` nên chạy được **cả còi active lẫn passive** (không cần biết loại còi). Còi nhỏ (dưới khoảng 20 mA) nối thẳng chân A5; còi công suất lớn thì qua transistor. Đổi chân / tần số / độ dài tiếng bíp ở `PIN_BUZZER`, `BUZZER_FREQ_HZ`, `BUZZER_BEEP_MS` đầu `dual_rfid.ino`, rồi nạp lại. Nếu dùng còi active mà tiếng nghe rè, thử đổi `tone(...)` trong hàm `beep()` thành `digitalWrite(PIN_BUZZER, HIGH)` rồi `LOW` sau một khoảng ngắn.
+A5 không trùng SPI (D8..D13), servo (D6/D7), cảm biến hồng ngoại (D2..D5), LCD (A0..A3) hay Serial. Sketch dùng `tone()` nên chạy được **cả còi active lẫn passive** (không cần biết loại còi). Còi nhỏ (dưới khoảng 20 mA) nối thẳng chân A5; còi công suất lớn thì qua transistor. Đổi chân ở `PIN_BUZZER` đầu `dual_rfid.ino` rồi nạp lại; còn tần số / độ dài tiếng bíp chỉnh trong `.env`, **không cần nạp lại sketch** (hằng số `BUZZER_FREQ_HZ` / `BUZZER_BEEP_MS` trong sketch chỉ là giá trị mặc định khi chưa nhận được lệnh từ máy tính). Nếu dùng còi active mà tiếng nghe rè, thử đổi `tone(...)` trong hàm `beep()` thành `digitalWrite(PIN_BUZZER, HIGH)` rồi `LOW` sau một khoảng ngắn.
+
+**Chỉnh âm thanh còi:** hai giá trị trong `.env` (dùng chung cho cả hai cổng, chương trình gửi cho Arduino bằng lệnh `BUZZER:TONE:<Hz>:<ms>` mỗi khi Arduino khởi động và gửi lại nếu Arduino bị reset, nên **đổi giá trị chỉ cần sửa `.env` rồi chạy lại chương trình**):
+
+| Biến | Mặc định | Khoảng | Tác dụng |
+|---|---|---|---|
+| `BUZZER_FREQ_HZ` | `2000` | `100`..`8000` | **Cao độ.** Số càng cao tiếng càng thanh / chói, càng thấp càng trầm. Gợi ý: `1000` trầm, dịu; `2000` bíp thường; `3000`..`4000` thanh, vang to nhất với đa số còi passive (gần tần số cộng hưởng) |
+| `BUZZER_BEEP_MS` | `120` | `20`..`2000` | **Độ dài** một tiếng bíp (mili giây). `60` ngắn gọn; `300` kéo dài rõ ràng |
+
+Giá trị ngoài khoảng làm chương trình báo lỗi ngay khi khởi động. **Kêu thử không cần quẹt thẻ:** mở Serial Monitor (9600) gõ `BUZZER:BEEP` để nghe với âm thanh hiện tại; gõ `BUZZER:TONE:3000:200` để đổi thử tức thì (chỉ tới khi Arduino reset, muốn giữ lâu dài thì ghi vào `.env`). Lệnh sai định dạng hoặc ngoài khoảng bị bỏ qua cả lệnh.
+
+**Giới hạn:** Arduino không chỉnh được **âm lượng** bằng `tone()`: còi **active** chỉ kêu một tần số cố định nên `BUZZER_FREQ_HZ` không đổi được tiếng (chỉ `BUZZER_BEEP_MS` có tác dụng); còi **passive** đổi được cao độ, và vì còi kêu to nhất ở gần tần số cộng hưởng nên chỉnh tần số cũng làm tiếng to hơn hoặc nhỏ đi phần nào. Muốn nhỏ hẳn thì mắc thêm điện trở nối tiếp (VD 100..470 ohm) hoặc biến trở với chân (+) của còi.
 
 ## Cảm biến hồng ngoại (tùy chọn: bốn cảm biến, mỗi cổng hai cái)
 Mỗi cổng có hai cảm biến hồng ngoại: một ở **trước** thanh chắn (phía xe đi tới) và một ở **sau** thanh chắn, để Arduino biết xe đã đi qua thanh chắn chưa. Không gắn cảm biến thì hệ thống vẫn chạy như cũ (thanh chắn tự đóng theo giờ); nhớ đặt `IR_ENABLED=0` trong `.env` để chương trình không ghi nhận `NOPASS` cho mọi lượt.

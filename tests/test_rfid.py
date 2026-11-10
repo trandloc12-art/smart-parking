@@ -4,7 +4,7 @@ import serial
 
 from hardware.rfid import (
     ArduinoRfidReader, BadLine, BarrierEvent, CardSwipe, ReaderStatus, format_lcd_command,
-    format_servo_angle_command, format_servo_command, lcd_text, parse_line, servo_init_commands,
+    buzzer_init_commands, format_buzzer_command, format_servo_angle_command, format_servo_command, lcd_text, parse_line, servo_init_commands,
 )
 
 
@@ -474,3 +474,35 @@ def test_init_commands_retry_after_a_failed_write_and_never_kill_the_reader():
 def test_init_commands_default_to_nothing():
     reader = ArduinoRfidReader("COM3", 9600, lambda g, u: None, serial_factory=None)
     assert reader.init_commands == ()
+
+
+# ---------------------------------------------------------------- còi bíp
+def test_format_buzzer_command():
+    assert format_buzzer_command(2000, 120) == "BUZZER:TONE:2000:120\n"
+    assert format_buzzer_command(100, 20) == "BUZZER:TONE:100:20\n"            # biên dưới
+    assert format_buzzer_command(8000, 2000) == "BUZZER:TONE:8000:2000\n"      # biên trên
+
+
+@pytest.mark.parametrize("args", [(99, 120), (8001, 120), (2000, 19), (2000, 2001), (2000.5, 120),
+                                  ("2000", 120), (True, 120), (2000, None)])
+def test_format_buzzer_command_rejects_bad_input(args):
+    with pytest.raises(ValueError):
+        format_buzzer_command(*args)
+
+
+def test_buzzer_init_commands_uses_config_values():
+    class Cfg:
+        buzzer_freq_hz = 3000
+        buzzer_beep_ms = 250
+
+    assert buzzer_init_commands(Cfg()) == ["BUZZER:TONE:3000:250\n"]
+
+
+def test_buzzer_commands_are_written_to_the_port():
+    from hardware.rfid import ArduinoRfidReader
+    sent = []
+    r = ArduinoRfidReader("COM_TEST", 9600, on_card=lambda *a: None, on_status=lambda *a: None)
+    r._write_line = lambda line: sent.append(line) or True
+    assert r.send_buzzer_tone(3000, 200) is True
+    assert r.send_buzzer_beep() is True
+    assert sent == ["BUZZER:TONE:3000:200\n", "BUZZER:BEEP\n"]

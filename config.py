@@ -19,6 +19,8 @@ GATES = {
 }
 DEFAULT_RFID_PORT = "COM3"      # MỘT Arduino chung cho cả hai cổng (ghi đè bằng RFID_PORT trong .env)
 DEFAULT_PARKING_CAPACITY = 3    # số slot (chỗ đỗ) của bãi (ghi đè bằng PARKING_CAPACITY trong .env)
+BUZZER_FREQ_RANGE = (100, 8000)  # Hz, phải khớp BUZZER_FREQ_MIN_HZ..MAX_HZ trong dual_rfid.ino
+BUZZER_BEEP_RANGE = (20, 2000)   # ms, phải khớp BUZZER_BEEP_MIN_MS..MAX_MS trong dual_rfid.ino
 
 
 def _parse_value(raw):
@@ -131,6 +133,8 @@ class Settings:
     ir_pass_timeout_seconds: float = 3.0   # giây: cảm biến trước mất tín hiệu quá ngần này mà cảm biến sau chưa thấy xe -> hủy phiên quẹt thẻ (trước còn tín hiệu: không hủy)
     lcd_idle_seconds: float = 5.0   # giây: thông báo xong việc (xe vào/ra OK, thẻ bị từ chối) tự về màn hình chờ; 0 = giữ đến lần quẹt sau
     parking_capacity: int = DEFAULT_PARKING_CAPACITY   # số chỗ (slot) của bãi: đủ rồi thì cổng vào không nhận quẹt thẻ
+    buzzer_freq_hz: int = 2000      # Hz: cao độ tiếng còi (còi passive; còi active kêu một tần số cố định). Gửi cho Arduino mỗi lần nó khởi động
+    buzzer_beep_ms: int = 120       # ms: độ dài một tiếng bíp
 
 
 def load_settings(gate, env=None):
@@ -183,6 +187,8 @@ def load_settings(gate, env=None):
         servo_open_seconds=_num("SERVO_OPEN_SECONDS", "3", float),
         servo_closed_angle=_num("SERVO_CLOSED_ANGLE", "0"),
         servo_open_angle=_num("SERVO_OPEN_ANGLE", "90"),
+        buzzer_freq_hz=_num("BUZZER_FREQ_HZ", "2000"),
+        buzzer_beep_ms=_num("BUZZER_BEEP_MS", "120"),
         ir_enabled=_env("IR_ENABLED", "1") == "1",
         ir_pass_timeout_seconds=_num("IR_PASS_TIMEOUT_SECONDS", "3", float),
     )
@@ -203,6 +209,10 @@ def load_settings(gate, env=None):
             raise ValueError(f"{name} phải nằm trong khoảng 0..180 độ")
     if s.servo_closed_angle == s.servo_open_angle:
         raise ValueError("SERVO_CLOSED_ANGLE và SERVO_OPEN_ANGLE không được bằng nhau (thanh chắn sẽ không nhúc nhích)")
+    if not BUZZER_FREQ_RANGE[0] <= s.buzzer_freq_hz <= BUZZER_FREQ_RANGE[1]:
+        raise ValueError(f"BUZZER_FREQ_HZ phải nằm trong khoảng {BUZZER_FREQ_RANGE[0]}..{BUZZER_FREQ_RANGE[1]} Hz")
+    if not BUZZER_BEEP_RANGE[0] <= s.buzzer_beep_ms <= BUZZER_BEEP_RANGE[1]:
+        raise ValueError(f"BUZZER_BEEP_MS phải nằm trong khoảng {BUZZER_BEEP_RANGE[0]}..{BUZZER_BEEP_RANGE[1]} ms")
     if s.rfid_heartbeat < 0:
         raise ValueError("RFID_HEARTBEAT_TIMEOUT phải >= 0 (0 = tắt kiểm tra)")
     if s.block_minutes < 1 or s.price_per_block < 0:

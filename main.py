@@ -42,11 +42,11 @@ def _make_db(cfg):
 
 def _make_rfid(cfg, apps, **reader_kwargs):
     """MỘT bộ đọc cho cả Arduino. apps: {mã cổng: giao diện của cổng đó}. Góc servo ban đầu của các cổng đang chạy
-    được gửi cho Arduino mỗi khi nó khởi động (init_commands).
+    và âm thanh còi được gửi cho Arduino mỗi khi nó khởi động (init_commands).
 
     Thẻ / tình trạng đầu đọc được chuyển đúng cổng; cổng nào không có giao diện (chạy một cổng) thì bỏ qua.
     Tình trạng Arduino (cổng COM) gửi cho mọi cổng vì chung một thiết bị."""
-    from hardware.rfid import ArduinoRfidReader, servo_init_commands
+    from hardware.rfid import ArduinoRfidReader, buzzer_init_commands, servo_init_commands
 
     def on_card(gate, uid):
         if gate in apps:
@@ -68,7 +68,8 @@ def _make_rfid(cfg, apps, **reader_kwargs):
                              on_reader_status=on_reader_status, on_barrier=on_barrier,
                              debounce=cfg.rfid_debounce,
                              heartbeat_timeout=cfg.rfid_heartbeat,
-                             init_commands=servo_init_commands(*(a.cfg for a in apps.values())),
+                             init_commands=(servo_init_commands(*(a.cfg for a in apps.values()))
+                                            + buzzer_init_commands(cfg)),
                              **reader_kwargs)
 
 

@@ -100,3 +100,87 @@ def test_open_command_carries_the_pass_window(servo_cmd):
 def test_bad_hold_does_not_break_the_pass_window_default(servo_cmd):
     # "OPEN:abc:4000": số giữ mở hỏng -> dùng mặc định; không đoán cửa sổ chờ từ phần sau
     assert servo_cmd("OPEN:abc:4000") == [["open 3000 3000"]]
+
+
+# ---------------------------------------------------------------- còi bíp: handleBuzzer
+BUZZER_DRIVER = r"""
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+#include <iostream>
+#include <string>
+const unsigned int BUZZER_FREQ_HZ = 2000, BUZZER_BEEP_MS = 120;
+const unsigned int BUZZER_FREQ_MIN_HZ = %s, BUZZER_FREQ_MAX_HZ = %s, BUZZER_BEEP_MIN_MS = %s, BUZZER_BEEP_MAX_MS = %s;
+const int PIN_BUZZER = 0;
+static void tone(int, unsigned int f, unsigned int d) { std::printf("beep %%u %%u\n", f, d); }
+unsigned int buzzerFreqHz = BUZZER_FREQ_HZ;
+unsigned int buzzerBeepMs = BUZZER_BEEP_MS;
+%s
+int main() {
+  std::string line;
+  while (std::getline(std::cin, line)) {          // mỗi dòng: một lệnh sau "BUZZER:"; rồi kêu thử để thấy giá trị hiện tại
+    char buf[64];
+    std::strncpy(buf, line.c_str(), sizeof buf - 1);
+    buf[sizeof buf - 1] = '\0';
+    handleBuzzer(buf);
+    std::printf("now %%u %%u\n", buzzerFreqHz, buzzerBeepMs);
+  }
+}
+"""
+
+
+def _ino_const(name):
+    import re
+    return re.search(rf"{name}\s*=\s*(\d+)", INO).group(1)
+
+
+@pytest.fixture(scope="module")
+def buzzer_cmd(tmp_path_factory):
+    gxx = shutil.which("g++")
+    if gxx is None:
+        pytest.skip("không có g++ để biên dịch thử handleBuzzer")
+    beep_start = INO.index("void beep() {")
+    start = INO.index("void handleBuzzer(char *args)")
+    funcs = INO[beep_start:INO.index("\n}\n", beep_start) + 3] + INO[start:INO.index("\n}\n", start) + 3]
+    consts = [_ino_const(n) for n in ("BUZZER_FREQ_MIN_HZ", "BUZZER_FREQ_MAX_HZ", "BUZZER_BEEP_MIN_MS", "BUZZER_BEEP_MAX_MS")]
+    d = tmp_path_factory.mktemp("buzzer_cmd")
+    (d / "main.cpp").write_text(BUZZER_DRIVER % (*consts, funcs), encoding="utf-8")
+    subprocess.run([gxx, "-std=c++11", "-Wall", "-Werror", str(d / "main.cpp"), "-o", str(d / "run")], check=True)
+
+    def run(*args):
+        """args: phần sau 'BUZZER:'. Trả về, cho từng lệnh, các dòng in ra (beep ... / now <Hz> <ms>)."""
+        out = subprocess.run([str(d / "run")], input="\n".join(args) + "\n", capture_output=True, text=True,
+                             check=True).stdout.splitlines()
+        return out
+
+    return run
+
+
+def test_buzzer_firmware_range_matches_python():
+    import config
+    from hardware import rfid
+    freq = (int(_ino_const("BUZZER_FREQ_MIN_HZ")), int(_ino_const("BUZZER_FREQ_MAX_HZ")))
+    beep = (int(_ino_const("BUZZER_BEEP_MIN_MS")), int(_ino_const("BUZZER_BEEP_MAX_MS")))
+    assert freq == config.BUZZER_FREQ_RANGE == rfid.BUZZER_FREQ_RANGE
+    assert beep == config.BUZZER_BEEP_RANGE == rfid.BUZZER_BEEP_RANGE
+
+
+def test_buzzer_tone_command_sets_sound_and_beep_plays_it(buzzer_cmd):
+    assert buzzer_cmd("TONE:3000:250", "BEEP") == ["now 3000 250", "beep 3000 250", "now 3000 250"]
+
+
+def test_buzzer_beep_before_any_tone_uses_defaults(buzzer_cmd):
+    assert buzzer_cmd("BEEP") == ["beep 2000 120", "now 2000 120"]
+
+
+@pytest.mark.parametrize("cmd", [
+    "TONE:", "TONE:3000", "TONE:3000:", "TONE::200", "TONE:abc:200", "TONE:3000:xyz",
+    "TONE:99:200", "TONE:8001:200", "TONE:3000:19", "TONE:3000:2001", "TONE:-5:200", "TONE:3000:-5", "NOPE",
+])
+def test_bad_buzzer_commands_keep_the_old_sound(buzzer_cmd, cmd):
+    assert buzzer_cmd(cmd) == ["now 2000 120"]
+
+
+def test_buzzer_edges_are_accepted(buzzer_cmd):
+    assert buzzer_cmd("TONE:100:20", "TONE:8000:2000") == ["now 100 20", "now 8000 2000"]

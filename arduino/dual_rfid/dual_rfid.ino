@@ -32,6 +32,11 @@
                             cổng ra). Servo chạy tới góc mới ngay. Máy tính gửi lệnh này mỗi khi Arduino khởi động; chưa nhận
                             được thì servo dùng SERVO_CLOSED_ANGLE / SERVO_OPEN_ANGLE bên dưới.
                             Arduino tự đóng bằng đồng hồ của chính nó nên máy tính treo cũng không kẹt thanh chắn mở.
+      BUZZER:TONE:2000:120  đặt ÂM THANH còi: TẦN SỐ (Hz, BUZZER_FREQ_MIN_HZ..BUZZER_FREQ_MAX_HZ) rồi ĐỘ DÀI một tiếng bíp
+                            (ms, BUZZER_BEEP_MIN_MS..BUZZER_BEEP_MAX_MS). Sai định dạng hoặc ngoài khoảng thì bỏ qua cả lệnh.
+                            Máy tính gửi lệnh này mỗi khi Arduino khởi động (BUZZER_FREQ_HZ / BUZZER_BEEP_MS trong .env);
+                            chưa nhận được thì còi dùng BUZZER_FREQ_HZ / BUZZER_BEEP_MS bên dưới.
+      BUZZER:BEEP           kêu thử một tiếng bíp với âm thanh hiện tại (để chỉnh tai nghe, không cần quẹt thẻ)
 
   Đấu dây RFID (Arduino Uno/Nano; đổi chân trong 3 hằng số bên dưới nếu cần):
     Dùng chung cho cả hai module:  SCK -> D13,  MOSI -> D11,  MISO -> D12,  RST -> D9,  3.3V,  GND
@@ -57,8 +62,9 @@
   Đấu dây CÒI BÍP (MỘT còi dùng chung cho cả hai cổng): chân (+) -> A5,  chân (-) -> GND.
   Mỗi lần quẹt thẻ ở BẤT KỲ cổng nào còi kêu một tiếng bíp ngắn (do Arduino tự làm ngay khi đọc được thẻ,
   không chờ máy tính). Dùng tone() nên chạy được cả còi active lẫn passive; còi nhỏ (< 20 mA) nối thẳng
-  chân A5, còi công suất lớn thì qua transistor. Muốn đổi chân / tần số / độ dài: sửa PIN_BUZZER,
-  BUZZER_FREQ_HZ, BUZZER_BEEP_MS bên dưới.
+  chân A5, còi công suất lớn thì qua transistor. Muốn đổi chân: sửa PIN_BUZZER bên dưới. Tần số / độ dài
+  tiếng bíp chỉnh bằng BUZZER_FREQ_HZ / BUZZER_BEEP_MS trong .env (máy tính gửi BUZZER:TONE mỗi khi Arduino khởi động,
+  không phải nạp lại sketch); hằng số cùng tên bên dưới chỉ là giá trị mặc định khi chưa nhận được lệnh.
 
   Đấu dây BỐN CẢM BIẾN HỒNG NGOẠI (mỗi cổng hai cái: một ở TRƯỚC, một ở SAU thanh chắn), dùng để biết xe đã
   đi qua hẳn thanh chắn chưa. Mỗi cảm biến: VCC -> 5V, GND -> GND, ngõ ra (OUT) -> chân số:
@@ -126,8 +132,12 @@ const unsigned long PASS_WINDOW_MIN_MS = 500;    // chặn lệnh sai: tối thi
 const unsigned long PASS_WINDOW_MAX_MS = 30000;
 // Còi bíp: một còi chung, kêu mỗi lần quẹt thẻ (cổng vào hoặc cổng ra).
 const uint8_t PIN_BUZZER = A5;
-const unsigned int BUZZER_FREQ_HZ = 2000;      // passive: đây là cao độ; active: vẫn kêu bình thường
-const unsigned int BUZZER_BEEP_MS = 120;       // độ dài một tiếng bíp
+const unsigned int BUZZER_FREQ_HZ = 2000;      // passive: đây là cao độ; active: vẫn kêu bình thường. Máy tính ghi đè bằng BUZZER_FREQ_HZ trong .env
+const unsigned int BUZZER_BEEP_MS = 120;       // độ dài một tiếng bíp. Máy tính ghi đè bằng BUZZER_BEEP_MS trong .env
+const unsigned int BUZZER_FREQ_MIN_HZ = 100;   // khoảng cho phép của lệnh BUZZER:TONE (ngoài khoảng thì bỏ qua lệnh)
+const unsigned int BUZZER_FREQ_MAX_HZ = 8000;
+const unsigned int BUZZER_BEEP_MIN_MS = 20;
+const unsigned int BUZZER_BEEP_MAX_MS = 2000;
 // Đèn LED báo xe vào (chỉ cổng vào): sáng LED_ON_MS kể từ lúc xe đi qua hẳn thanh chắn cổng vào rồi tự tắt.
 const uint8_t PIN_LED = A4;
 const unsigned long LED_ON_MS = 20000;         // 20 giây
@@ -490,9 +500,31 @@ void sendStatus() {
   Serial.println(b ? 1 : 0);
 }
 
+// Âm thanh hiện tại của còi; mặc định lấy từ hằng số bên trên, máy tính ghi đè bằng BUZZER:TONE.
+unsigned int buzzerFreqHz = BUZZER_FREQ_HZ;
+unsigned int buzzerBeepMs = BUZZER_BEEP_MS;
+
 // Một tiếng bíp ngắn. tone() có thời lượng KHÔNG chặn vòng loop (tự tắt bằng ngắt timer).
 void beep() {
-  tone(PIN_BUZZER, BUZZER_FREQ_HZ, BUZZER_BEEP_MS);
+  tone(PIN_BUZZER, buzzerFreqHz, buzzerBeepMs);
+}
+
+// Lệnh còi: `args` là phần sau "BUZZER:", dạng "TONE:<Hz>:<ms>" hoặc "BEEP".
+void handleBuzzer(char *args) {
+  if (strncmp(args, "BEEP", 4) == 0) {
+    beep();
+  } else if (strncmp(args, "TONE:", 5) == 0) {            // "TONE:<tần số Hz>:<độ dài ms>"
+    char *end = nullptr;
+    long freq = strtol(args + 5, &end, 10);
+    if (end == args + 5 || *end != ':') return;           // sai định dạng: bỏ qua cả lệnh
+    char *start = end + 1;
+    long ms = strtol(start, &end, 10);
+    if (end == start) return;
+    if (freq < (long)BUZZER_FREQ_MIN_HZ || freq > (long)BUZZER_FREQ_MAX_HZ) return;
+    if (ms < (long)BUZZER_BEEP_MIN_MS || ms > (long)BUZZER_BEEP_MAX_MS) return;
+    buzzerFreqHz = (unsigned int)freq;
+    buzzerBeepMs = (unsigned int)ms;
+  }
 }
 
 void pollReader(MFRC522 &reader, bool ok, const __FlashStringHelper *tag) {
@@ -591,10 +623,12 @@ void handleServo(Barrier &barrier, char *args) {
   }
 }
 
-// Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu SERVOIN:, SERVOOUT:, LCDIN:, LCDOUT: và LCD: (cũ = LCDIN);
+// Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu BUZZER:, SERVOIN:, SERVOOUT:, LCDIN:, LCDOUT: và LCD: (cũ = LCDIN);
 // lệnh khác bỏ qua.
 void handleCommand(char *cmd) {
-  char *args = afterPrefix(cmd, "SERVOOUT:");
+  char *args = afterPrefix(cmd, "BUZZER:");
+  if (args != nullptr) { handleBuzzer(args); return; }
+  args = afterPrefix(cmd, "SERVOOUT:");
   if (args != nullptr) { handleServo(barrierOut, args); return; }
   args = afterPrefix(cmd, "SERVOIN:");
   if (args != nullptr) { handleServo(barrierIn, args); return; }

@@ -24,6 +24,8 @@ Chiều NGƯỢC LẠI thứ hai: mở thanh chắn (servo) của từng cổng 
     SERVOIN:ANGLE:0:90     đặt góc đóng (vị trí ban đầu) và góc mở của servo CỔNG VÀO (SERVOOUT:ANGLE:... cho cổng ra);
                            gửi mỗi khi Arduino khởi động (xem init_commands)
                            Arduino tự đóng, nên dù máy tính treo thì thanh chắn cũng không kẹt ở trạng thái mở.
+    BUZZER:TONE:2000:120   đặt âm thanh còi: tần số (Hz) rồi độ dài một tiếng bíp (ms); gửi mỗi khi Arduino khởi động
+    BUZZER:BEEP            kêu thử một tiếng bíp (để chỉnh âm thanh)
 
 Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
     on_card(gate, uid)                  có thẻ quẹt ở cổng `gate` ("in" | "out")
@@ -127,6 +129,23 @@ def servo_init_commands(*cfgs):
     Cổng tắt servo (SERVO_ENABLED=0) thì không gửi gì."""
     return [format_servo_angle_command(c.gate, c.servo_closed_angle, c.servo_open_angle)
             for c in cfgs if getattr(c, "servo_enabled", True)]
+
+
+BUZZER_FREQ_RANGE = (100, 8000)      # Hz, khớp firmware (BUZZER_FREQ_MIN_HZ..MAX_HZ)
+BUZZER_BEEP_RANGE = (20, 2000)       # ms, khớp firmware (BUZZER_BEEP_MIN_MS..MAX_MS)
+
+
+def format_buzzer_command(freq_hz, beep_ms):
+    """Lệnh đặt âm thanh còi, VD 'BUZZER:TONE:2000:120\\n': tần số (Hz) rồi độ dài một tiếng bíp (ms)."""
+    for name, value, (lo, hi) in (("tần số còi", freq_hz, BUZZER_FREQ_RANGE), ("độ dài tiếng bíp", beep_ms, BUZZER_BEEP_RANGE)):
+        if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+            raise ValueError(f"{name} phải là số nguyên {lo}..{hi}, đang là {value!r}")
+    return f"BUZZER:TONE:{freq_hz}:{beep_ms}\n"
+
+
+def buzzer_init_commands(cfg):
+    """Lệnh đặt âm thanh còi (init_commands của ArduinoRfidReader). Còi dùng chung cho cả hai cổng nên chỉ cần một lệnh."""
+    return [format_buzzer_command(cfg.buzzer_freq_hz, cfg.buzzer_beep_ms)]
 
 
 # ---------------------------------------------------------------- phân tích một dòng (hàm thuần)
@@ -252,6 +271,14 @@ class ArduinoRfidReader(threading.Thread):
     def send_servo_angles(self, gate, closed_angle, open_angle):
         """Đặt góc đóng (vị trí ban đầu) và góc mở cho servo của cổng `gate`. Trả về True nếu đã ghi ra cổng COM."""
         return self._write_line(format_servo_angle_command(gate, closed_angle, open_angle))
+
+    def send_buzzer_tone(self, freq_hz, beep_ms):
+        """Đặt tần số (Hz) và độ dài (ms) tiếng bíp của còi. Trả về True nếu đã ghi ra cổng COM."""
+        return self._write_line(format_buzzer_command(freq_hz, beep_ms))
+
+    def send_buzzer_beep(self):
+        """Kêu thử một tiếng bíp với âm thanh hiện tại của Arduino. Trả về True nếu đã ghi ra cổng COM."""
+        return self._write_line("BUZZER:BEEP\n")
 
     def _send_init_commands(self):
         """Gửi các lệnh khởi tạo; chưa gửi hết (mất kết nối giữa chừng) thì thử lại ở dòng STATUS kế tiếp (~2 giây)."""

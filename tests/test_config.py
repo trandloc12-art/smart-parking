@@ -355,3 +355,29 @@ def test_ir_pass_timeout_can_differ_per_gate(tmp_path):
     env_out, _ = config.gate_env("out", str(tmp_path), environ={})
     assert config.load_settings("in", env_in).ir_pass_timeout_seconds == 3.0
     assert config.load_settings("out", env_out).ir_pass_timeout_seconds == 5.0
+
+
+def test_buzzer_settings_defaults_and_override(monkeypatch):
+    monkeypatch.delenv("BUZZER_FREQ_HZ", raising=False)
+    monkeypatch.delenv("BUZZER_BEEP_MS", raising=False)
+    s = config.load_settings("in")
+    assert (s.buzzer_freq_hz, s.buzzer_beep_ms) == (2000, 120)            # mặc định khớp firmware
+    s = config.load_settings("out", {"BUZZER_FREQ_HZ": "3000", "BUZZER_BEEP_MS": "250"})
+    assert (s.buzzer_freq_hz, s.buzzer_beep_ms) == (3000, 250)
+
+
+@pytest.mark.parametrize("name, value", [
+    ("BUZZER_FREQ_HZ", "99"), ("BUZZER_FREQ_HZ", "8001"), ("BUZZER_FREQ_HZ", "0"),
+    ("BUZZER_BEEP_MS", "19"), ("BUZZER_BEEP_MS", "2001"), ("BUZZER_BEEP_MS", "0"),
+])
+def test_buzzer_out_of_range_is_rejected(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=name):
+        config.load_settings("in")
+
+
+@pytest.mark.parametrize("name, value", [("BUZZER_FREQ_HZ", "100"), ("BUZZER_FREQ_HZ", "8000"),
+                                         ("BUZZER_BEEP_MS", "20"), ("BUZZER_BEEP_MS", "2000")])
+def test_buzzer_range_edges_are_accepted(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    assert config.load_settings("in") is not None
