@@ -26,6 +26,8 @@ Chiều NGƯỢC LẠI thứ hai: mở thanh chắn (servo) của từng cổng 
                            Arduino tự đóng, nên dù máy tính treo thì thanh chắn cũng không kẹt ở trạng thái mở.
     BUZZER:TONE:2000:120   đặt âm thanh còi: tần số (Hz) rồi độ dài một tiếng bíp (ms); gửi mỗi khi Arduino khởi động
     BUZZER:BEEP            kêu thử một tiếng bíp (để chỉnh âm thanh)
+    STUCK:10000            ngưỡng cảnh báo xe dừng quá lâu (ms; 0 = tắt): đã quẹt thẻ mà xe đứng yên ở cảm biến trước / sau quá
+                           ngưỡng này thì còi kêu lặp tới khi xe nhúc nhích hoặc thanh chắn đóng; gửi mỗi khi Arduino khởi động
 
 Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
     on_card(gate, uid)                  có thẻ quẹt ở cổng `gate` ("in" | "out")
@@ -141,6 +143,24 @@ def format_buzzer_command(freq_hz, beep_ms):
         if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
             raise ValueError(f"{name} phải là số nguyên {lo}..{hi}, đang là {value!r}")
     return f"BUZZER:TONE:{freq_hz}:{beep_ms}\n"
+
+
+STUCK_WARN_RANGE = (1, 600)         # giây (0 = tắt), khớp firmware (STUCK_WARN_MIN_MS..MAX_MS)
+
+
+def format_stuck_command(seconds):
+    """Lệnh đặt ngưỡng cảnh báo xe dừng quá lâu, VD 'STUCK:10000\\n' (giây -> ms). 0 = tắt cảnh báo."""
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        raise ValueError(f"ngưỡng cảnh báo phải là số giây, đang là {seconds!r}")
+    lo, hi = STUCK_WARN_RANGE
+    if seconds != 0 and not lo <= seconds <= hi:
+        raise ValueError(f"ngưỡng cảnh báo phải là 0 (tắt) hoặc {lo}..{hi} giây, đang là {seconds!r}")
+    return f"STUCK:{int(round(seconds * 1000))}\n"
+
+
+def stuck_init_commands(cfg):
+    """Lệnh đặt ngưỡng cảnh báo xe dừng quá lâu (init_commands của ArduinoRfidReader). Còi dùng chung nên chỉ một lệnh."""
+    return [format_stuck_command(cfg.stuck_warn_seconds)]
 
 
 def buzzer_init_commands(cfg):
@@ -275,6 +295,10 @@ class ArduinoRfidReader(threading.Thread):
     def send_buzzer_tone(self, freq_hz, beep_ms):
         """Đặt tần số (Hz) và độ dài (ms) tiếng bíp của còi. Trả về True nếu đã ghi ra cổng COM."""
         return self._write_line(format_buzzer_command(freq_hz, beep_ms))
+
+    def send_stuck_warn(self, seconds):
+        """Đặt ngưỡng (giây) cảnh báo xe dừng quá lâu, 0 = tắt. Trả về True nếu đã ghi ra cổng COM."""
+        return self._write_line(format_stuck_command(seconds))
 
     def send_buzzer_beep(self):
         """Kêu thử một tiếng bíp với âm thanh hiện tại của Arduino. Trả về True nếu đã ghi ra cổng COM."""

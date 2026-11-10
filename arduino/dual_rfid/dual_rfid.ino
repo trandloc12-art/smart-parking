@@ -37,6 +37,11 @@
                             Máy tính gửi lệnh này mỗi khi Arduino khởi động (BUZZER_FREQ_HZ / BUZZER_BEEP_MS trong .env);
                             chưa nhận được thì còi dùng BUZZER_FREQ_HZ / BUZZER_BEEP_MS bên dưới.
       BUZZER:BEEP           kêu thử một tiếng bíp với âm thanh hiện tại (để chỉnh tai nghe, không cần quẹt thẻ)
+      STUCK:10000           đặt NGƯỠNG cảnh báo xe dừng quá lâu (ms, STUCK_WARN_MIN_MS..STUCK_WARN_MAX_MS; 0 = tắt cảnh báo).
+                            Thanh chắn đang mở (đã quẹt thẻ) mà xe đứng yên ở cảm biến trước / sau quá ngưỡng này thì còi kêu
+                            lặp (mỗi STUCK_BEEP_PERIOD_MS) tới khi xe nhúc nhích / qua hẳn / thanh chắn đóng. Sai định dạng
+                            hoặc ngoài khoảng thì bỏ qua cả lệnh. Máy tính gửi lệnh này mỗi khi Arduino khởi động
+                            (STUCK_WARN_SECONDS trong .env); chưa nhận được thì dùng STUCK_WARN_MS bên dưới.
 
   Đấu dây RFID (Arduino Uno/Nano; đổi chân trong 3 hằng số bên dưới nếu cần):
     Dùng chung cho cả hai module:  SCK -> D13,  MOSI -> D11,  MISO -> D12,  RST -> D9,  3.3V,  GND
@@ -77,10 +82,11 @@
   báo NOPASS (xe rời đi, không vào).
   Cách hoạt động (sau khi thanh chắn MỞ): xe chắn cảm biến trước, rồi chắn cảm biến sau, rồi rời khỏi cả hai
   -> "đã qua": thanh chắn HẠ NGAY và Arduino gửi PASS:<cổng>. Xe lùi ra (cảm biến sau nhả khi cảm biến trước
-  còn bị chắn) thì không tính là đã qua. Hết giờ giữ mở mà chưa qua thì hạ thanh chắn và gửi NOPASS:<cổng>,
-  NHƯNG nếu lúc đó xe đã tới cảm biến TRƯỚC mà chưa tới cảm biến SAU thì chờ cho tới khi xe tiến vào (PASS) hoặc
-  rời đi (cảm biến trước mất tín hiệu và hết ân hạn -> NOPASS; còn tín hiệu thì chờ không giới hạn); còn vật chắn ở cảm biến khác thì chờ thêm tối đa IR_EXTEND_MAX_MS rồi mới hạ, để thanh chắn
-  không đóng xuống xe.
+  còn bị chắn) thì không tính là đã qua. ĐỒNG HỒ ĐÓNG (cả hai cổng): thanh chắn
+  chỉ bắt đầu đếm ngược SERVO_OPEN_SECONDS (holdMs) từ lúc xe RỜI cảm biến TRƯỚC (cảm biến trước nhả ra); xe còn đứng ở cảm biến
+  trước thì không đếm. Hết giờ đếm mà xe chưa qua thì hạ thanh chắn và gửi NOPASS:<cổng>. Xe CHƯA tới cảm biến trước thì đếm
+  từ lúc mở thanh chắn (hạn chót chờ xe). Cảm biến SAU còn tín hiệu thì KHÔNG BAO GIỜ hạ thanh chắn (không giới hạn thời gian,
+  đồng hồ đếm lại khi cảm biến sau nhả ra) để thanh chắn không đóng xuống xe.
 
   Đấu dây ĐÈN LED BÁO XE VÀO (chỉ cổng vào): chân dương (anode, chân dài) -> điện trở 220 ohm -> A4,  chân âm -> GND.
   Khi cảm biến xác nhận xe đã ĐI QUA HẲN thanh chắn cổng vào (cùng lúc gửi PASS:IN) đèn sáng và giữ LED_ON_MS
@@ -126,7 +132,6 @@ const uint8_t PIN_IR_OUT_BEFORE = 4;
 const uint8_t PIN_IR_OUT_AFTER = 5;
 const bool IR_ACTIVE_LOW = true;               // true: ngõ ra LOW khi có vật chắn; false: HIGH khi có vật chắn
 const unsigned long IR_DEBOUNCE_MS = 30;       // tín hiệu phải ổn định ngần này ms mới được tin (chống nhiễu)
-const unsigned long IR_EXTEND_MAX_MS = 10000;  // hết giờ mà còn vật chắn cảm biến: chờ thêm tối đa ngần này ms
 const unsigned long PASS_WINDOW_MS = 3000;        // ân hạn: cảm biến TRƯỚC đã thấy xe rồi MẤT tín hiệu quá ngần này ms mà cảm biến SAU chưa thấy xe -> hủy (NOPASS); máy tính ghi đè trong lệnh OPEN
 const unsigned long PASS_WINDOW_MIN_MS = 500;    // chặn lệnh sai: tối thiểu / tối đa
 const unsigned long PASS_WINDOW_MAX_MS = 30000;
@@ -141,6 +146,12 @@ const unsigned int BUZZER_BEEP_MAX_MS = 2000;
 // Đèn LED báo xe vào (chỉ cổng vào): sáng LED_ON_MS kể từ lúc xe đi qua hẳn thanh chắn cổng vào rồi tự tắt.
 const uint8_t PIN_LED = A4;
 const unsigned long LED_ON_MS = 20000;         // 20 giây
+// Còi cảnh báo xe dừng quá lâu: thanh chắn đang mở (đã quẹt thẻ) mà xe đứng yên ở cảm biến trước / sau quá STUCK_WARN_MS
+// thì còi kêu lặp mỗi STUCK_BEEP_PERIOD_MS cho tới khi xe nhúc nhích hoặc thanh chắn đóng. Máy tính ghi đè bằng lệnh STUCK:.
+const unsigned long STUCK_WARN_MS = 10000;      // 10 giây; 0 = tắt cảnh báo
+const unsigned long STUCK_WARN_MIN_MS = 1000;   // chặn lệnh sai: khoảng cho phép của lệnh STUCK (ngoài khoảng, trừ 0, bị bỏ qua)
+const unsigned long STUCK_WARN_MAX_MS = 600000;
+const unsigned long STUCK_BEEP_PERIOD_MS = 400; // chu kỳ bíp khi đang cảnh báo (dài hơn BUZZER_BEEP_MS để nghe rõ từng tiếng)
 const uint8_t RX_MAX = 48;                     // "LCDOUT:" + 16 + "|" + 16 = 40 ký tự, chừa dư
 
 MFRC522 readerIn(PIN_SS_IN, PIN_RST);
@@ -254,6 +265,7 @@ SoftLcd *lcdOut = nullptr;                     // nullptr = không tìm thấy L
 bool inOk = false;
 bool outOk = false;
 unsigned long lastStatus = 0;
+unsigned long lastStuckBeep = 0;               // lần bíp cảnh báo xe dừng quá lâu gần nhất
 
 char rxBuf[RX_MAX + 1];                        // dòng lệnh đang nhận từ máy tính
 uint8_t rxLen = 0;
@@ -353,6 +365,72 @@ class PassWindow {
 };
 // END PassWindow
 
+// BEGIN CloseCountdown (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
+// Đồng hồ HẠ THANH CHẮN, dùng cho cả hai cổng. Hai quy tắc:
+//   1) Cảm biến SAU còn bị chắn (còn tín hiệu) thì KHÔNG BAO GIỜ hạ thanh chắn, chờ bao lâu cũng được; đồng hồ đang đếm
+//      cũng bị hủy và đếm lại từ đầu khi cảm biến sau nhả ra.
+//   2) Khi xe ĐÃ tới cảm biến trước thì đồng hồ chỉ bắt đầu đếm từ lúc xe RỜI cảm biến trước (cảm biến trước nhả ra);
+//      xe còn đứng ở cảm biến trước thì không đếm. Đủ `holdMs` kể từ đó -> due() = true (Barrier hạ + NOPASS).
+// Xe CHƯA tới cảm biến trước thì chưa có mốc "rời" để đếm: dùng hạn chót chờ xe, tính từ lúc mở thanh chắn (`openedAt`),
+// để quẹt thẻ rồi xe không vào thì thanh chắn không mở mãi.
+class CloseCountdown {
+ public:
+  void reset() { started_ = false; }
+
+  bool due(bool seenBefore, bool beforeBlocked, bool afterBlocked, unsigned long openedAt, unsigned long nowMs,
+           unsigned long holdMs) {
+    if (afterBlocked) {                        // xe còn ở cảm biến sau: không đóng, đếm lại khi nó nhả ra
+      started_ = false;
+      return false;
+    }
+    if (!seenBefore) return nowMs - openedAt >= holdMs;   // chưa có xe tới: hạn chót chờ xe
+    if (beforeBlocked) {                       // xe đang đứng ở cảm biến trước: chưa đếm
+      started_ = false;
+      return false;
+    }
+    if (!started_) {
+      started_ = true;
+      startedAt_ = nowMs;                      // xe vừa rời cảm biến trước: bắt đầu đếm ngược
+    }
+    return nowMs - startedAt_ >= holdMs;
+  }
+
+ private:
+  bool started_ = false;
+  unsigned long startedAt_ = 0;
+};
+// END CloseCountdown
+
+// BEGIN StuckTimer (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
+// Phát hiện xe DỪNG QUÁ LÂU ở cảm biến: có ít nhất một cảm biến (trước / sau) bị chắn mà trạng thái của cặp cảm biến
+// KHÔNG đổi suốt `limitMs`. Trạng thái đổi (xe tiến từ cảm biến trước sang cảm biến sau, lùi ra...) thì đếm lại từ đầu;
+// không còn cảm biến nào bị chắn thì hết cảnh báo. limitMs = 0: tắt. Gọi mỗi vòng loop khi thanh chắn đang mở.
+class StuckTimer {
+ public:
+  void reset() { tracking_ = false; }
+
+  // Trả về true khi xe đã đứng yên ở cảm biến quá `limitMs` (còn đứng thì vẫn true).
+  bool update(bool before, bool after, unsigned long nowMs, unsigned long limitMs) {
+    if (!before && !after) {                   // chưa có xe ở cảm biến nào
+      tracking_ = false;
+      return false;
+    }
+    if (!tracking_ || before != lastBefore_ || after != lastAfter_) {
+      tracking_ = true;                        // xe vừa tới hoặc vừa nhúc nhích: đếm lại
+      lastBefore_ = before;
+      lastAfter_ = after;
+      since_ = nowMs;
+      return false;
+    }
+    return limitMs > 0 && nowMs - since_ >= limitMs;
+  }
+
+ private:
+  bool tracking_ = false, lastBefore_ = false, lastAfter_ = false;
+  unsigned long since_ = 0;
+};
+// END StuckTimer
+
 // BEGIN LedTimer (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
 // Hẹn giờ đèn: trigger() bật đèn và bắt đầu đếm; hết `durationMs` thì tự tắt. trigger() khi đèn đang sáng thì đếm lại
 // từ đầu. Thời gian truyền vào (millis()), trừ số nguyên không dấu nên vẫn đúng khi millis() tràn (~49 ngày).
@@ -381,12 +459,13 @@ class LedTimer {
 // END LedTimer
 
 LedTimer entryLed(LED_ON_MS);                  // đèn báo xe vào (gắn vào PIN_LED)
+unsigned long stuckWarnMs = STUCK_WARN_MS;     // ngưỡng cảnh báo xe dừng quá lâu (ms, 0 = tắt); máy tính ghi đè bằng lệnh STUCK:
 
 // ------------------------------------------------------------------ Servo thanh chắn
 // Một thanh chắn: mở theo lệnh rồi TỰ đóng khi hết thời gian giữ (đo bằng millis(), không chặn vòng loop nên
 // việc quét thẻ và nhận lệnh LCD vẫn chạy bình thường trong lúc thanh chắn đang mở).
 // Có hai cảm biến hồng ngoại: xe đã đi qua hẳn thì HẠ NGAY và báo PASS:<cổng>; hết giờ mà chưa qua thì hạ và báo
-// NOPASS:<cổng> (còn vật chắn cảm biến thì chờ thêm tối đa IR_EXTEND_MAX_MS để không hạ xuống xe).
+// NOPASS:<cổng>. Đồng hồ đóng chỉ đếm từ lúc xe rời cảm biến trước (xem CloseCountdown); cảm biến sau còn sáng thì không hạ.
 class Barrier {
  public:
   // led: đèn báo xe đã qua thanh chắn của cổng này (nullptr = cổng không có đèn).
@@ -409,6 +488,8 @@ class Barrier {
       servo_.write(openAngle_);
       detector_.reset();                       // lần mở mới: theo dõi xe từ đầu
       window_.reset();
+      countdown_.reset();
+      stuckTimer_.reset();
     }
     open_ = true;
     openedAt_ = millis();
@@ -420,6 +501,8 @@ class Barrier {
   void close() {
     if (open_) servo_.write(closedAngle_);
     open_ = false;
+    stuck_ = false;                            // thanh chắn đóng: hết cảnh báo
+    stuckTimer_.reset();
   }
 
   // Đặt góc đóng (vị trí ban đầu) / góc mở. Servo chạy tới góc tương ứng với trạng thái hiện tại ngay.
@@ -429,15 +512,26 @@ class Barrier {
     servo_.write(open_ ? openAngle_ : closedAngle_);
   }
 
+  // true = xe đã quẹt thẻ nhưng đứng yên ở cảm biến trước / sau quá lâu (loop() cho còi kêu lặp). Cập nhật trong update().
+  bool stuck() const { return stuck_; }
+
   void update() {                              // gọi mỗi vòng loop
     before_.update();
     after_.update();
     if (!open_) return;
+    // Xe đã quẹt thẻ (thanh chắn đang mở) mà đứng yên ở cảm biến trước / sau quá stuckWarnMs: bật cảnh báo (còi kêu lặp ở loop()).
+    stuck_ = stuckTimer_.update(before_.blocked(), after_.blocked(), millis(), stuckWarnMs);
 
-    if (detector_.update(before_.blocked(), after_.blocked())) {
-      close();                                 // xe đã qua hẳn: hạ ngay
+    bool afterBlocked = after_.blocked();
+    if (detector_.update(before_.blocked(), afterBlocked)) {
+      close();                                 // xe đã qua hẳn (cảm biến sau đã nhả): hạ ngay
       if (led_ != nullptr) led_->trigger(millis());   // bật đèn báo xe vào (đếm lại nếu đang sáng)
       report(F("PASS:"));
+      return;
+    }
+    // Cảm biến sau còn tín hiệu (xe đang nằm dưới / sau thanh chắn): KHÔNG hạ thanh chắn, không giới hạn thời gian.
+    if (afterBlocked) {
+      countdown_.reset();
       return;
     }
     // Cảm biến trước đã thấy xe rồi MẤT tín hiệu (quá passMs_ ân hạn) mà cảm biến sau chưa thấy xe: xe rời đi, không
@@ -447,15 +541,11 @@ class Barrier {
       report(F("NOPASS:"));
       return;
     }
-    unsigned long elapsed = millis() - openedAt_;
-    if (elapsed < holdMs_) return;
-    // Hết giờ mở nhưng xe đã tới cảm biến trước mà chưa tới cảm biến sau: không hạ thanh chắn (kể cả khi cảm biến trước
-    // vừa mất tín hiệu, xe ngắn đang nằm giữa hai cảm biến). Chờ tới khi xe tiến vào (PASS) hoặc ân hạn hết (NOPASS ở trên).
-    if (detector_.seenBefore() && !detector_.seenAfter()) return;
-    bool occupied = before_.blocked() || after_.blocked();
-    if (occupied && elapsed < holdMs_ + IR_EXTEND_MAX_MS) return;   // xe đang ở thanh chắn: chưa hạ
-    close();
-    report(F("NOPASS:"));                      // hết giờ mà chưa thấy xe qua
+    // Đồng hồ đóng: chỉ đếm từ lúc xe RỜI cảm biến trước (xe chưa tới thì tính từ lúc mở); hết holdMs_ thì hạ + NOPASS.
+    if (countdown_.due(detector_.seenBefore(), before_.blocked(), afterBlocked, openedAt_, millis(), holdMs_)) {
+      close();
+      report(F("NOPASS:"));
+    }
   }
 
  private:
@@ -469,6 +559,9 @@ class Barrier {
   IrSensor before_, after_;
   PassDetector detector_;
   PassWindow window_;
+  CloseCountdown countdown_;
+  StuckTimer stuckTimer_;
+  bool stuck_ = false;
   const char *tag_;                            // "IN" / "OUT" (chuỗi thường: F() không dùng được ở phạm vi toàn cục)
   LedTimer *led_;                              // đèn báo xe qua thanh chắn; nullptr = không có
   bool open_ = false;
@@ -625,9 +718,21 @@ void handleServo(Barrier &barrier, char *args) {
 
 // Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu BUZZER:, SERVOIN:, SERVOOUT:, LCDIN:, LCDOUT: và LCD: (cũ = LCDIN);
 // lệnh khác bỏ qua.
+// Lệnh cảnh báo xe dừng quá lâu: `args` là phần sau "STUCK:", là số ms (0 = tắt, hoặc STUCK_WARN_MIN_MS..STUCK_WARN_MAX_MS).
+// Sai định dạng / ngoài khoảng thì bỏ qua cả lệnh.
+void handleStuck(char *args) {
+  char *end = nullptr;
+  long ms = strtol(args, &end, 10);
+  if (end == args || *end != '\0' || ms < 0) return;
+  if (ms != 0 && (ms < (long)STUCK_WARN_MIN_MS || ms > (long)STUCK_WARN_MAX_MS)) return;
+  stuckWarnMs = (unsigned long)ms;
+}
+
 void handleCommand(char *cmd) {
   char *args = afterPrefix(cmd, "BUZZER:");
   if (args != nullptr) { handleBuzzer(args); return; }
+  args = afterPrefix(cmd, "STUCK:");
+  if (args != nullptr) { handleStuck(args); return; }
   args = afterPrefix(cmd, "SERVOOUT:");
   if (args != nullptr) { handleServo(barrierOut, args); return; }
   args = afterPrefix(cmd, "SERVOIN:");
@@ -695,6 +800,11 @@ void loop() {
   barrierIn.update();
   barrierOut.update();
   digitalWrite(PIN_LED, entryLed.update(millis()) ? HIGH : LOW);   // đèn báo xe vào: tự tắt sau LED_ON_MS
+  // Xe đã quẹt thẻ mà đứng yên ở cảm biến trước / sau quá lâu (ở một trong hai cổng): còi kêu lặp tới khi xe nhúc nhích.
+  if ((barrierIn.stuck() || barrierOut.stuck()) && millis() - lastStuckBeep >= STUCK_BEEP_PERIOD_MS) {
+    lastStuckBeep = millis();
+    beep();
+  }
 
   if (millis() - lastStatus >= STATUS_INTERVAL_MS) {
     lastStatus = millis();

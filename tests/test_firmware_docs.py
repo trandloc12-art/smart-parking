@@ -177,28 +177,27 @@ def test_open_command_with_pass_window_is_documented_and_implemented_on_both_sid
     assert format_servo_command("out", "OPEN", 3, 3) == "SERVOOUT:OPEN:3000:3000\n"
 
 
-def test_barrier_checks_pass_before_the_window_and_cancels_with_nopass():
-    """Thứ tự trong Barrier::update: PASS (xe qua hẳn) được xét trước, rồi mới tới cửa sổ chờ; hết hạn thì hạ thanh chắn
-    và báo NOPASS (không bật LED). Đây là thứ tự mà tests/test_pass_detector.py mô phỏng."""
+def test_barrier_checks_pass_then_rear_sensor_guard_then_window_then_countdown():
+    """Thứ tự trong Barrier::update: PASS (xe qua hẳn) -> cảm biến sau còn sáng thì thoát (KHÔNG đóng) -> cửa sổ chờ
+    (NOPASS) -> đồng hồ đóng (NOPASS). Đây là thứ tự mà tests/test_pass_detector.py mô phỏng."""
     body = INO[INO.index("class Barrier"):INO.index("Barrier barrierIn(")]
     update = body[body.index("void update()"):]
     detector_at = update.index("detector_.update(")
+    guard_at = update.index("if (afterBlocked) {")
     window_at = update.index("window_.expired(")
-    hold_at = update.index("elapsed < holdMs_")
-    assert detector_at < window_at < hold_at
-    expired_branch = update[window_at:hold_at]
+    countdown_at = update.index("countdown_.due(")
+    assert detector_at < guard_at < window_at < countdown_at
+    guard = update[guard_at:window_at]
+    assert "return;" in guard and "close();" not in guard              # cảm biến sau còn sáng: tuyệt đối không đóng
+    expired_branch = update[window_at:countdown_at]
     assert "close();" in expired_branch and 'report(F("NOPASS:"))' in expired_branch
-    assert "led_->trigger(" not in expired_branch               # hủy phiên thì đèn không sáng
-    assert "window_.reset()" in body[body.index("void open("):body.index("void close()")]   # mỗi lần mở: đếm lại từ đầu
+    assert "led_->trigger(" not in expired_branch                      # hủy phiên thì đèn không sáng
+    assert "led_->trigger(" not in update[countdown_at:]
+    opened = body[body.index("void open("):body.index("void close()")]
+    assert "window_.reset()" in opened and "countdown_.reset()" in opened   # mỗi lần mở: đếm lại từ đầu
 
 
-def test_barrier_does_not_lower_onto_a_vehicle_still_at_the_front_sensor():
-    """Hết giờ mở mà xe đã tới cảm biến trước chưa tới cảm biến sau (kể cả đang nằm giữa hai cảm biến): không hạ thanh chắn,
-    chờ PASS hoặc hết ân hạn."""
-    body = INO[INO.index("class Barrier"):INO.index("Barrier barrierIn(")]
-    update = body[body.index("void update()"):]
-    hold_at = update.index("elapsed < holdMs_")
-    front_at = update.index("detector_.seenBefore() && !detector_.seenAfter()")
-    extend_at = update.index("IR_EXTEND_MAX_MS")
-    assert hold_at < front_at < extend_at
-    assert "before_.blocked(), millis(), passMs_" in update          # PassWindow nhận trạng thái cảm biến trước
+def test_barrier_no_longer_has_a_time_cap_for_a_vehicle_on_the_rear_sensor():
+    """Bản cũ chờ thêm tối đa IR_EXTEND_MAX_MS rồi vẫn hạ xuống xe; nay cảm biến sau còn sáng thì không bao giờ hạ."""
+    assert "IR_EXTEND_MAX_MS" not in INO
+    assert "IR_EXTEND_MAX_MS" not in README

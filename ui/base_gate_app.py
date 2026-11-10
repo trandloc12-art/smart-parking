@@ -337,7 +337,7 @@ class BaseGateApp:
         """Đồng hồ dự phòng đã hết mà Arduino chưa báo PASS / NOPASS.
 
         Arduino còn kết nối (còn nhịp tim) thì không hủy: cảm biến trước còn tín hiệu (xe đang đứng chờ) nên Arduino
-        chủ động chưa hạ thanh chắn; nó sẽ tự báo PASS khi xe vào, hoặc NOPASS khi xe rời đi. Chờ tiếp, nhưng không
+        chủ động chưa hạ thanh chắn (xe còn ở cảm biến trước / sau); nó sẽ tự báo PASS khi xe vào, hoặc NOPASS khi xe rời đi. Chờ tiếp, nhưng không
         quá PASS_WAIT_MAX_SECONDS để một sự cố (Arduino reset giữa chừng...) không treo cổng mãi.
         Arduino mất kết nối / không phản hồi (hoặc quá hạn tối đa): coi như xe KHÔNG qua, hủy phiên."""
         self._pass_job = None

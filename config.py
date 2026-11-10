@@ -21,6 +21,7 @@ DEFAULT_RFID_PORT = "COM3"      # MỘT Arduino chung cho cả hai cổng (ghi �
 DEFAULT_PARKING_CAPACITY = 3    # số slot (chỗ đỗ) của bãi (ghi đè bằng PARKING_CAPACITY trong .env)
 BUZZER_FREQ_RANGE = (100, 8000)  # Hz, phải khớp BUZZER_FREQ_MIN_HZ..MAX_HZ trong dual_rfid.ino
 BUZZER_BEEP_RANGE = (20, 2000)   # ms, phải khớp BUZZER_BEEP_MIN_MS..MAX_MS trong dual_rfid.ino
+STUCK_WARN_RANGE = (1, 600)      # giây (0 = tắt), phải khớp STUCK_WARN_MIN_MS..MAX_MS trong dual_rfid.ino
 
 
 def _parse_value(raw):
@@ -135,6 +136,7 @@ class Settings:
     parking_capacity: int = DEFAULT_PARKING_CAPACITY   # số chỗ (slot) của bãi: đủ rồi thì cổng vào không nhận quẹt thẻ
     buzzer_freq_hz: int = 2000      # Hz: cao độ tiếng còi (còi passive; còi active kêu một tần số cố định). Gửi cho Arduino mỗi lần nó khởi động
     buzzer_beep_ms: int = 120       # ms: độ dài một tiếng bíp
+    stuck_warn_seconds: float = 10.0   # giây: xe đã quẹt thẻ mà đứng yên ở cảm biến trước / sau quá ngần này thì còi kêu lặp; 0 = tắt
 
 
 def load_settings(gate, env=None):
@@ -189,6 +191,7 @@ def load_settings(gate, env=None):
         servo_open_angle=_num("SERVO_OPEN_ANGLE", "90"),
         buzzer_freq_hz=_num("BUZZER_FREQ_HZ", "2000"),
         buzzer_beep_ms=_num("BUZZER_BEEP_MS", "120"),
+        stuck_warn_seconds=_num("STUCK_WARN_SECONDS", "10", float),
         ir_enabled=_env("IR_ENABLED", "1") == "1",
         ir_pass_timeout_seconds=_num("IR_PASS_TIMEOUT_SECONDS", "3", float),
     )
@@ -213,6 +216,8 @@ def load_settings(gate, env=None):
         raise ValueError(f"BUZZER_FREQ_HZ phải nằm trong khoảng {BUZZER_FREQ_RANGE[0]}..{BUZZER_FREQ_RANGE[1]} Hz")
     if not BUZZER_BEEP_RANGE[0] <= s.buzzer_beep_ms <= BUZZER_BEEP_RANGE[1]:
         raise ValueError(f"BUZZER_BEEP_MS phải nằm trong khoảng {BUZZER_BEEP_RANGE[0]}..{BUZZER_BEEP_RANGE[1]} ms")
+    if s.stuck_warn_seconds != 0 and not STUCK_WARN_RANGE[0] <= s.stuck_warn_seconds <= STUCK_WARN_RANGE[1]:
+        raise ValueError(f"STUCK_WARN_SECONDS phải là 0 (tắt) hoặc nằm trong khoảng {STUCK_WARN_RANGE[0]}..{STUCK_WARN_RANGE[1]} giây")
     if s.rfid_heartbeat < 0:
         raise ValueError("RFID_HEARTBEAT_TIMEOUT phải >= 0 (0 = tắt kiểm tra)")
     if s.block_minutes < 1 or s.price_per_block < 0:

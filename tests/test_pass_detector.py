@@ -204,3 +204,113 @@ def test_front_off_before_rear_off_is_not_yet_a_pass(barrier_sim):
     # cảm biến sau còn chắn -> chưa hạ thanh chắn (xe còn nằm dưới thanh chắn)
     steps = [(0, 1, 0), (900, 1, 1), (1500, 0, 1), (2500, 0, 1)]
     assert barrier_sim(steps) == "...."
+
+
+# ======================================================================================================
+# Barrier::update đầy đủ (PassDetector + PassWindow + CloseCountdown) đúng thứ tự như firmware:
+#   P = xe qua hẳn (hạ + PASS), X = hủy (hạ + NOPASS), '.' = thanh chắn vẫn mở, '-' = đã đóng.
+# Cảm biến sau còn sáng thì KHÔNG BAO GIỜ đóng; đồng hồ đóng chỉ đếm từ lúc xe rời cảm biến trước.
+# ======================================================================================================
+BARRIER_DRIVER = r"""
+#include <cstdio>
+#include <iostream>
+#include <string>
+%s
+%s
+%s
+int main() {
+  PassDetector d;
+  PassWindow w;
+  CloseCountdown c;
+  const unsigned long HOLD = %d, WINDOW = %d;
+  const unsigned long OPENED_AT = 0;
+  bool open = true;
+  unsigned long t;
+  std::string b, a;
+  while (std::cin >> t >> b >> a) {
+    if (!open) { std::putchar('-'); continue; }
+    bool before = (b == "1"), after = (a == "1");
+    if (d.update(before, after)) { open = false; std::putchar('P'); continue; }
+    if (after) { c.reset(); std::putchar('.'); continue; }
+    if (w.expired(d.seenBefore(), d.seenAfter(), before, t, WINDOW)) { open = false; std::putchar('X'); continue; }
+    if (c.due(d.seenBefore(), before, after, OPENED_AT, t, HOLD)) { open = false; std::putchar('X'); continue; }
+    std::putchar('.');
+  }
+  std::putchar('\n');
+}
+"""
+
+
+def _build_barrier(tmp_path_factory, hold, window):
+    gxx = shutil.which("g++")
+    if gxx is None:
+        pytest.skip("không có g++ để biên dịch thử Barrier")
+    parts = [INO[INO.index(f"// BEGIN {n}"):INO.index(f"// END {n}")]
+             for n in ("PassDetector", "PassWindow", "CloseCountdown")]
+    d = tmp_path_factory.mktemp("barrier")
+    (d / "main.cpp").write_text(BARRIER_DRIVER % (*parts, hold, window), encoding="utf-8")
+    subprocess.run([gxx, "-std=c++11", "-Wall", "-Werror", str(d / "main.cpp"), "-o", str(d / "run")], check=True)
+
+    def run(steps):
+        text = "\n".join(f"{t} {b} {a}" for t, b, a in steps)
+        out = subprocess.run([str(d / "run")], input=text, capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+
+    return run
+
+
+@pytest.fixture(scope="module")
+def barrier(tmp_path_factory):
+    return _build_barrier(tmp_path_factory, hold=3000, window=3000)
+
+
+@pytest.fixture(scope="module")
+def barrier_short_hold(tmp_path_factory):
+    return _build_barrier(tmp_path_factory, hold=1000, window=5000)
+
+
+@pytest.fixture(scope="module")
+def barrier_short_window(tmp_path_factory):
+    return _build_barrier(tmp_path_factory, hold=5000, window=1000)
+
+
+def test_rear_sensor_lit_never_closes_the_barrier_however_long(barrier):
+    # xe tới cảm biến trước lúc 0, vào cảm biến sau lúc 1000 rồi đứng đó (bản cũ hạ sau 3000 + 10000 ms)
+    steps = [(0, 1, 0), (1000, 1, 1), (3000, 0, 1), (13000, 0, 1), (14000, 0, 1), (600000, 0, 1)]
+    assert barrier(steps) == "......"
+
+
+def test_countdown_restarts_when_the_rear_sensor_clears_after_a_reverse(barrier):
+    # sau chắn lúc 1000, xe lùi: sau nhả lúc 5000 khi trước còn chắn (chưa đếm); trước nhả lúc 8000 -> hạ lúc 11000
+    steps = [(0, 1, 0), (1000, 1, 1), (5000, 1, 0), (8000, 0, 0), (10999, 0, 0), (11000, 0, 0)]
+    assert barrier(steps) == ".....X"
+
+
+def test_countdown_starts_only_when_the_vehicle_leaves_the_front_sensor(barrier):
+    # xe đứng ở cảm biến trước 20 giây (quá hạn mở 3 giây từ lâu) vẫn không đóng; rời lúc 20000 -> hạ lúc 23000
+    steps = [(0, 1, 0), (10000, 1, 0), (20000, 1, 0), (20001, 0, 0), (22999, 0, 0), (23001, 0, 0)]
+    assert barrier(steps) == ".....X"
+
+
+def test_vehicle_that_never_arrives_closes_after_the_hold_from_opening(barrier):
+    assert barrier([(1000, 0, 0), (2999, 0, 0), (3000, 0, 0), (4000, 0, 0)]) == "..X-"
+
+
+def test_object_on_the_rear_sensor_only_blocks_the_arrival_deadline(barrier):
+    # vật chắn riêng cảm biến sau (chưa từng chắn cảm biến trước): quá hạn chờ xe vẫn không đóng
+    assert barrier([(1000, 0, 1), (5000, 0, 1), (60000, 0, 1)]) == "..."
+
+
+def test_normal_pass_still_closes_immediately_when_rear_sensor_clears(barrier):
+    steps = [(0, 0, 0), (500, 1, 0), (1500, 1, 1), (2500, 0, 1), (3000, 0, 0)]
+    assert barrier(steps) == "....P"
+
+
+def test_shorter_grace_window_cancels_before_the_hold_countdown(barrier_short_window):
+    # hold 5000, ân hạn 1000: xe rời cảm biến trước lúc 500, sau không thấy xe -> hủy lúc 1500
+    assert barrier_short_window([(0, 1, 0), (500, 0, 0), (1499, 0, 0), (1500, 0, 0)]) == "...X"
+
+
+def test_shorter_hold_closes_before_the_grace_window(barrier_short_hold):
+    # hold 1000, ân hạn 5000: đồng hồ đóng (đếm từ lúc xe rời cảm biến trước) hết trước -> hạ lúc 1500
+    assert barrier_short_hold([(0, 1, 0), (500, 0, 0), (1499, 0, 0), (1500, 0, 0)]) == "...X"

@@ -46,7 +46,7 @@ def _make_rfid(cfg, apps, **reader_kwargs):
 
     Thẻ / tình trạng đầu đọc được chuyển đúng cổng; cổng nào không có giao diện (chạy một cổng) thì bỏ qua.
     Tình trạng Arduino (cổng COM) gửi cho mọi cổng vì chung một thiết bị."""
-    from hardware.rfid import ArduinoRfidReader, buzzer_init_commands, servo_init_commands
+    from hardware.rfid import ArduinoRfidReader, buzzer_init_commands, servo_init_commands, stuck_init_commands
 
     def on_card(gate, uid):
         if gate in apps:
@@ -69,7 +69,7 @@ def _make_rfid(cfg, apps, **reader_kwargs):
                              debounce=cfg.rfid_debounce,
                              heartbeat_timeout=cfg.rfid_heartbeat,
                              init_commands=(servo_init_commands(*(a.cfg for a in apps.values()))
-                                            + buzzer_init_commands(cfg)),
+                                            + buzzer_init_commands(cfg) + stuck_init_commands(cfg)),
                              **reader_kwargs)
 
 
