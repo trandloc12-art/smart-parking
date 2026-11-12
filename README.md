@@ -8,6 +8,7 @@ Tùy chọn: gắn thêm **hai màn LCD 1602 I2C** (một ở cổng vào, một
 Tùy chọn: gắn **một còi bíp** dùng chung, mỗi lần quẹt thẻ (cổng vào hoặc cổng ra) còi kêu một tiếng — xem mục *Còi bíp*.
 Tùy chọn: gắn **một đèn LED** ở cổng vào: xe đi qua hẳn thanh chắn thì đèn sáng 20 giây rồi tự tắt — xem mục *Đèn LED báo xe vào*.
 Bãi có số chỗ (slot) giới hạn (`PARKING_CAPACITY`, mặc định **3**): LCD hiện số chỗ còn trống, **đủ chỗ thì cổng vào không nhận quẹt thẻ** — xem mục *Số chỗ đỗ xe*.
+**Chống biển số giả / trùng biển:** cổng vào **từ chối cứng** khi 5 số biển vừa đọc đã có **xe khác** (thẻ khác) đang ở trong bãi: không mở thanh chắn, không lưu, **còi kêu liên tục** và LCD báo `BIEN SO DA VAO` cho tới khi xe đó rời khỏi cảm biến trước — xem mục *Chống biển số trùng*.
 Tùy chọn: gắn **hai servo thanh chắn** (một ở cổng vào, một ở cổng ra): quẹt thẻ thành công thì servo của cổng đó tự mở rồi tự đóng lại — xem mục *Hai servo thanh chắn*.
 Tùy chọn: gắn **bốn cảm biến hồng ngoại** (mỗi cổng hai cái, trước và sau thanh chắn) để biết xe đã đi qua thanh chắn chưa: **quẹt thẻ xong, xe phải đi qua thì phiên mới được lưu vào SQL Server; xe không đi qua thì phiên quẹt thẻ bị hủy** (không lưu gì cả), xe qua rồi thì hạ thanh chắn ngay — xem mục *Cảm biến hồng ngoại*.
 
@@ -105,6 +106,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | Cổng ra luôn chặn xe | Biển lúc vào nhập sai hoặc camera lệch góc: xem ảnh hai bên, nhập lại số hoặc cho ra kèm lý do |
 | Quẹt thẻ xong luôn bị "ĐÃ HỦY phiên quẹt thẻ" (LCD `HAY QUET LAI THE`), xe không được lưu | Cảm biến hồng ngoại chưa gắn / sai dây / sai mức tín hiệu (`IR_ACTIVE_LOW`), xe không chắn đủ hai cảm biến theo thứ tự trước -> sau, hoặc xe là xe ngắn: cảm biến trước nhả ra lâu hơn `IR_PASS_TIMEOUT_SECONDS` rồi cảm biến sau mới thấy xe (tăng giá trị này). Chưa gắn cảm biến thì đặt `IR_ENABLED=0` |
 | Thanh chắn không hạ xuống dù xe đã đi qua | Cảm biến sau còn bị chắn (lệch hướng, vật chắn cố định, cảm biến hỏng/sai `IR_ACTIVE_LOW`): **theo thiết kế thanh chắn sẽ không hạ khi cảm biến sau còn sáng**, không có giới hạn thời gian. Dời vật chắn đi hoặc kiểm tra cảm biến sau; có thể gõ `SERVOIN:CLOSE` / `SERVOOUT:CLOSE` trong Serial Monitor để hạ thủ công |
+| Còi kêu mãi, LCD cổng vào đứng ở `BIEN SO DA VAO` | Đang báo **biển số trùng** và xe vẫn chắn cảm biến trước cổng vào (D2): lùi / dời xe ra khỏi cảm biến. Còi vẫn kêu khi xe đã đi: cảm biến trước hỏng, sai dây hoặc sai `IR_ACTIVE_LOW` (luôn báo bị chắn); tạm tắt bằng `ALARMIN:OFF` trong Serial Monitor |
+| Xe thật bị báo `BIEN SO DA VAO` | 5 số biển trùng với xe đang ở trong bãi (xe cũ chưa quẹt ra, hoặc thẻ bị kẹt "đang trong bãi"): đóng lượt cũ bằng SQL ở mục *Quy tắc nghiệp vụ* rồi cho xe quẹt lại. Lúc khởi động nếu DB đã có sẵn hai lượt mở trùng biển thì chỉ mục `UX_access_log_open_plate` chưa được tạo (có cảnh báo): đóng bớt lượt rồi chạy lại |
 
 ## Giao thức với Arduino
 **MỘT Arduino, MỘT cổng COM, hai đầu đọc.** Serial 9600 baud, mỗi dòng kết thúc bằng `\n`:
@@ -116,6 +119,7 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `STATUS:IN=1,OUT=0` | Tình trạng từng đầu đọc (`1` = hoạt động, `0` = không nói chuyện được với module). Gửi lúc khởi động và mỗi ~2 giây; cũng là "nhịp tim" để phát hiện Arduino treo |
 | `PASS:IN` / `PASS:OUT` | Xe đã **đi qua hẳn** thanh chắn cổng vào / cổng ra (cảm biến hồng ngoại); Arduino đã hạ thanh chắn. Máy tính chỉ **lưu** phiên quẹt thẻ khi nhận dòng này. `PASS:IN` còn làm **đèn LED cổng vào sáng 20 giây** (Arduino tự làm) |
 | `NOPASS:IN` / `NOPASS:OUT` | Xe **không đi qua** (xe rời đi): cảm biến trước đã thấy xe rồi mất tín hiệu quá `IR_PASS_TIMEOUT_SECONDS` mà cảm biến sau chưa thấy xe, hoặc hết giờ mở thanh chắn mà xe chưa tới cảm biến trước; Arduino đã hạ thanh chắn. Máy tính **hủy** phiên quẹt thẻ (không lưu gì) |
+| `ALARMCLR:IN` / `ALARMCLR:OUT` | Xe bị báo động biển số trùng **đã rời** cảm biến trước cổng vào / cổng ra: Arduino đã tự tắt còi. Máy tính đưa LCD về màn hình chờ và nhận quẹt thẻ lại |
 | `# ...` | Chú thích / log, bị bỏ qua |
 | `LCDIN:dòng 1\|dòng 2` | **Chiều ngược lại (máy tính -> Arduino)**: hiển thị lên LCD **cổng vào**. Mỗi dòng tối đa 16 ký tự ASCII không dấu. Arduino không có LCD đó hoặc còn firmware cũ thì bỏ qua |
 | `LCDOUT:dòng 1\|dòng 2` | Như trên nhưng cho LCD **cổng ra** |
@@ -126,6 +130,8 @@ Mẹo: cắm cố định vào cùng cổng USB để số COM và số camera k
 | `BUZZER:TONE:2000:120` | Đặt **âm thanh còi**: tần số (`100`..`8000` Hz) rồi độ dài một tiếng bíp (`20`..`2000` ms). Lệnh sai định dạng hoặc ngoài khoảng bị bỏ qua cả lệnh. Python gửi lệnh này theo `BUZZER_FREQ_HZ` / `BUZZER_BEEP_MS` mỗi khi Arduino khởi động |
 | `BUZZER:BEEP` | Kêu thử một tiếng bíp với âm thanh hiện tại |
 | `STUCK:10000` | Đặt **ngưỡng cảnh báo xe dừng quá lâu** (ms, `1000`..`600000`; `0` = tắt): thanh chắn đang mở (đã quẹt thẻ) mà xe đứng yên ở cảm biến trước / sau quá ngưỡng này thì còi kêu lặp. Lệnh sai định dạng hoặc ngoài khoảng bị bỏ qua cả lệnh. Python gửi lệnh này theo `STUCK_WARN_SECONDS` mỗi khi Arduino khởi động |
+| `ALARMIN:ON` / `ALARMOUT:ON` | **Bật báo động biển số trùng** ở cổng vào / cổng ra: còi kêu lặp (mỗi 0,4 giây) liên tục, **không giới hạn thời gian**, tới khi cảm biến trước **hết bị chắn** (xe rời đi); lúc đó Arduino tự tắt còi và gửi `ALARMCLR`. Python chỉ gửi cho cổng vào |
+| `ALARMIN:OFF` / `ALARMOUT:OFF` | Tắt báo động ngay (dự phòng, gõ tay trong Serial Monitor); không gửi `ALARMCLR` |
 | `SERVOIN:CLOSE` / `SERVOOUT:CLOSE` | Đóng ngay (dự phòng) |
 | `SERVOIN:ANGLE:0:90` | Đặt **góc đóng (vị trí ban đầu)** rồi **góc mở** (`0`..`180` độ) cho servo cổng vào (`SERVOOUT:ANGLE:...` cho cổng ra); servo chạy tới góc mới ngay. Lệnh sai định dạng hoặc ngoài `0`..`180` bị bỏ qua cả lệnh. Python gửi lệnh này theo `SERVO_CLOSED_ANGLE` / `SERVO_OPEN_ANGLE` mỗi khi Arduino khởi động |
 
@@ -161,6 +167,7 @@ Vì hai LCD nằm trên hai bus tách biệt nên **được trùng địa chỉ
 | Lưu xe vào thành công | `XE VAO OK` | `BIEN SO 25888` |
 | Thẻ chưa đăng ký — vào / ra | `THE CHUA DANG KY` | `KHONG CHO VAO` / `KHONG CHO RA` |
 | Thẻ đang ở trong bãi (cổng vào) | `THE DA VAO BAI` | `KHONG CHO VAO` |
+| **Biển số trùng** xe khác đang ở trong bãi (cổng vào) — còi kêu liên tục | `BIEN SO DA VAO` | `GOI NHAN VIEN` |
 | **Cổng ra** — màn hình chờ | `CONG RA` | `CON TRONG: 2/3` |
 | Biển khớp, cho ra (hoặc nhân viên duyệt) | `XE RA OK` | `TIEN 5.000 D` |
 | Hòa phiếu, chờ nhân viên — ra | `CHO NHAN VIEN` | `KIEM TRA BIEN SO` |
@@ -176,6 +183,8 @@ Vì hai LCD nằm trên hai bus tách biệt nên **được trùng địa chỉ
 | Quẹt thẻ khi OCR chưa nạp xong (cả hai cổng) | `DANG KHOI DONG` | `VUI LONG CHO` |
 
 **Tự quay về trạng thái sẵn sàng:** sau `LCD_IDLE_SECONDS` giây (mặc định 5), LCD về màn hình chờ (`CONG VAO` / `CONG RA` + `CON TRONG: x/y`, hoặc `BAI DA DAY` / `HET CHO` ở cổng vào khi hết chỗ; chưa biết số chỗ thì tạm hiện `MOI QUET THE`) với các thông báo đã xong việc: `XE VAO OK`, `XE RA OK`, thẻ chưa đăng ký, thẻ đã vào bãi, thẻ chưa vào bãi. Thông báo **hủy phiên** (`HAY QUET LAI THE`) chỉ hiện **2 giây** rồi LCD về màn hình chờ. Các thông báo cần nhân viên (`XE LECH VI TRI`, `CHO NHAN VIEN`, `BIEN LECH 1 SO`, `BIEN KHONG KHOP`, `XE CHUA DUOC RA`, `LUOT DA DONG`, `LOI HE THONG`, `LOI CAMERA`) được giữ nguyên đến khi nhân viên xử lý hoặc có lần quẹt thẻ kế tiếp. Lần quẹt bị bỏ qua vì đang xử lý hoặc đang chờ nhân viên không làm đổi LCD. **Ngoại lệ ở cả cổng vào và cổng ra:** khi không đọc đủ 5 số (không có số nào hoặc chỉ đọc được 1..4 số, LCD `XE LECH VI TRI`), tài xế chỉ cần **quẹt lại đúng thẻ đó** là hệ thống quét lại, nhân viên không phải bấm *Từ chối / Hủy* trên máy (chưa ghi gì nên bỏ ca cũ an toàn). Hòa phiếu, `AUTO_SAVE=0` chờ xác nhận, lệch biển hoặc không khớp vẫn phải do nhân viên xử lý, và thẻ khác quẹt vào lúc đó vẫn bị bỏ qua.
+
+**Biển số trùng (`BIEN SO DA VAO`) giữ nguyên tới khi xe trùng rời đi**, không tự về màn hình chờ sau `LCD_IDLE_SECONDS`: chỉ khi Arduino báo `ALARMCLR:IN` (cảm biến trước hết bị chắn) thì LCD mới về `CONG VAO` / `CON TRONG: x/y`. Trong lúc báo động, cổng vào bỏ qua mọi lần quẹt thẻ.
 
 Số tiền hiện đủ trong 16 cột; nếu quá dài thì LCD báo `XEM TREN MAY` thay vì cắt cụt thành số sai. Cổng vào còn có dải đỏ "BIỂN SỐ LỆCH VỊ TRÍ" trên cửa sổ chương trình, hiện cùng lúc với dòng `XE LECH VI TRI` trên LCD. Nội dung LCD sửa ở các thuộc tính `LCD_*` đầu lớp `EntryApp` (`ui/entry_app.py`) và `ExitApp` (`ui/exit_app.py`); phần dùng chung ở đầu `ui/base_gate_app.py`.
 
@@ -227,6 +236,21 @@ Giá trị ngoài khoảng làm chương trình báo lỗi ngay khi khởi độ
 - Còi **tắt ngay** khi xe nhúc nhích, khi xe rời khỏi cả hai cảm biến, hoặc khi thanh chắn đóng (xe qua hẳn `PASS`, hoặc hủy `NOPASS`). Cảnh báo chỉ hoạt động trong lúc thanh chắn đang mở, nên xe đứng ở cảm biến khi chưa quẹt thẻ không làm còi kêu.
 - Cảm biến sau còn sáng thì thanh chắn không đóng (xem *Đồng hồ đóng thanh chắn*), nên xe đứng ở cảm biến sau mà không đi thì còi sẽ kêu cho tới khi xe đi hoặc bị dời ra: đây là cách báo cho người trực biết.
 - Do Arduino tự làm bằng `millis()`, không chặn vòng đọc thẻ / cảm biến, và hoạt động cả khi chương trình Python bị treo. Ngưỡng chỉnh trong `.env` (không cần nạp lại sketch); chu kỳ bíp là `STUCK_BEEP_PERIOD_MS` trong `dual_rfid.ino`. Kiểm tra: gõ `STUCK:1000` trong Serial Monitor, quẹt thẻ cho thanh chắn mở, đặt vật vào cảm biến trước hoặc sau rồi giữ yên khoảng 1 giây: còi kêu lặp; bỏ vật ra thì ngưng.
+
+## Chống biển số trùng (biển giả) và còi báo động liên tục
+**Quy tắc:** mỗi biển số (5 số) chỉ được có **một** lượt đang ở trong bãi. Khi một thẻ quẹt ở cổng vào mà 5 số biển vừa chốt đã thuộc **thẻ khác** đang ở trong bãi (chưa có giờ ra), hệ thống **từ chối cứng, không có nút cho qua**:
+- **Không mở thanh chắn, không lưu** lượt vào, không giữ ảnh. Thanh trạng thái báo đỏ, nêu thẻ đang giữ biển đó và giờ vào.
+- **LCD cổng vào** hiện `BIEN SO DA VAO` / `GOI NHAN VIEN` và **giữ nguyên** (không tự về màn hình chờ).
+- **Còi kêu liên tục**: máy tính gửi `ALARMIN:ON`; Arduino cho còi bíp lặp mỗi `STUCK_BEEP_PERIOD_MS` (0,4 giây) bằng `millis()` nên **máy tính treo vẫn kêu**. **Không có giới hạn thời gian.**
+- **Hết báo động khi xe trùng rời đi**: cảm biến hồng ngoại **trước** cổng vào hết bị chắn (đã chống nhiễu `IR_DEBOUNCE_MS`). Arduino tự tắt còi, gửi `ALARMCLR:IN`; LCD về màn hình chờ và cổng vào nhận quẹt thẻ lại. Nếu xe đã đi khỏi cảm biến ngay lúc báo động bắt đầu (trong lúc đang quét ảnh) thì báo động kết thúc ngay.
+- Trong lúc báo động, mọi lần quẹt thẻ ở cổng vào và nút *Test servo* cổng vào bị bỏ qua. Arduino mất kết nối / không phản hồi thì giao diện tự thoát trạng thái báo động (còn Arduino reset thì còi tắt theo), để cổng không bị treo.
+- Cổng ra không đổi và vẫn hoạt động bình thường khi cổng vào đang báo động; vì còi dùng chung nên cổng ra cũng nghe thấy tiếng còi.
+
+**Chặn ở ba lớp:** (1) ngay sau khi OCR chốt 5 số, **trước khi mở thanh chắn** (nên cả chế độ chờ cảm biến cũng không để xe vào); (2) khi nhân viên nhập / sửa số rồi bấm *Lưu xe vào*, cũng kiểm tra **trước khi mở thanh chắn**; (3) chỉ mục duy nhất `UX_access_log_open_plate` của SQL Server (mỗi biển chỉ một lượt chưa có giờ ra) chặn nốt trường hợp hai bên ghi cùng lúc. Chỉ so **5 số cuối**, nên hai xe thật khác nhau mà trùng 5 số cũng bị chặn (xác suất rất thấp với bãi vài chỗ) và phải do người trực xử lý ngoài hệ thống (VD xe cũ làm thủ tục ra trước). Biển lệch dù chỉ 1 số vẫn được coi là biển khác.
+
+**Giới hạn:** chỉ kiểm tra số đã **chốt** của lần quét (OCR đọc lệch một số thì biển vào được như biển khác; cổng ra vẫn đối chiếu biển lúc vào và lúc ra). Không có cảm biến trước (chưa gắn / hỏng, luôn bị chắn) thì còi **kêu mãi**; không có nút tắt trên giao diện theo thiết kế, tắt tạm bằng cách gõ `ALARMIN:OFF` trong Serial Monitor (9600) hoặc xử lý cảm biến.
+
+**Kiểm tra:** Serial Monitor, gõ `ALARMIN:ON` rồi đưa vật vào cảm biến trước cổng vào (D2) và giữ: còi kêu lặp; bỏ vật ra thì còi tắt và thấy dòng `ALARMCLR:IN`. Logic `PlateAlarm` còn được thử tự động bằng `python -m pytest tests/test_plate_alarm.py` (biên dịch đoạn mã firmware bằng g++).
 
 ## Cảm biến hồng ngoại (tùy chọn: bốn cảm biến, mỗi cổng hai cái)
 Mỗi cổng có hai cảm biến hồng ngoại: một ở **trước** thanh chắn (phía xe đi tới) và một ở **sau** thanh chắn, để Arduino biết xe đã đi qua thanh chắn chưa. Không gắn cảm biến thì hệ thống vẫn chạy như cũ (thanh chắn tự đóng theo giờ); nhớ đặt `IR_ENABLED=0` trong `.env` để chương trình không ghi nhận `NOPASS` cho mọi lượt.
@@ -310,11 +334,13 @@ Bãi có `PARKING_CAPACITY` chỗ (mặc định **3**). Số chỗ trống = `P
 | Cổng vào, thẻ đang ở trong bãi | Từ chối (không cho vào lần nữa) |
 | Cổng ra, thẻ chưa có lượt vào | Từ chối (xe chưa vào bãi) |
 | Cổng vào, bãi đã đủ chỗ | Không nhận quẹt thẻ: không quét ảnh, không mở thanh chắn (xem *Số chỗ đỗ xe*) |
+| Cổng vào, 5 số biển đã có **xe khác** (thẻ khác) đang ở trong bãi | **Từ chối cứng**: không mở thanh chắn, không lưu; LCD `BIEN SO DA VAO`, còi kêu liên tục tới khi xe rời cảm biến trước (xem *Chống biển số trùng*) |
 | Cổng vào, thẻ hợp lệ | Quét ảnh, bỏ phiếu 5 số, mở thanh chắn; **xe đi qua hẳn** (cảm biến) thì mới lưu `time_in`, xe không qua thì hủy phiên, không lưu gì (không có cảm biến: `IR_ENABLED=0` thì lưu ngay) |
 | Cổng ra, thẻ hợp lệ | Quét ảnh, bỏ phiếu 5 số, **đối chiếu với 5 số lúc vào**, mở thanh chắn; **xe đi qua hẳn** thì mới lưu `time_out` + `fee`, xe không qua thì hủy phiên (lượt vào vẫn mở) |
 
 **Chỉ dùng 5 số cuối của biển** (bỏ chữ cái và các dấu `-` `.` vì dễ gây lỗi OCR). Biển số **bắt buộc đủ đúng 5 chữ số** ở cả hai cổng, nút Lưu / Cho xe ra bị khóa cho đến khi đủ.
 Biển cũ chỉ có 4 số: nhập thêm số `0` ở đầu (VD `1234` -> `01234`) ở cả cổng vào và cổng ra để hai lần nhập khớp nhau.
+**Mỗi biển một lượt đang mở:** cổng vào không nhận biển đã có xe khác ở trong bãi (xem *Chống biển số trùng*). Xe ra thì lượt được đóng và biển dùng lại được.
 
 **Quét 5 ảnh, bỏ phiếu.** Sau mỗi lần quẹt thẻ, hệ thống lấy `SCAN_FRAMES` (mặc định 5) khung hình cách nhau `SCAN_INTERVAL` giây, OCR từng khung, rồi chọn 5 số xuất hiện nhiều nhất.
 - Chỉ kết quả đủ 5 số mới có phiếu. Số thắng phải có ít nhất `VOTE_MIN` phiếu (mặc định 2) **và** nhiều phiếu hơn số đứng thứ hai. Hòa, hoặc không đủ phiếu -> chuyển cho nhân viên.
@@ -382,6 +408,8 @@ Test dùng camera, OCR và CSDL giả nên chạy được mà không cần ph�
 **Từ hai Arduino lên một Arduino:** (1) nạp `arduino/dual_rfid/dual_rfid.ino` cho board còn dùng và đấu hai module RC522 vào cùng board (xem đầu file sketch); (2) trong `.env` đặt `RFID_PORT=` đúng cổng COM của board đó; (3) **xóa dòng `RFID_PORT`** khỏi `.env.in` và `.env.out` (còn sót hai giá trị khác nhau thì chương trình báo lỗi ngay khi khởi động); (4) chạy `run.bat`. Database và danh sách thẻ giữ nguyên. File `run-2-cua-so.bat` đã bị bỏ vì hai tiến trình không thể cùng mở một cổng COM.
 
 **Giao diện một cửa sổ:** không cần đổi cấu hình hay database. `python main.py` giờ mở cả hai cổng trong một cửa sổ; muốn giữ cách cũ thì chạy `python main.py --gate in` và `--gate out` như trước.
+
+**Chống biển số trùng:** không cần đổi cấu hình `.env`, nhưng phải **nạp lại `dual_rfid.ino`** (lệnh `ALARMIN:`, `ALARMCLR`). `init_schema()` tự tạo chỉ mục `UX_access_log_open_plate`; nếu đang có hai xe cùng biển ở trong bãi thì chỉ mục chưa được tạo (có cảnh báo) cho tới khi bạn đóng bớt lượt.
 
 **Sao lưu database trước** khi chạy lần đầu, vì chương trình tự sửa cấu trúc bảng `access_log`.
 

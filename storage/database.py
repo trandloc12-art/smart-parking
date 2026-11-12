@@ -7,13 +7,14 @@ from pathlib import Path
 
 import pyodbc  # pip install pyodbc  (cần cài thêm "ODBC Driver 17/18 for SQL Server")
 
-from storage.errors import AlreadyInside, SessionAlreadyClosed
+from storage.errors import AlreadyInside, PlateAlreadyInside, SessionAlreadyClosed
 from storage.models import AccessEvent
 
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 _COLUMNS = ("id, card_uid, plate_number, plate_full, image_in, time_in, time_out, fee, "
             "plate_out, image_out, match_status, override_note, gate_in, gate_out")
 _OPEN_INDEX = "UX_access_log_open_card"
+_OPEN_PLATE_INDEX = "UX_access_log_open_plate"
 _PASS_COLUMNS = {"in": ("pass_in_status", "pass_in_at"), "out": ("pass_out_status", "pass_out_at")}
 
 
@@ -96,13 +97,21 @@ class Database:
                 "WHERE card_uid = ? AND time_out IS NULL ORDER BY id DESC", card_uid).fetchone()
         return _to_event(row) if row else None
 
+    def find_open_session_by_plate(self, plate_number):
+        """Lượt gửi xe chưa có giờ ra đang giữ 5 số biển này (của bất kỳ thẻ nào), hoặc None."""
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT TOP (1) {_COLUMNS} FROM dbo.access_log "
+                "WHERE plate_number = ? AND time_out IS NULL ORDER BY id DESC", plate_number).fetchone()
+        return _to_event(row) if row else None
+
     def count_open_sessions(self):
         """Số xe đang ở trong bãi (số lượt chưa có giờ ra)."""
         with self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM dbo.access_log WHERE time_out IS NULL").fetchone()[0]
 
     def add_entry(self, card_uid, plate_number, plate_full, image_in, time_in, votes="", gate=""):
-        """Ghi lượt VÀO. Ném AlreadyInside nếu thẻ đã có lượt đang mở."""
+        """Ghi lượt VÀO. Ném AlreadyInside nếu thẻ đã có lượt đang mở, PlateAlreadyInside nếu biển đã có xe khác đang ở trong bãi."""
         try:
             with self._connect() as conn:
                 row = conn.execute(
@@ -114,6 +123,8 @@ class Database:
         except pyodbc.IntegrityError as e:
             if _OPEN_INDEX in str(e):
                 raise AlreadyInside(f"Thẻ {card_uid} đã có lượt vào chưa đóng") from e
+            if _OPEN_PLATE_INDEX in str(e):
+                raise PlateAlreadyInside(f"Biển số {plate_number} đang có xe khác ở trong bãi") from e
             raise
         return AccessEvent(row.id, card_uid, plate_number, plate_full, image_in, time_in,
                            gate_in=gate)

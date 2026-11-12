@@ -21,6 +21,7 @@ class Outcome(Enum):
     UNREGISTERED = "unregistered"     # thẻ chưa đăng ký / bị khóa
     ALREADY_INSIDE = "already_inside" # cổng vào: thẻ đang ở trong bãi
     LOT_FULL = "lot_full"             # cổng vào: bãi đã đủ số chỗ, không nhận thêm xe
+    PLATE_DUPLICATE = "plate_duplicate"   # cổng vào: biển số đã có xe KHÁC (thẻ khác) đang ở trong bãi (nghi biển giả)
     NOT_INSIDE = "not_inside"         # cổng ra: thẻ chưa có lượt vào
     ENTRY_SAVED = "entry_saved"       # xe vào, đã lưu
     ENTRY_READY = "entry_ready"       # xe vào, đã chốt 5 số nhưng CHƯA lưu: chờ cảm biến xác nhận xe đã qua thanh chắn

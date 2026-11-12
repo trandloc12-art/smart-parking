@@ -146,6 +146,7 @@ class BaseGateApp:
     LCD_NEED_STAFF = ("CHO NHAN VIEN", "KIEM TRA BIEN SO")  # có ứng viên đủ 5 số nhưng chưa chốt được
     LCD_WAIT_PASS = ("MOI XE DI QUA", "THANH CHAN")         # đã mở thanh chắn, chờ cảm biến báo xe đã qua
     LCD_PASS_CANCELLED = ("XE CHUA QUA", "HAY QUET LAI THE")  # xe không đi qua: hủy phiên quẹt thẻ
+    LCD_PLATE_DUPLICATE = ("BIEN SO DA VAO", "GOI NHAN VIEN")   # biển trùng xe đang trong bãi: giữ tới khi xe trùng rời đi
     LCD_CANCEL_SECONDS = 2.0        # giây: thông báo hủy hiện ngần này rồi LCD về màn hình chờ
 
     def __init__(self, root, service, camera, cfg, container=None, history=None, devices=None, slots=None):
@@ -182,6 +183,7 @@ class BaseGateApp:
         self._awaiting = None           # PassTicket: phiên quẹt thẻ đã mở thanh chắn, chờ cảm biến báo xe đã qua (chưa lưu)
         self._pass_job = None           # hẹn giờ dự phòng khi Arduino không báo PASS / NOPASS
         self._pass_started = None       # lúc bắt đầu chờ xe qua (time.monotonic), để giới hạn tổng thời gian chờ
+        self._alarm = False             # đang báo động biển số trùng: còi kêu lặp tới khi xe trùng rời cảm biến trước (xem start_alarm)
         self._servo_btn_state = "normal"    # trạng thái hiện tại của nút Test servo (xem sync_servo_button)
         self.slots = slots if slots is not None else SlotCounter(getattr(service, "capacity", None))
         self.slots.subscribe(self.on_slots_changed)
@@ -374,13 +376,46 @@ class BaseGateApp:
     def on_pass_cancelled(self, ticket):
         """Hook: dọn phần giao diện riêng của cổng khi phiên bị hủy."""
 
+    # ---------- Báo động biển số trùng ----------
+    def start_alarm(self):
+        """Bật báo động biển số trùng ở CỔNG NÀY: Arduino cho còi kêu lặp liên tục tới khi xe rời cảm biến trước rồi tự tắt
+        và báo lại (handle_alarm_clear). Không gửi được (chưa có Arduino / mất kết nối) thì không có báo động để chờ.
+        Trả về True nếu đã gửi lệnh. Không bao giờ ném ngoại lệ."""
+        send = getattr(self.rfid, "send_alarm", None)
+        sent = False
+        if send is not None:
+            try:
+                sent = bool(send(self.cfg.gate, True))
+            except Exception:
+                sent = False
+        self._alarm = sent
+        return sent
+
+    def handle_alarm_clear(self):
+        """Arduino báo xe trùng biển đã rời cảm biến trước (còi đã tắt). Gọi được từ luồng nền: chuyển sang luồng GUI."""
+        self.q.put(self.on_alarm_cleared)
+
+    def on_alarm_cleared(self):
+        """Hết báo động: LCD về màn hình chờ, cổng nhận quẹt thẻ lại. Không đang báo động thì bỏ qua (VD lệnh gõ tay)."""
+        if not self._alarm:
+            return
+        self._alarm = False
+        if self._closing:
+            return
+        self.reset_view()
+        self.plate_var.set("")
+        self.set_card(None)
+        self.show_idle()
+        self.set_status("Xe trùng biển đã rời khỏi cảm biến, còi đã tắt. Sẵn sàng cho xe tiếp theo.", COLOR_OK)
+        self.refresh_buttons()
+
     def test_servo(self):
         """Nút "Test servo": mở thanh chắn của CỔNG NÀY để kiểm tra servo / góc quay, rồi Arduino tự đóng lại sau
         cfg.servo_open_seconds giây. Không gắn với lượt gửi xe nào nên kết quả cảm biến (PASS / NOPASS) của lần thử
         bị bỏ qua, không ghi vào SQL Server. Trả về True nếu đã gửi lệnh."""
         label = self.cfg.label
-        if self.busy or self.pending is not None or self._awaiting is not None:
-            return False                # đang xử lý một lần quẹt thẻ / chờ nhân viên / chờ xe qua: không mở thanh chắn lúc này
+        if self.busy or self.pending is not None or self._awaiting is not None or self._alarm:
+            return False                # đang xử lý một lần quẹt thẻ / chờ nhân viên / chờ xe qua / đang báo động: không mở thanh chắn lúc này
         if not getattr(self.cfg, "servo_enabled", True):
             self.set_status(f"Servo {label} đang tắt (SERVO_ENABLED=0 trong .env). Đặt thành 1 rồi chạy lại để thử.",
                             COLOR_WARN)
@@ -456,7 +491,13 @@ class BaseGateApp:
 
     def handle_rfid_status(self, connected, message):
         """Tình trạng Arduino (cổng COM). Gọi được từ luồng nền."""
-        self.q.put(lambda: self.devices.set(ARDUINO, connected, message))
+        self.q.put(lambda: self._on_rfid_status(connected, message))
+
+    def _on_rfid_status(self, connected, message):
+        self.devices.set(ARDUINO, connected, message)
+        if not connected and self._alarm:       # Arduino mất kết nối / không phản hồi: không còn ai báo "xe đã rời", đừng treo cổng
+            self.on_alarm_cleared()
+            self.set_status("Mất kết nối Arduino: báo động biển số trùng đã dừng. Kiểm tra thanh tình trạng thiết bị.", COLOR_WARN)
 
     def handle_reader_status(self, ok):
         """Tình trạng đầu đọc RFID của cổng này: True / False / None (chưa rõ). Gọi được từ luồng nền."""
@@ -616,7 +657,7 @@ class BaseGateApp:
         """Test servo không cần OCR nạp xong; chỉ khóa khi đang xử lý một lần quẹt thẻ / chờ nhân viên (khỏi mở
         thanh chắn nhầm giữa chừng và khỏi đè dòng trạng thái đang cần nhân viên đọc). `pending` đổi ở nhiều chỗ
         trong lớp con nên được gọi cả từ update_loop; chỉ đụng tới nút khi trạng thái thật sự đổi."""
-        state = "normal" if not self.busy and self.pending is None and self._awaiting is None else "disabled"
+        state = "normal" if not self.busy and self.pending is None and self._awaiting is None and not self._alarm else "disabled"
         if state != self._servo_btn_state:
             self._servo_btn_state = state
             self.servo_btn.configure(state=state)
@@ -719,6 +760,9 @@ class BaseGateApp:
         if self._awaiting is not None:
             self.set_status(f"Đang chờ xe của thẻ {self._awaiting.card_uid} đi qua thanh chắn. "
                             f"Thẻ {uid}: quẹt lại sau.", COLOR_WARN)
+            return
+        if self._alarm:
+            self.set_status(f"Đang báo động biển số trùng: chờ xe trùng rời khỏi cảm biến. Thẻ {uid}: quẹt lại sau.", COLOR_ERR)
             return
         if self.busy:
             self.set_status(f"Thẻ {uid}: đang xử lý, quẹt lại sau.", COLOR_WARN)

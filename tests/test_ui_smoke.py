@@ -270,8 +270,11 @@ def make_exit(root, tmp_path, monkeypatch, script, inside=("CARD1", "CARD2"), ir
     monkeypatch.setenv("IR_ENABLED", "1" if ir else "0")
     db = FakeDb()
     entry_svc = EntryService(ScriptedRecognizer(["25888"]), db, str(tmp_path), sleep=lambda s: None)
-    for uid in inside:                                       # các xe đã vào bãi (biển 25888)
-        entry_svc.handle_card(uid, lambda: FakeCamera().read())
+    for i, uid in enumerate(inside):                         # các xe đã vào bãi (biển 25888; xe thứ hai trở đi nạp thẳng vì biển trùng bị cổng vào chặn)
+        if i == 0:
+            entry_svc.handle_card(uid, lambda: FakeCamera().read())
+        else:
+            db.seed_open(uid, "25888")
     rec = ScriptedRecognizer(script)
     app = ExitApp(root, ExitService(rec, db, str(tmp_path), sleep=lambda s: None), FakeCamera(),
                   settings("out", tmp_path, monkeypatch))
@@ -426,7 +429,7 @@ def test_exit_app_flow(root, tmp_path, monkeypatch):
     db = FakeDb()
     entry_svc = EntryService(ScriptedRecognizer(["25888"]), db, str(tmp_path), sleep=lambda s: None)
     entry_svc.handle_card("CARD1", lambda: FakeCamera().read())      # xe vào trước
-    entry_svc.handle_card("CARD2", lambda: FakeCamera().read())
+    db.seed_open("CARD2", "25888")          # xe thứ hai cùng biển: nạp thẳng vì cổng vào chặn biển trùng
 
     rec = ScriptedRecognizer(["25888"])
     app = ExitApp(root, ExitService(rec, db, str(tmp_path), sleep=lambda s: None), FakeCamera(),
@@ -722,7 +725,7 @@ def test_real_reader_sends_lcd_and_servo_commands_to_the_right_gate(root, tmp_pa
     assert pump(root, lambda: b"LCDOUT:XE RA OK|TIEN 5.000 D\n" in ser.sent)
     assert pump(root, lambda: b"SERVOOUT:OPEN:3000\n" in ser.sent)      # xe ra -> mở servo CỔNG RA
     assert ser.sent.count(b"SERVOIN:OPEN:3000\n") == 1                  # servo cổng vào không bị mở lại
-    assert all(m.startswith((b"LCDIN:", b"LCDOUT:", b"SERVOIN:", b"SERVOOUT:")) and m.endswith(b"\n")
+    assert all(m.startswith((b"LCDIN:", b"LCDOUT:", b"SERVOIN:", b"SERVOOUT:", b"BUZZER:", b"STUCK:")) and m.endswith(b"\n")
                for m in ser.sent)
     app.on_close()
 
@@ -1116,8 +1119,9 @@ def test_staff_confirmed_entry_waits_for_the_vehicle_too(root, tmp_path, monkeyp
     swipe(app, "CARD1")                                                # đọc thiếu số -> nhân viên nhập
     assert app.pending is not None and rfid.servos == []
     app.plate_var.set("25881")
-    app.save_entry()                                                   # nhân viên xác nhận: mở thanh chắn, CHƯA lưu
-    assert app.pending is None and app._awaiting is not None and db.rows == []
+    app.save_entry()                                                   # nhân viên xác nhận: kiểm tra biển trùng, mở thanh chắn, CHƯA lưu
+    assert pump(root, lambda: app._awaiting is not None)
+    assert app.pending is None and db.rows == []
     assert rfid.servos == [("in", "OPEN", 3.0)] and rfid.windows == [3.0]
     app.handle_barrier(True)
     assert pump(root, lambda: len(db.rows) == 1 and len(db.passes) == 1)
@@ -1129,6 +1133,7 @@ def test_staff_confirmed_entry_is_dropped_when_the_vehicle_does_not_pass(root, t
     swipe(app, "CARD1")
     app.plate_var.set("25881")
     app.save_entry()
+    assert pump(root, lambda: app._awaiting is not None)
     app.handle_barrier(False)
     assert pump(root, lambda: app._awaiting is None)
     assert db.rows == [] and db.passes == [] and "ĐÃ HỦY" in app.status_lbl.cget("text")
@@ -1317,7 +1322,9 @@ def test_entry_lcd_shows_free_slots_and_blocks_swipes_when_full(root, tmp_path, 
     assert lcd.sent[-1] == ("in", "XE VAO OK", "BIEN SO 25888")
     assert lcd_text_after(root, lcd, ("in", "CONG VAO", "CON TRONG: 2/3")), "LCD không về màn hình chờ mới"
 
+    rec.set_script(["25889"])                                # mỗi xe một biển riêng (biển trùng bị chặn)
     swipe(app, "CARD2")
+    rec.set_script(["25890"])
     swipe(app, "CARD3")                                      # đủ 3 xe: hết chỗ
     assert app.slots.free == 0
     assert lcd_text_after(root, lcd, ("in", "BAI DA DAY", "HET CHO")), "LCD không báo bãi đầy"
@@ -1345,11 +1352,13 @@ def test_dual_exit_frees_a_slot_and_entry_lcd_updates(root, tmp_path, monkeypatc
     lcd = app.entry.rfid = app.exit.rfid = LcdSpy()
     assert pump(root, lambda: app.slots.free == 2)
     swipe(app.entry, "CARD1")
+    rec.set_script(["25889"])                                # xe thứ hai một biển riêng (biển trùng bị chặn)
     swipe(app.entry, "CARD2")
     assert app.slots.free == 0
     app.entry.show_idle()
     assert lcd.sent[-1] == ("in", "BAI DA DAY", "HET CHO")
 
+    rec.set_script(["25888"])                                # xe CARD1 ra với đúng biển lúc vào
     swipe(app.exit, "CARD1")                                 # một xe ra -> trả lại một chỗ, LCD cổng vào đổi ngay
     assert app.slots.free == 1
     assert pump(root, lambda: ("in", "CONG VAO", "CON TRONG: 1/2") in lcd.sent)
@@ -1358,3 +1367,145 @@ def test_dual_exit_frees_a_slot_and_entry_lcd_updates(root, tmp_path, monkeypatc
 
 def lcd_text_after(root, lcd, expected, timeout=3.0):
     return pump(root, lambda: lcd.sent[-1] == expected, timeout)
+
+
+# ---------------------------------------------------------------- biển số trùng: từ chối cứng + còi kêu liên tục + LCD giữ tới khi xe rời đi
+class AlarmSpy(LcdSpy):
+    """LcdSpy có send_alarm: ghi lại các lệnh báo động (cổng, bật?)."""
+
+    def __init__(self, servo_ok=True, alarm_ok=True):
+        super().__init__(servo_ok)
+        self.alarms = []
+        self.alarm_ok = alarm_ok
+
+    def send_alarm(self, gate, on=True):
+        self.alarms.append((gate, on))
+        return self.alarm_ok
+
+
+DUP_LCD = ("in", "BIEN SO DA VAO", "GOI NHAN VIEN")
+IDLE_LCD = ("in", "CONG VAO", "MOI QUET THE")
+
+
+def make_dup_entry(root, tmp_path, monkeypatch, script=("25888",), ir=False, alarm_ok=True, idle_seconds="0.3"):
+    """Cổng vào có sẵn xe CARD2 (biển 25888) đang ở trong bãi; thẻ CARD1 sắp vào."""
+    monkeypatch.setenv("LCD_IDLE_SECONDS", idle_seconds)
+    app, db, rec, _ = make_entry(root, tmp_path, monkeypatch, list(script), ir=ir)
+    spy = app.rfid = AlarmSpy(alarm_ok=alarm_ok)
+    db.seed_open("CARD2", "25888")
+    return app, db, rec, spy
+
+
+def test_duplicate_plate_is_refused_with_alarm_and_lcd(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch)
+    out = swipe(app, "CARD1")
+    assert out.kind is Outcome.PLATE_DUPLICATE
+    assert spy.sent[-1] == DUP_LCD                               # LCD báo biển trùng
+    assert spy.alarms == [("in", True)] and app._alarm           # còi: Arduino kêu lặp tới khi xe rời
+    assert spy.servos == []                                      # KHÔNG mở thanh chắn
+    assert [e.card_uid for e in db.rows] == ["CARD2"]            # KHÔNG lưu
+    text = app.status_lbl.cget("text")
+    assert "TRÙNG" in text and "CARD2" in text and "25888" in text
+    assert app.pending is None and str(app.save_btn.cget("state")) == "disabled"   # không có nút cho qua
+
+
+def test_duplicate_plate_refused_before_the_barrier_when_waiting_for_the_sensors(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch, ir=True)
+    assert swipe(app, "CARD1").kind is Outcome.PLATE_DUPLICATE
+    assert spy.servos == [] and app._awaiting is None and len(db.rows) == 1
+    assert spy.sent[-1] == DUP_LCD and spy.alarms == [("in", True)]
+
+
+def test_duplicate_lcd_message_stays_until_the_vehicle_leaves(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch)       # LCD_IDLE_SECONDS=0.3
+    swipe(app, "CARD1")
+    assert not pump(root, lambda: spy.sent[-1] != DUP_LCD, timeout=1.0), "LCD tự về màn hình chờ trong lúc còn báo động"
+    assert app._alarm
+
+
+def test_swipes_are_ignored_while_the_alarm_is_on(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch)
+    swipe(app, "CARD1")
+    scans, shown = rec.calls, len(spy.sent)
+    app.on_card("CARD1")
+    app.on_card("CARD3")
+    assert rec.calls == scans and len(spy.sent) == shown and not app.busy
+    assert "báo động" in app.status_lbl.cget("text")
+    assert app.test_servo() is False and spy.servos == []        # nút Test servo cũng bị khóa
+
+
+def test_alarm_clear_returns_the_gate_to_idle_and_accepts_the_next_card(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch)
+    swipe(app, "CARD1")
+    app.handle_alarm_clear()                                     # Arduino: ALARMCLR:IN (xe trùng đã rời cảm biến)
+    assert pump(root, lambda: not app._alarm)
+    assert spy.sent[-1] == IDLE_LCD and "còi đã tắt" in app.status_lbl.cget("text")
+    assert app.plate_var.get() == ""
+    rec.set_script(["25889"])                                    # xe thật với biển khác vào được
+    assert swipe(app, "CARD1").kind is Outcome.ENTRY_SAVED
+    assert [e.card_uid for e in db.rows] == ["CARD2", "CARD1"]
+
+
+def test_stray_alarm_clear_without_an_alarm_is_ignored(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch)
+    before = len(spy.sent)
+    app.handle_alarm_clear()
+    assert not pump(root, lambda: len(spy.sent) != before, timeout=0.5)
+
+
+def test_arduino_disconnect_ends_the_alarm_state_so_the_gate_is_not_stuck(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch)
+    swipe(app, "CARD1")
+    app.handle_rfid_status(False, "Arduino: MẤT KẾT NỐI COM3")
+    assert pump(root, lambda: not app._alarm)
+    assert "Mất kết nối Arduino" in app.status_lbl.cget("text")
+
+
+def test_duplicate_without_arduino_still_refuses_and_says_the_buzzer_is_unavailable(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch, alarm_ok=False)
+    assert swipe(app, "CARD1").kind is Outcome.PLATE_DUPLICATE
+    assert not app._alarm and len(db.rows) == 1 and spy.sent[-1] == DUP_LCD
+    assert "Không bật được còi" in app.status_lbl.cget("text")
+    assert app.test_servo() is True                              # không kẹt: không có báo động để chờ nên Test servo vẫn dùng được
+
+
+def test_staff_typed_duplicate_number_is_refused_before_the_barrier(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch, script=("2588",), ir=True)
+    swipe(app, "CARD1")                                          # đọc thiếu số -> nhân viên nhập
+    assert app.pending is not None
+    app.plate_var.set("25888")                                   # nhân viên gõ đúng biển đang có xe khác
+    app.save_entry()
+    assert pump(root, lambda: app._alarm)
+    assert spy.servos == [] and app._awaiting is None and len(db.rows) == 1      # chưa mở thanh chắn, chưa lưu
+    assert spy.sent[-1] == DUP_LCD and spy.alarms == [("in", True)]
+    assert app.pending is None
+
+
+def test_staff_typed_duplicate_number_without_sensors_is_refused_too(root, tmp_path, monkeypatch):
+    app, db, rec, spy = make_dup_entry(root, tmp_path, monkeypatch, script=("2588",), ir=False)
+    swipe(app, "CARD1")
+    app.plate_var.set("25888")
+    app.save_entry()
+    assert pump(root, lambda: app._alarm)
+    assert spy.servos == [] and len(db.rows) == 1 and spy.sent[-1] == DUP_LCD
+
+
+def test_real_reader_turns_the_alarm_on_and_off_end_to_end(root, tmp_path, monkeypatch):
+    """Đường đi thật: quẹt thẻ -> biển trùng -> ALARMIN:ON xuống Arduino; Arduino gửi ALARMCLR:IN -> cổng vào về màn hình chờ."""
+    import main
+    app, db, _ = make_dual(root, tmp_path, monkeypatch)
+    db.seed_open("CARD2", "25888")
+    ser = LiveSerialW(["STATUS:IN=1,OUT=1\n", "IN:CARD1\n"])
+    reader = main._make_rfid(config.load_settings("in", {}), {"in": app.entry, "out": app.exit},
+                             serial_factory=lambda port, baud, timeout: ser)
+    app.set_rfid(reader)
+    assert pump(root, lambda: b"ALARMIN:ON\n" in ser.sent)
+    assert pump(root, lambda: "TRÙNG" in app.entry.status_lbl.cget("text"))
+    assert b"LCDIN:BIEN SO DA VAO|GOI NHAN VIEN\n" in ser.sent
+    assert not [m for m in ser.sent if m.startswith(b"SERVOIN:OPEN")] and len(db.rows) == 1
+    assert b"ALARMOUT:ON\n" not in ser.sent                      # cổng ra không bị báo động
+
+    ser.lines.append(b"ALARMCLR:IN\n")                           # xe trùng rời cảm biến, Arduino tự tắt còi và báo lên
+    assert pump(root, lambda: not app.entry._alarm)
+    assert pump(root, lambda: [m for m in ser.sent if m.startswith(b"LCDIN:")][-1] == b"LCDIN:CONG VAO|MOI QUET THE\n")
+    app.on_close()

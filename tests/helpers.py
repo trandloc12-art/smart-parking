@@ -4,7 +4,7 @@ import dataclasses
 import numpy as np
 
 from core.recognizer import RecognitionResult
-from storage.errors import AlreadyInside, SessionAlreadyClosed
+from storage.errors import AlreadyInside, PlateAlreadyInside, SessionAlreadyClosed
 from storage.models import AccessEvent
 
 
@@ -27,12 +27,28 @@ class FakeDb:
                 return e
         return None
 
+    def seed_open(self, card_uid, plate, time_in=None):
+        """Nạp thẳng một xe đang ở trong bãi, KHÔNG qua kiểm tra trùng biển (mô phỏng dữ liệu có sẵn từ trước)."""
+        from datetime import datetime
+        e = AccessEvent(len(self.rows) + 1, card_uid, plate, "", "", time_in or datetime.now().replace(microsecond=0),
+                        gate_in="in")
+        self.rows.append(e)
+        return e
+
+    def find_open_session_by_plate(self, plate):
+        for e in reversed(self.rows):
+            if e.plate_number == plate and e.time_out is None:
+                return e
+        return None
+
     def count_open_sessions(self):
         return sum(1 for e in self.rows if e.time_out is None)
 
     def add_entry(self, card_uid, plate_number, plate_full, image_in, time_in, votes="", gate=""):
         if self.find_open_session(card_uid):
             raise AlreadyInside(card_uid)
+        if plate_number and self.find_open_session_by_plate(plate_number):     # như chỉ mục UX_access_log_open_plate
+            raise PlateAlreadyInside(plate_number)
         e = AccessEvent(len(self.rows) + 1, card_uid, plate_number, plate_full, image_in,
                         time_in, gate_in=gate)
         self.rows.append(e)

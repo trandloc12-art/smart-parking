@@ -14,6 +14,7 @@
       NOPASS:IN            xe KHÔNG đi qua (NOPASS:OUT cho cổng ra): xe đã rời cảm biến trước (mất tín hiệu) quá PASS_WINDOW mà
                            cảm biến sau chưa thấy xe, hoặc hết giờ mở mà xe chưa tới cảm biến trước; thanh chắn đã được hạ. Máy tính HỦY phiên quẹt thẻ
                            (chỉ lưu khi nhận PASS)
+      ALARMCLR:IN          xe bị báo động (biển số trùng) ĐÃ RỜI cảm biến trước CỔNG VÀO (ALARMCLR:OUT cho cổng ra); còi đã tắt
       # ...                dòng chú thích, Python bỏ qua
     Máy tính -> Arduino:
       LCDIN:dòng 1|dòng 2   hiển thị lên LCD CỔNG VÀO
@@ -42,6 +43,10 @@
                             lặp (mỗi STUCK_BEEP_PERIOD_MS) tới khi xe nhúc nhích / qua hẳn / thanh chắn đóng. Sai định dạng
                             hoặc ngoài khoảng thì bỏ qua cả lệnh. Máy tính gửi lệnh này mỗi khi Arduino khởi động
                             (STUCK_WARN_SECONDS trong .env); chưa nhận được thì dùng STUCK_WARN_MS bên dưới.
+      ALARMIN:ON            BẬT báo động BIỂN SỐ TRÙNG ở CỔNG VÀO (ALARMOUT:ON cho cổng ra): còi kêu lặp (mỗi STUCK_BEEP_PERIOD_MS) liên tục
+                            cho tới khi xe RỜI cảm biến trước (hết bị chắn, đã chống nhiễu); lúc đó Arduino tự tắt còi và gửi
+                            ALARMCLR:IN. Không có giới hạn thời gian. Do Arduino tự làm bằng millis() nên máy tính treo vẫn kêu.
+      ALARMIN:OFF           tắt báo động ngay (dự phòng, gõ tay trong Serial Monitor); không gửi ALARMCLR
 
   Đấu dây RFID (Arduino Uno/Nano; đổi chân trong 3 hằng số bên dưới nếu cần):
     Dùng chung cho cả hai module:  SCK -> D13,  MOSI -> D11,  MISO -> D12,  RST -> D9,  3.3V,  GND
@@ -458,6 +463,28 @@ class LedTimer {
 };
 // END LedTimer
 
+// BEGIN PlateAlarm (không phụ thuộc Arduino: tests/ biên dịch riêng đoạn này để thử logic)
+// Báo động BIỂN SỐ TRÙNG: máy tính bật bằng set(true); còi kêu lặp (loop) cho tới khi xe RỜI cảm biến trước (cảm biến trước
+// hết bị chắn). update() trả về true đúng MỘT lần lúc báo động tự kết thúc vì xe đã rời (để gửi ALARMCLR). set(false) tắt
+// ngay mà không báo. Không có giới hạn thời gian: cảm biến trước còn bị chắn thì còn báo động.
+class PlateAlarm {
+ public:
+  void set(bool on) { on_ = on; }
+  bool active() const { return on_; }
+
+  bool update(bool beforeBlocked) {
+    if (on_ && !beforeBlocked) {
+      on_ = false;
+      return true;
+    }
+    return false;
+  }
+
+ private:
+  bool on_ = false;
+};
+// END PlateAlarm
+
 LedTimer entryLed(LED_ON_MS);                  // đèn báo xe vào (gắn vào PIN_LED)
 unsigned long stuckWarnMs = STUCK_WARN_MS;     // ngưỡng cảnh báo xe dừng quá lâu (ms, 0 = tắt); máy tính ghi đè bằng lệnh STUCK:
 
@@ -515,9 +542,15 @@ class Barrier {
   // true = xe đã quẹt thẻ nhưng đứng yên ở cảm biến trước / sau quá lâu (loop() cho còi kêu lặp). Cập nhật trong update().
   bool stuck() const { return stuck_; }
 
+  // Báo động biển số trùng: bật / tắt theo lệnh ALARM...:ON/OFF. alarming() = true thì loop() cho còi kêu lặp; xe rời cảm biến
+  // trước thì update() tự tắt và gửi ALARMCLR:<cổng>. Không liên quan tới thanh chắn (thanh chắn vẫn đóng).
+  void setAlarm(bool on) { alarm_.set(on); }
+  bool alarming() const { return alarm_.active(); }
+
   void update() {                              // gọi mỗi vòng loop
     before_.update();
     after_.update();
+    if (alarm_.update(before_.blocked())) report(F("ALARMCLR:"));   // xe trùng biển đã rời: còi tắt, báo máy tính
     if (!open_) return;
     // Xe đã quẹt thẻ (thanh chắn đang mở) mà đứng yên ở cảm biến trước / sau quá stuckWarnMs: bật cảnh báo (còi kêu lặp ở loop()).
     stuck_ = stuckTimer_.update(before_.blocked(), after_.blocked(), millis(), stuckWarnMs);
@@ -561,6 +594,7 @@ class Barrier {
   PassWindow window_;
   CloseCountdown countdown_;
   StuckTimer stuckTimer_;
+  PlateAlarm alarm_;
   bool stuck_ = false;
   const char *tag_;                            // "IN" / "OUT" (chuỗi thường: F() không dùng được ở phạm vi toàn cục)
   LedTimer *led_;                              // đèn báo xe qua thanh chắn; nullptr = không có
@@ -716,7 +750,7 @@ void handleServo(Barrier &barrier, char *args) {
   }
 }
 
-// Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu BUZZER:, SERVOIN:, SERVOOUT:, LCDIN:, LCDOUT: và LCD: (cũ = LCDIN);
+// Một dòng lệnh đã nhận đủ (kết thúc bằng \n). Hiểu BUZZER:, STUCK:, ALARMIN:, ALARMOUT:, SERVOIN:, SERVOOUT:, LCDIN:, LCDOUT: và LCD: (cũ = LCDIN);
 // lệnh khác bỏ qua.
 // Lệnh cảnh báo xe dừng quá lâu: `args` là phần sau "STUCK:", là số ms (0 = tắt, hoặc STUCK_WARN_MIN_MS..STUCK_WARN_MAX_MS).
 // Sai định dạng / ngoài khoảng thì bỏ qua cả lệnh.
@@ -728,11 +762,24 @@ void handleStuck(char *args) {
   stuckWarnMs = (unsigned long)ms;
 }
 
+// Lệnh báo động biển số trùng: `args` là phần sau "ALARMIN:" / "ALARMOUT:", "ON" hoặc "OFF". Lệnh khác bỏ qua.
+void handleAlarm(Barrier &barrier, char *args) {
+  if (strcmp(args, "ON") == 0) {
+    barrier.setAlarm(true);
+  } else if (strcmp(args, "OFF") == 0) {
+    barrier.setAlarm(false);
+  }
+}
+
 void handleCommand(char *cmd) {
   char *args = afterPrefix(cmd, "BUZZER:");
   if (args != nullptr) { handleBuzzer(args); return; }
   args = afterPrefix(cmd, "STUCK:");
   if (args != nullptr) { handleStuck(args); return; }
+  args = afterPrefix(cmd, "ALARMOUT:");
+  if (args != nullptr) { handleAlarm(barrierOut, args); return; }
+  args = afterPrefix(cmd, "ALARMIN:");
+  if (args != nullptr) { handleAlarm(barrierIn, args); return; }
   args = afterPrefix(cmd, "SERVOOUT:");
   if (args != nullptr) { handleServo(barrierOut, args); return; }
   args = afterPrefix(cmd, "SERVOIN:");
@@ -800,8 +847,10 @@ void loop() {
   barrierIn.update();
   barrierOut.update();
   digitalWrite(PIN_LED, entryLed.update(millis()) ? HIGH : LOW);   // đèn báo xe vào: tự tắt sau LED_ON_MS
-  // Xe đã quẹt thẻ mà đứng yên ở cảm biến trước / sau quá lâu (ở một trong hai cổng): còi kêu lặp tới khi xe nhúc nhích.
-  if ((barrierIn.stuck() || barrierOut.stuck()) && millis() - lastStuckBeep >= STUCK_BEEP_PERIOD_MS) {
+  // Còi kêu lặp khi: xe đã quẹt thẻ mà đứng yên ở cảm biến trước / sau quá lâu (tới khi xe nhúc nhích), hoặc đang báo động
+  // BIỂN SỐ TRÙNG (tới khi xe trùng rời cảm biến trước). Ở một trong hai cổng đều kêu.
+  if ((barrierIn.stuck() || barrierOut.stuck() || barrierIn.alarming() || barrierOut.alarming()) &&
+      millis() - lastStuckBeep >= STUCK_BEEP_PERIOD_MS) {
     lastStuckBeep = millis();
     beep();
   }

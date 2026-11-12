@@ -4,7 +4,7 @@ from tkinter import ttk
 
 from core.plate_voting import NUMBER_LEN
 from services.gate_service import Outcome
-from storage.errors import AlreadyInside, ParkingFull
+from storage.errors import AlreadyInside, ParkingFull, PlateAlreadyInside
 from ui.base_gate_app import (   # noqa: F401  (plate_position_offset được import lại để nơi khác dùng qua ui.entry_app)
     COLOR_ERR, COLOR_OK, COLOR_WARN, LCD_FULL, BaseGateApp, PassTicket, fmt_time, plate_position_offset,
 )
@@ -21,6 +21,7 @@ class EntryApp(BaseGateApp):
     LCD_NEED_STAFF = ("CHO NHAN VIEN", "XAC NHAN BIEN SO")
     LCD_WAIT_PASS = ("MOI XE VAO", "QUA THANH CHAN")
     LCD_PASS_CANCELLED = ("XE CHUA VAO BAI", "HAY QUET LAI THE")
+    LCD_PLATE_DUPLICATE = ("BIEN SO DA VAO", "GOI NHAN VIEN")     # giữ nguyên tới khi xe trùng rời cảm biến (không tự về màn hình chờ)
 
     OFFSET_TEXT = (f"⚠ BIỂN SỐ LỆCH VỊ TRÍ\n"
                    f"Chưa đọc đủ {NUMBER_LEN} số. Hãy chỉnh xe vào đúng vị trí trước camera rồi quẹt thẻ lại.")
@@ -96,6 +97,10 @@ class EntryApp(BaseGateApp):
         scan, uid = outcome.scan, outcome.card_uid
         self.show_image(scan.image if scan.image is not None else self.last_frame)
 
+        if outcome.kind is Outcome.PLATE_DUPLICATE:    # biển đã có xe khác trong bãi: nghi biển giả, từ chối cứng
+            self.show_plate_duplicate(uid, scan.winner, outcome.event)
+            return
+
         if outcome.kind is Outcome.ENTRY_SAVED:        # chưa có cảm biến / servo: lưu ngay như cũ
             self.pending = None
             self.plate_var.set(scan.winner)
@@ -141,12 +146,15 @@ class EntryApp(BaseGateApp):
         if o is None or len(number) != NUMBER_LEN:
             return
         commit = lambda: self.service.save_entry(o.card_uid, number, o.scan, o.swiped_at)  # noqa: E731
-        if self.pass_gated():           # nhân viên đã xác nhận: mở thanh chắn, xe đi qua rồi mới lưu
-            self.pending = None
-            self.show_offset_warning(False)
-            self.wait_for_pass(PassTicket(o.card_uid, number, commit=commit,
-                                          on_committed=lambda e: self.on_saved(e, open_barrier=False)))
-            self.update_action_buttons()
+        if self.pass_gated():           # nhân viên đã xác nhận: kiểm tra biển trùng, rồi mở thanh chắn, xe đi qua rồi mới lưu
+            def open_and_wait(_):
+                self.pending = None
+                self.show_offset_warning(False)
+                self.wait_for_pass(PassTicket(o.card_uid, number, commit=commit,
+                                              on_committed=lambda e: self.on_saved(e, open_barrier=False)))
+                self.update_action_buttons()
+            self.set_status("Đang kiểm tra biển số...", COLOR_WARN)
+            self._bg(lambda: self.service.check_plate_free(o.card_uid, number), open_and_wait)
             return
         self.set_status("Đang lưu...", COLOR_WARN)
         self._bg(commit, self.on_saved)
@@ -177,8 +185,28 @@ class EntryApp(BaseGateApp):
         self.update_action_buttons()
         self.set_status("Đã hủy. Sẵn sàng cho xe tiếp theo.", COLOR_OK)
 
+    def show_plate_duplicate(self, uid, number, existing=None):
+        """Biển `number` đang có xe khác (thẻ `existing.card_uid`) ở trong bãi: KHÔNG cho vào, KHÔNG mở thanh chắn, KHÔNG lưu.
+        LCD báo và còi kêu lặp (Arduino tự làm) tới khi xe rời cảm biến trước; LCD giữ thông báo tới lúc đó."""
+        self.pending = None
+        self.show_offset_warning(False)
+        self.set_card(uid)
+        self.plate_var.set(number)
+        self.plate_entry.configure(fg=COLOR_ERR)
+        self.lcd(self.LCD_PLATE_DUPLICATE)          # không revert: giữ tới khi xe trùng rời đi
+        alarm = self.start_alarm()
+        who = (f"thẻ {existing.card_uid}, vào lúc {fmt_time(existing.time_in)}" if existing is not None else "một xe khác")
+        tail = ("Còi báo liên tục tới khi xe rời khỏi cảm biến." if alarm
+                else "(Không bật được còi: Arduino chưa kết nối.)")
+        self.set_status(f"BIỂN SỐ {number} TRÙNG: đang có {who} ở trong bãi (nghi biển giả). "
+                        f"Không cho thẻ {uid} vào, không mở thanh chắn, không lưu. {tail}", COLOR_ERR)
+        self.update_action_buttons()
+
     def handle_error(self, exc):
-        if isinstance(exc, AlreadyInside):
+        if isinstance(exc, PlateAlreadyInside):     # nhân viên nhập / xác nhận số trùng, hoặc hai bên ghi cùng lúc
+            uid = self.pending.card_uid if self.pending is not None else ""
+            self.show_plate_duplicate(uid, self.plate_var.get(), exc.session)
+        elif isinstance(exc, AlreadyInside):
             self.pending = None
             self.show_offset_warning(False)
             self.lcd(self.LCD_ALREADY_INSIDE, revert=True)

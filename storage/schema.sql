@@ -100,3 +100,21 @@ BEGIN
     END
 END
 GO
+
+-- 9) Mỗi biển số (5 số) chỉ được có MỘT lượt đang mở: chặn biển giả / trùng biển (hai thẻ khác nhau cùng một biển cùng lúc ở trong bãi).
+--    Lượt cũ chưa có biển (NULL) bị bỏ qua. Nếu dữ liệu cũ đã có biển bị trùng lượt mở thì bỏ qua và cảnh báo; hãy đóng bớt lượt rồi chạy lại.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_access_log_open_plate'
+               AND object_id = OBJECT_ID(N'dbo.access_log'))
+BEGIN
+    IF EXISTS (SELECT 1 FROM dbo.access_log WHERE time_out IS NULL AND plate_number IS NOT NULL
+               GROUP BY plate_number HAVING COUNT(*) > 1)
+    BEGIN
+        PRINT N'CANH BAO: co the dang co nhieu luot mo cho cung mot bien so; chua tao UX_access_log_open_plate.'
+    END
+    ELSE
+    BEGIN
+        CREATE UNIQUE INDEX UX_access_log_open_plate ON dbo.access_log (plate_number)
+            WHERE time_out IS NULL AND plate_number IS NOT NULL
+    END
+END
+GO

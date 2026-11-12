@@ -8,6 +8,7 @@ Giao thức (9600 baud, mỗi dòng kết thúc bằng \\n; xem arduino/dual_rfi
                            với module RFID). Arduino gửi lúc khởi động và định kỳ (~2 giây).
     PASS:IN                xe đã đi qua hẳn thanh chắn CỔNG VÀO (PASS:OUT: cổng ra); Arduino đã hạ thanh chắn
     NOPASS:OUT             hết giờ mở thanh chắn mà xe CHƯA đi qua (NOPASS:IN: cổng vào); thanh chắn đã hạ
+    ALARMCLR:IN            xe bị báo động biển số trùng đã RỜI cảm biến trước CỔNG VÀO (ALARMCLR:OUT: cổng ra); còi đã tắt
     # ...                  dòng chú thích / log, bị bỏ qua
 
 Chiều NGƯỢC LẠI (máy tính -> Arduino), chỉ để hiển thị lên hai màn LCD 1602 I2C (một ở mỗi cổng):
@@ -26,6 +27,8 @@ Chiều NGƯỢC LẠI thứ hai: mở thanh chắn (servo) của từng cổng 
                            Arduino tự đóng, nên dù máy tính treo thì thanh chắn cũng không kẹt ở trạng thái mở.
     BUZZER:TONE:2000:120   đặt âm thanh còi: tần số (Hz) rồi độ dài một tiếng bíp (ms); gửi mỗi khi Arduino khởi động
     BUZZER:BEEP            kêu thử một tiếng bíp (để chỉnh âm thanh)
+    ALARMIN:ON             BẬT báo động biển số trùng ở CỔNG VÀO (ALARMOUT:ON: cổng ra): còi kêu lặp liên tục tới khi xe rời cảm biến
+                           trước, lúc đó Arduino tự tắt còi và gửi ALARMCLR. ALARMIN:OFF tắt ngay (dự phòng)
     STUCK:10000            ngưỡng cảnh báo xe dừng quá lâu (ms; 0 = tắt): đã quẹt thẻ mà xe đứng yên ở cảm biến trước / sau quá
                            ngưỡng này thì còi kêu lặp tới khi xe nhúc nhích hoặc thanh chắn đóng; gửi mỗi khi Arduino khởi động
 
@@ -36,6 +39,7 @@ Lớp đọc báo ba loại sự kiện để giao diện hiển thị:
                                         VD khi Arduino đang mất kết nối)
     on_barrier(gate, passed)            kết quả của một lần mở thanh chắn (cảm biến hồng ngoại): True = xe đã qua,
                                         False = hết giờ mà xe chưa qua
+    on_alarm_clear(gate)                xe bị báo động biển số trùng đã rời cảm biến trước: còi đã tắt
 LƯU Ý: các callback chạy ở luồng nền, KHÔNG được đụng trực tiếp vào widget Tkinter.
 """
 import re
@@ -47,6 +51,7 @@ from dataclasses import dataclass, field
 import serial  # pip install pyserial
 
 GATE_CODES = {"IN": "in", "OUT": "out"}      # tiền tố trong giao thức -> mã cổng trong chương trình
+ALARM_CLEAR_HEAD = "ALARMCLR"                 # tiền tố báo xe trùng biển đã rời (Arduino tự tắt còi)
 BARRIER_HEADS = {"PASS": True, "NOPASS": False}   # tiền tố báo kết quả thanh chắn -> xe đã qua?
 _UID_RE = re.compile(r"^[0-9A-Z]{4,32}$")
 LCD_WIDTH = 16                                # LCD 1602: 16 cột x 2 dòng
@@ -76,6 +81,19 @@ def format_lcd_command(line1, line2="", gate="in"):
     except KeyError:
         raise ValueError(f"cổng không hợp lệ: {gate!r} (chỉ nhận 'in' hoặc 'out')") from None
     return f"{prefix}:{lcd_text(line1)}|{lcd_text(line2)}\n"
+
+
+ALARM_PREFIX = {"in": "ALARMIN", "out": "ALARMOUT"}     # mã cổng -> tiền tố lệnh báo động
+
+
+def format_alarm_command(gate, on=True):
+    """Lệnh báo động biển số trùng gửi Arduino, VD 'ALARMIN:ON\\n' / 'ALARMIN:OFF\\n' (cổng ra: ALARMOUT:...).
+    ON: còi kêu lặp tới khi xe rời cảm biến trước (Arduino tự tắt và gửi ALARMCLR); OFF: tắt ngay."""
+    try:
+        prefix = ALARM_PREFIX[gate]
+    except KeyError:
+        raise ValueError(f"cổng không hợp lệ: {gate!r} (chỉ nhận 'in' hoặc 'out')") from None
+    return f"{prefix}:{'ON' if on else 'OFF'}\n"
 
 
 BOOT_BANNER = "# dual_rfid"      # dòng chú thích Arduino in ra khi khởi động xong (setup)
@@ -187,12 +205,17 @@ class BarrierEvent:
 
 
 @dataclass(frozen=True)
+class AlarmClear:
+    gate: str               # cổng có xe trùng biển vừa rời cảm biến trước (còi đã tắt)
+
+
+@dataclass(frozen=True)
 class BadLine:
     text: str
 
 
 def parse_line(raw):
-    """Một dòng từ Arduino -> CardSwipe | ReaderStatus | BarrierEvent | BadLine; dòng trống hoặc chú thích -> None."""
+    """Một dòng từ Arduino -> CardSwipe | ReaderStatus | BarrierEvent | AlarmClear | BadLine; dòng trống hoặc chú thích -> None."""
     text = raw.strip()
     if not text or text.startswith("#"):
         return None
@@ -215,6 +238,10 @@ def parse_line(raw):
         gate = GATE_CODES.get(body.strip().upper())
         if gate:
             return BarrierEvent(gate, BARRIER_HEADS[head])
+    elif sep and head == ALARM_CLEAR_HEAD:
+        gate = GATE_CODES.get(body.strip().upper())
+        if gate:
+            return AlarmClear(gate)
     return BadLine(text)
 
 
@@ -225,13 +252,14 @@ class ArduinoRfidReader(threading.Thread):
 
     def __init__(self, port, baudrate, on_card, on_status=None, on_reader_status=None,
                  debounce=2.0, heartbeat_timeout=8.0, on_barrier=None, init_commands=(),
-                 serial_factory=serial.Serial, clock=time.monotonic, sleep=time.sleep):
+                 on_alarm_clear=None, serial_factory=serial.Serial, clock=time.monotonic, sleep=time.sleep):
         super().__init__(daemon=True)
         self.port, self.baudrate = port, baudrate
         self.on_card = on_card
         self.on_status = on_status or (lambda connected, msg: None)
         self.on_reader_status = on_reader_status or (lambda gate, ok: None)
         self.on_barrier = on_barrier or (lambda gate, passed: None)
+        self.on_alarm_clear = on_alarm_clear or (lambda gate: None)
         self.debounce = debounce
         self.heartbeat_timeout = heartbeat_timeout
         # Các dòng lệnh (đã có \\n) gửi cho Arduino mỗi khi nó khởi động, VD góc servo ban đầu. Arduino Uno tự reset
@@ -300,6 +328,11 @@ class ArduinoRfidReader(threading.Thread):
         """Đặt ngưỡng (giây) cảnh báo xe dừng quá lâu, 0 = tắt. Trả về True nếu đã ghi ra cổng COM."""
         return self._write_line(format_stuck_command(seconds))
 
+    def send_alarm(self, gate, on=True):
+        """Bật / tắt báo động biển số trùng ở cổng `gate`: còi kêu lặp tới khi xe rời cảm biến trước (Arduino tự tắt rồi gửi
+        ALARMCLR). Trả về True nếu đã ghi ra cổng COM; False nếu đang mất kết nối (không ném ngoại lệ vì lỗi ghi)."""
+        return self._write_line(format_alarm_command(gate, on))
+
     def send_buzzer_beep(self):
         """Kêu thử một tiếng bíp với âm thanh hiện tại của Arduino. Trả về True nếu đã ghi ra cổng COM."""
         return self._write_line("BUZZER:BEEP\n")
@@ -365,6 +398,8 @@ class ArduinoRfidReader(threading.Thread):
                 self.on_reader_status(gate, ok)
         elif isinstance(msg, BarrierEvent):
             self.on_barrier(msg.gate, msg.passed)      # không chống trùng: mỗi lần mở thanh chắn chỉ có một kết quả
+        elif isinstance(msg, AlarmClear):
+            self.on_alarm_clear(msg.gate)
         else:
             self._emit_card(msg.gate, msg.uid)
 

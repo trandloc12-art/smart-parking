@@ -64,8 +64,13 @@ def _make_rfid(cfg, apps, **reader_kwargs):
         if gate in apps:
             apps[gate].handle_barrier(passed)
 
+    def on_alarm_clear(gate):
+        if gate in apps:
+            apps[gate].handle_alarm_clear()
+
     return ArduinoRfidReader(cfg.rfid_port, cfg.rfid_baud, on_card=on_card, on_status=on_status,
                              on_reader_status=on_reader_status, on_barrier=on_barrier,
+                             on_alarm_clear=on_alarm_clear,
                              debounce=cfg.rfid_debounce,
                              heartbeat_timeout=cfg.rfid_heartbeat,
                              init_commands=(servo_init_commands(*(a.cfg for a in apps.values()))
